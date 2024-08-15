@@ -17,6 +17,11 @@ readme = "README.md"
 dynamic = ["version"]
 
 dependencies = [
+    'pydantic',
+    'panel',
+    'altair',
+    'aind-data-access-api[docdb]',
+    'watchfiles',
 ]
 
 [project.optional-dependencies]
