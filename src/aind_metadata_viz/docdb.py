@@ -16,8 +16,8 @@ docdb_api_client = MetadataDbClient(
 @pn.cache
 def get_all():
     filter = {}
-    limit = 500
-    paginate_batch_size = 100
+    limit = 0
+    paginate_batch_size = 1000
     response = docdb_api_client.retrieve_docdb_records(
         filter_query=filter,
         limit=limit,

@@ -175,7 +175,6 @@ window.URL.revokeObjectURL(url);
     js_pane.object = ''
     js_pane.object = f'<script>{js_code}</script>'
 
-
 top_selector = pn.widgets.Select(name='Select file:',
                                       options=expected_files)
 pn.state.location.sync(top_selector, {'value': 'file'})

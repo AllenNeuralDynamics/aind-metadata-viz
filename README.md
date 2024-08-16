@@ -1,4 +1,4 @@
-# aind-metadata-viz
+# AIND Metadata Viz
 
 Metadata visualizations
 
