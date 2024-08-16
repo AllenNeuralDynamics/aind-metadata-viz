@@ -147,6 +147,11 @@ def build_csv_jscode(event):
     csv = build_csv(top_selector.value, mid_selector.value)
     csv_escaped = csv.replace('\n', '\\n').replace('"', '\\"')  # Escape newlines and double quotes
 
+    if not mid_selector.value == ' ':
+        filename = f'{top_selector.value}-{mid_selector.value}-missing.csv'
+    else:
+        filename = f'{top_selector.value}-missing.csv'
+
     js_code = f"""
 console.log('here');
 var text = "{csv_escaped}";
@@ -156,7 +161,7 @@ var url = window.URL.createObjectURL(blob);
 
 var a = document.createElement('a');
 a.href = url;
-a.download = 'missing-metadata.csv';
+a.download = "{filename}";
 
 document.body.appendChild(a);
 
