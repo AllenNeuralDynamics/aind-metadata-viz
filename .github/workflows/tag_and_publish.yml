@@ -62,6 +62,7 @@ jobs:
         add: '["README.md"]'
   tag:
     needs: update_badges
+    if: ${{github.event.repository.name == 'aind-metadata-viz'}}
     uses: AllenNeuralDynamics/aind-github-actions/.github/workflows/tag.yml@main
     secrets:
       SERVICE_TOKEN: ${{ secrets.SERVICE_TOKEN }}

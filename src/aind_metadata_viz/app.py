@@ -1,6 +1,9 @@
 import panel as pn
+# import param
 import pandas as pd
 import altair as alt
+
+from io import StringIO
 
 from aind_metadata_viz.docdb import get_all
 
@@ -15,7 +18,21 @@ expected_files = ["data_description", "acquisition", "procedures",
                   "rig", "session", "metadata"]
 
 
-def process_present(data_list, expected_files):
+# class Settings(param.Parameterized):
+#     selected_file = param.String(default=None)
+#     selected_field = param.String(default=None)
+
+
+# Deal with setting up settings -- check first if we need to pull from query string
+# QUERYSTR_FILE = 'file'
+# QUERYSTR_FIELD = 'field'
+# settings = Settings()
+
+# pn.state.location.sync(settings, {'selected_file': QUERYSTR_FILE,
+#                                   'selected_field': QUERYSTR_FIELD})
+
+
+def process_present(data_list, expected_fields):
     """Process a data JSON
 
     Parameters
@@ -36,8 +53,8 @@ def process_present(data_list, expected_files):
     for data in data_list:
         present = {}
         # For each data asset, check if the expected files are present or null
-        for expected_file in expected_files:
-            present[expected_file] = not (data[expected_file] == None) if expected_file in data.keys() else False
+        for field in expected_fields:
+            present[field] = not (data[field] == None) if field in data.keys() else False
 
         output.append(present)
 
@@ -58,41 +75,177 @@ def compute_count_true(df):
     return sum_df
 
 
-processed = process_present(data_list, expected_files)
-df = pd.DataFrame(processed, columns=expected_files)
+def build_top():
+    processed = process_present(data_list, expected_files)
+    df = pd.DataFrame(processed, columns=expected_files)
 
-sum_df = compute_count_true(df)
-# convert to long form
-sum_longform_df = sum_df.reset_index().melt(id_vars='index', var_name='status', value_name='sum')
+    sum_df = compute_count_true(df)
+    # convert to long form
+    sum_longform_df = sum_df.reset_index().melt(id_vars='index', var_name='status', value_name='sum')
 
-chart = alt.Chart(sum_longform_df).mark_bar().encode(
-    x=alt.X('index:N', title=None),
-    y=alt.Y('sum:Q', title='Data assets'),
-    color=alt.Color('status:N', 
-                    scale=alt.Scale(domain=['present', 'absent'],
-                                    range=['grey', 'red']),
-                    legend=None)
-)
+    chart = alt.Chart(sum_longform_df).mark_bar().encode(
+        x=alt.X('index:N', title=None, axis=alt.Axis(grid=False)),
+        y=alt.Y('sum:Q', title='Data assets', axis=alt.Axis(grid=False)),
+        color=alt.Color('status:N', 
+                        scale=alt.Scale(domain=['present', 'absent'],
+                                        range=['grey', 'red']),
+                        legend=None)
+    ).properties(
+        width=400
+    )
 
-legend = alt.Chart(pd.DataFrame({
-    'status': ['present', 'absent'],
-    'color': ['grey', 'red'],
-    'x': [0, 0],
-    'y': [15, 0]
-})).mark_text(
-    align='left',
-    dx=10
-).encode(
-    text=alt.Text('status:N'),
-    color=alt.Color('color:N', scale=None),
-    x=alt.value(185),  # Adjust position
-    y=alt.Y('y:Q', scale=None)
-)
+    legend = alt.Chart(pd.DataFrame({
+        'status': ['File present', 'File absent'],
+        'color': ['grey', 'red'],
+        'x': [0, 0],
+        'y': [15, 0]
+    })).mark_text(
+        align='left',
+        dx=10
+    ).encode(
+        text=alt.Text('status:N'),
+        color=alt.Color('color:N', scale=None),
+        x=alt.value(410),  # Adjust position
+        y=alt.Y('y:Q', scale=None)
+    )
+    return pn.panel(chart + legend)
 
-top_plot = pn.panel(chart + legend)
-top_selector = pn.widgets.MultiChoice(name='Select file:',
-    options=expected_files)
 
-pn.Row(top_plot, top_selector).servable()
+def build_csv(file, field):
+    id_fields = ['name', '_id', 'location', 'creation']
 
-pn.pane.JSON(data_list).servable()
+    df_data = []
+    for data in data_list:
+        if not data[file] is None:
+            if mid_selector.value == ' ' or not field in data[file] or data[file][field] is None:
+                id_data = {}
+                for id_field in id_fields:
+                    if id_field in data:
+                        id_data[id_field] = data[id_field]
+                    else:
+                        id_data[id_field] = None
+                df_data.append(id_data)
+
+    df = pd.DataFrame(df_data)
+
+    sio = StringIO()
+    df.to_csv(sio, index=False)
+    return sio.getvalue()
+
+
+def build_csv_jscode(event):
+    csv = build_csv(top_selector.value, mid_selector.value)
+
+    js_code = f"""
+    console.log({csv});
+    const text = "{csv}";
+    const blob = new Blob([text], {{ type: 'text/plain' }});
+
+    // Generate a URL for the Blob
+    const url = window.URL.createObjectURL(blob);
+
+    // Create a temporary anchor element
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'myfile.txt';  // The name of the file to be downloaded
+
+    // Append the anchor to the body (not visible to the user)
+    document.body.appendChild(a);
+
+    // Programmatically click the anchor to trigger the download
+    a.click();
+
+    // Remove the anchor from the document
+    document.body.removeChild(a);
+
+    // Revoke the URL to free up resources
+    window.URL.revokeObjectURL(url);
+    """
+
+    return js_code
+
+
+top_selector = pn.widgets.Select(name='Select file:',
+                                      options=expected_files)
+pn.state.location.sync(top_selector, {'value': 'file'})
+
+mid_selector = pn.widgets.Select(name='Sub-select for:',
+                                      options=[])
+pn.state.location.sync(mid_selector, {'value': 'field'})
+
+
+download_button = pn.widgets.Button(name='Download')
+download_button.on_click(build_csv_jscode)
+
+# download_button = pn.widgets.FileDownload(filename='missing_metadata.csv',
+#                                           button_type='success',
+#                                           auto=False,
+#                                           callback=pn.bind(build_csv, top_selector, mid_selector))
+
+
+def build_mid(selected):
+    mid_list = []
+    for data in data_list:
+        if not data[selected]==None:
+            mid_list.append(data[selected])
+
+    processed = process_present(mid_list, mid_list[0].keys())
+    df = pd.DataFrame(processed, columns=mid_list[0].keys())
+
+    sum_df = compute_count_true(df)
+    # convert to long form
+    sum_longform_df = sum_df.reset_index().melt(id_vars='index', var_name='status', value_name='sum')
+
+    chart = alt.Chart(sum_longform_df).mark_bar().encode(
+        x=alt.X('index:N', title=None, axis=alt.Axis(grid=False)),
+        y=alt.Y('sum:Q', title='Data assets', axis=alt.Axis(grid=False)),
+        color=alt.Color('status:N', 
+                        scale=alt.Scale(domain=['present', 'absent'],
+                                        range=['grey', 'red']),
+                        legend=None)
+    ).properties(
+        width=400
+    )
+
+    legend = alt.Chart(pd.DataFrame({
+        'status': ['File present', 'File absent'],
+        'color': ['grey', 'red'],
+        'x': [0, 0],
+        'y': [15, 0]
+    })).mark_text(
+        align='left',
+        dx=10
+    ).encode(
+        text=alt.Text('status:N'),
+        color=alt.Color('color:N', scale=None),
+        x=alt.value(410),  # Adjust position
+        y=alt.Y('y:Q', scale=None)
+    )
+
+    # Also update the selected list
+    option_list = [' '] + list(mid_list[0].keys())
+    mid_selector.options = option_list
+
+    return pn.panel(chart + legend)
+
+    
+top_plot = build_top()
+mid_plot = pn.bind(build_mid, selected=top_selector)
+# Setup the rows
+top_row = pn.Row(top_plot)
+second_row = pn.Row(top_selector, mid_plot)
+bot_row = pn.Row(mid_selector, download_button)
+# footer = pn.pane.JSON(data_list, width=400)
+
+header = """
+# Metadata viewer
+
+This app steps through all of the metadata stored in DocDB and checks
+whether every dictionary key is present or absent (null)
+"""
+
+header_pane = pn.pane.Markdown(header)
+
+# Put everything in a column and buffer it
+main_col = pn.Column(header_pane, top_row, second_row, bot_row)
+pn.Row(pn.layout.HSpacer(), main_col, pn.layout.HSpacer()).servable()
