@@ -21,7 +21,7 @@ dependencies = [
     'panel',
     'altair',
     'aind-data-access-api[docdb]',
-    'watchfiles',
+    'flask',
 ]
 
 [project.optional-dependencies]
@@ -32,7 +32,8 @@ dev = [
     'interrogate',
     'isort',
     'Sphinx',
-    'furo'
+    'furo',
+    'watchfiles',
 ]
 
 [tool.setuptools.packages.find]
