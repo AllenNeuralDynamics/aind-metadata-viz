@@ -10,6 +10,13 @@ from aind_metadata_viz.docdb import get_all
 pn.extension('vega')
 pn.extension(design='material')
 
+color_options = {
+    "default": ["grey", "red"],
+    "lemonade": ["yellow", "pink"]
+}
+
+colors = color_options[pn.state.location.query_params['color']] if 'color' in pn.state.location.query_params else color_options['default']
+
 data_list = get_all()
 
 # headers = ["_id", "name", "created", "location"]
@@ -88,7 +95,7 @@ def build_top():
         y=alt.Y('sum:Q', title='Data assets', axis=alt.Axis(grid=False)),
         color=alt.Color('status:N', 
                         scale=alt.Scale(domain=['present', 'absent'],
-                                        range=['grey', 'red']),
+                                        range=colors),
                         legend=None)
     ).properties(
         width=400
@@ -96,7 +103,7 @@ def build_top():
 
     legend = alt.Chart(pd.DataFrame({
         'status': ['File present', 'File absent'],
-        'color': ['grey', 'red'],
+        'color': colors,
         'x': [0, 0],
         'y': [15, 0]
     })).mark_text(
@@ -133,36 +140,35 @@ def build_csv(file, field):
     return sio.getvalue()
 
 
+js_pane = pn.pane.HTML("", height=0, width=0).servable()
+
+
 def build_csv_jscode(event):
     csv = build_csv(top_selector.value, mid_selector.value)
+    csv_escaped = csv.replace('\n', '\\n').replace('"', '\\"')  # Escape newlines and double quotes
 
     js_code = f"""
-    console.log({csv});
-    const text = "{csv}";
-    const blob = new Blob([text], {{ type: 'text/plain' }});
+console.log('here');
+var text = "{csv_escaped}";
+var blob = new Blob([text], {{ type: 'text/plain' }});
 
-    // Generate a URL for the Blob
-    const url = window.URL.createObjectURL(blob);
+var url = window.URL.createObjectURL(blob);
 
-    // Create a temporary anchor element
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'myfile.txt';  // The name of the file to be downloaded
+var a = document.createElement('a');
+a.href = url;
+a.download = 'missing-metadata.csv';
 
-    // Append the anchor to the body (not visible to the user)
-    document.body.appendChild(a);
+document.body.appendChild(a);
 
-    // Programmatically click the anchor to trigger the download
-    a.click();
+a.click();
 
-    // Remove the anchor from the document
-    document.body.removeChild(a);
+document.body.removeChild(a);
 
-    // Revoke the URL to free up resources
-    window.URL.revokeObjectURL(url);
-    """
-
-    return js_code
+window.URL.revokeObjectURL(url);
+"""
+    # it's not clear why this extra clear is needed, but it's necessary for the download to work
+    js_pane.object = ''
+    js_pane.object = f'<script>{js_code}</script>'
 
 
 top_selector = pn.widgets.Select(name='Select file:',
@@ -176,11 +182,6 @@ pn.state.location.sync(mid_selector, {'value': 'field'})
 
 download_button = pn.widgets.Button(name='Download')
 download_button.on_click(build_csv_jscode)
-
-# download_button = pn.widgets.FileDownload(filename='missing_metadata.csv',
-#                                           button_type='success',
-#                                           auto=False,
-#                                           callback=pn.bind(build_csv, top_selector, mid_selector))
 
 
 def build_mid(selected):
@@ -201,7 +202,7 @@ def build_mid(selected):
         y=alt.Y('sum:Q', title='Data assets', axis=alt.Axis(grid=False)),
         color=alt.Color('status:N', 
                         scale=alt.Scale(domain=['present', 'absent'],
-                                        range=['grey', 'red']),
+                                        range=colors),
                         legend=None)
     ).properties(
         width=400
@@ -209,7 +210,7 @@ def build_mid(selected):
 
     legend = alt.Chart(pd.DataFrame({
         'status': ['File present', 'File absent'],
-        'color': ['grey', 'red'],
+        'color': colors,
         'x': [0, 0],
         'y': [15, 0]
     })).mark_text(
