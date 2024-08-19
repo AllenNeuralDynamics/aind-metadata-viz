@@ -49,13 +49,15 @@ class TestApp(unittest.TestCase):
 
     def test_check_present(self):
         """Test the check_present function"""
-
         self.assertFalse(check_present("test1", self.dict))
         self.assertFalse(check_present("test2", self.dict))
         self.assertFalse(check_present("test3", self.dict))
         self.assertFalse(check_present("test4", self.dict))
 
         self.assertTrue(check_present("test5", self.dict))
+        self.assertTrue(check_present("test6", self.dict))
+        self.assertTrue(check_present("test7", self.dict))
+        self.assertTrue(check_present("test8", self.dict))
 
     def test_process_present_dict(self):
         """Test the process_present_dict function"""
