@@ -1,4 +1,3 @@
-
 def check_present(key: str, object: dict):
     """Return true if the value of a key exists and is not None, or any of '' [] {} in a JSON object
 
@@ -9,7 +8,14 @@ def check_present(key: str, object: dict):
     object : dict
         Dictionary
     """
-    return object[key] is not None and object[key] != "" and object[key] != [] and object[key] != {} if key in object else False
+    return (
+        object[key] is not None
+        and object[key] != ""
+        and object[key] != []
+        and object[key] != {}
+        if key in object
+        else False
+    )
 
 
 def process_present_dict(data: dict, expected_fields: list):

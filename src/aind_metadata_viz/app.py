@@ -1,4 +1,5 @@
 import panel as pn
+
 # import param
 import pandas as pd
 import altair as alt
@@ -6,24 +7,36 @@ import altair as alt
 from io import StringIO
 
 from aind_metadata_viz.docdb import get_all
-from aind_metadata_viz.metadata_helpers import process_present_list, check_present
+from aind_metadata_viz.metadata_helpers import (
+    process_present_list,
+    check_present,
+)
 
-pn.extension('vega')
-pn.extension(design='material')
+pn.extension("vega")
+pn.extension(design="material")
 
-color_options = {
-    "default": ["grey", "red"],
-    "lemonade": ["yellow", "pink"]
-}
+color_options = {"default": ["grey", "red"], "lemonade": ["yellow", "pink"]}
 
-colors = color_options[pn.state.location.query_params['color']] if 'color' in pn.state.location.query_params else color_options['default']
+colors = (
+    color_options[pn.state.location.query_params["color"]]
+    if "color" in pn.state.location.query_params
+    else color_options["default"]
+)
 
 data_list = get_all()
 
 # headers = ["_id", "name", "created", "location"]
-expected_files = ["data_description", "acquisition", "procedures",
-                  "subject", "instrument", "processing",
-                  "rig", "session", "metadata"]
+expected_files = [
+    "data_description",
+    "acquisition",
+    "procedures",
+    "subject",
+    "instrument",
+    "processing",
+    "rig",
+    "session",
+    "metadata",
+]
 
 
 # class Settings(param.Parameterized):
@@ -48,8 +61,8 @@ def compute_count_true(df):
     df : _type_
         _description_
     """
-    sum_df = df.sum().to_frame(name='present')
-    sum_df['absent'] = df.shape[0] - sum_df['present']
+    sum_df = df.sum().to_frame(name="present")
+    sum_df["absent"] = df.shape[0] - sum_df["present"]
 
     return sum_df
 
@@ -60,44 +73,55 @@ def build_top():
 
     sum_df = compute_count_true(df)
     # convert to long form
-    sum_longform_df = sum_df.reset_index().melt(id_vars='index', var_name='status', value_name='sum')
-
-    chart = alt.Chart(sum_longform_df).mark_bar().encode(
-        x=alt.X('index:N', title=None, axis=alt.Axis(grid=False)),
-        y=alt.Y('sum:Q', title='Data assets', axis=alt.Axis(grid=False)),
-        color=alt.Color('status:N', 
-                        scale=alt.Scale(domain=['present', 'absent'],
-                                        range=colors),
-                        legend=None)
-    ).properties(
-        width=400
+    sum_longform_df = sum_df.reset_index().melt(
+        id_vars="index", var_name="status", value_name="sum"
     )
 
-    legend = alt.Chart(pd.DataFrame({
-        'status': ['File present', 'File absent'],
-        'color': colors,
-        'x': [0, 0],
-        'y': [15, 0]
-    })).mark_text(
-        align='left',
-        dx=10
-    ).encode(
-        text=alt.Text('status:N'),
-        color=alt.Color('color:N', scale=None),
-        x=alt.value(410),  # Adjust position
-        y=alt.Y('y:Q', scale=None)
+    chart = (
+        alt.Chart(sum_longform_df)
+        .mark_bar()
+        .encode(
+            x=alt.X("index:N", title=None, axis=alt.Axis(grid=False)),
+            y=alt.Y("sum:Q", title="Data assets", axis=alt.Axis(grid=False)),
+            color=alt.Color(
+                "status:N",
+                scale=alt.Scale(domain=["present", "absent"], range=colors),
+                legend=None,
+            ),
+        )
+        .properties(width=400)
+    )
+
+    legend = (
+        alt.Chart(
+            pd.DataFrame(
+                {
+                    "status": ["File present", "File absent"],
+                    "color": colors,
+                    "x": [0, 0],
+                    "y": [15, 0],
+                }
+            )
+        )
+        .mark_text(align="left", dx=10)
+        .encode(
+            text=alt.Text("status:N"),
+            color=alt.Color("color:N", scale=None),
+            x=alt.value(410),  # Adjust position
+            y=alt.Y("y:Q", scale=None),
+        )
     )
     return pn.panel(chart + legend)
 
 
 def build_csv(file, field):
-    # For everybody who is missing the currently active file/field 
-    id_fields = ['name', '_id', 'location', 'creation']
+    # For everybody who is missing the currently active file/field
+    id_fields = ["name", "_id", "location", "creation"]
 
     df_data = []
     for data in data_list:
         if not data[file] is None:
-            if mid_selector.value == ' ' or check_present(field, data[file]):
+            if mid_selector.value == " " or check_present(field, data[file]):
                 id_data = {}
                 for id_field in id_fields:
                     if id_field in data:
@@ -118,12 +142,14 @@ js_pane = pn.pane.HTML("", height=0, width=0).servable()
 
 def build_csv_jscode(event):
     csv = build_csv(top_selector.value, mid_selector.value)
-    csv_escaped = csv.replace('\n', '\\n').replace('"', '\\"')  # Escape newlines and double quotes
+    csv_escaped = csv.replace("\n", "\\n").replace(
+        '"', '\\"'
+    )  # Escape newlines and double quotes
 
-    if not mid_selector.value == ' ':
-        filename = f'{top_selector.value}-{mid_selector.value}-missing.csv'
+    if not mid_selector.value == " ":
+        filename = f"{top_selector.value}-{mid_selector.value}-missing.csv"
     else:
-        filename = f'{top_selector.value}-missing.csv'
+        filename = f"{top_selector.value}-missing.csv"
 
     js_code = f"""
 console.log('here');
@@ -145,26 +171,25 @@ document.body.removeChild(a);
 window.URL.revokeObjectURL(url);
 """
     # it's not clear why this extra clear is needed, but it's necessary for the download to work
-    js_pane.object = ''
-    js_pane.object = f'<script>{js_code}</script>'
-
-top_selector = pn.widgets.Select(name='Select file:',
-                                      options=expected_files)
-pn.state.location.sync(top_selector, {'value': 'file'})
-
-mid_selector = pn.widgets.Select(name='Sub-select for:',
-                                      options=[])
-pn.state.location.sync(mid_selector, {'value': 'field'})
+    js_pane.object = ""
+    js_pane.object = f"<script>{js_code}</script>"
 
 
-download_button = pn.widgets.Button(name='Download')
+top_selector = pn.widgets.Select(name="Select file:", options=expected_files)
+pn.state.location.sync(top_selector, {"value": "file"})
+
+mid_selector = pn.widgets.Select(name="Sub-select for:", options=[])
+pn.state.location.sync(mid_selector, {"value": "field"})
+
+
+download_button = pn.widgets.Button(name="Download")
 download_button.on_click(build_csv_jscode)
 
 
 def build_mid(selected):
     mid_list = []
     for data in data_list:
-        if not data[selected]==None:
+        if not data[selected] == None:
             mid_list.append(data[selected])
 
     processed = process_present_list(mid_list, mid_list[0].keys())
@@ -172,41 +197,52 @@ def build_mid(selected):
 
     sum_df = compute_count_true(df)
     # convert to long form
-    sum_longform_df = sum_df.reset_index().melt(id_vars='index', var_name='status', value_name='sum')
-
-    chart = alt.Chart(sum_longform_df).mark_bar().encode(
-        x=alt.X('index:N', title=None, axis=alt.Axis(grid=False)),
-        y=alt.Y('sum:Q', title='Data assets', axis=alt.Axis(grid=False)),
-        color=alt.Color('status:N', 
-                        scale=alt.Scale(domain=['present', 'absent'],
-                                        range=colors),
-                        legend=None)
-    ).properties(
-        width=400
+    sum_longform_df = sum_df.reset_index().melt(
+        id_vars="index", var_name="status", value_name="sum"
     )
 
-    legend = alt.Chart(pd.DataFrame({
-        'status': ['File present', 'File absent'],
-        'color': colors,
-        'x': [0, 0],
-        'y': [15, 0]
-    })).mark_text(
-        align='left',
-        dx=10
-    ).encode(
-        text=alt.Text('status:N'),
-        color=alt.Color('color:N', scale=None),
-        x=alt.value(410),  # Adjust position
-        y=alt.Y('y:Q', scale=None)
+    chart = (
+        alt.Chart(sum_longform_df)
+        .mark_bar()
+        .encode(
+            x=alt.X("index:N", title=None, axis=alt.Axis(grid=False)),
+            y=alt.Y("sum:Q", title="Data assets", axis=alt.Axis(grid=False)),
+            color=alt.Color(
+                "status:N",
+                scale=alt.Scale(domain=["present", "absent"], range=colors),
+                legend=None,
+            ),
+        )
+        .properties(width=400)
+    )
+
+    legend = (
+        alt.Chart(
+            pd.DataFrame(
+                {
+                    "status": ["File present", "File absent"],
+                    "color": colors,
+                    "x": [0, 0],
+                    "y": [15, 0],
+                }
+            )
+        )
+        .mark_text(align="left", dx=10)
+        .encode(
+            text=alt.Text("status:N"),
+            color=alt.Color("color:N", scale=None),
+            x=alt.value(410),  # Adjust position
+            y=alt.Y("y:Q", scale=None),
+        )
     )
 
     # Also update the selected list
-    option_list = [' '] + list(mid_list[0].keys())
+    option_list = [" "] + list(mid_list[0].keys())
     mid_selector.options = option_list
 
     return pn.panel(chart + legend)
 
-    
+
 top_plot = build_top()
 mid_plot = pn.bind(build_mid, selected=top_selector)
 # Setup the rows
