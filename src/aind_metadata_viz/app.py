@@ -39,6 +39,19 @@ expected_files = ["data_description", "acquisition", "procedures",
 #                                   'selected_field': QUERYSTR_FIELD})
 
 
+def check_present(key, object):
+    """Return true if the value of a key exists and is not None, or any of '' [] {} in a JSON object
+
+    Parameters
+    ----------
+    field : string
+        Key
+    object : dict
+        Dictionary
+    """
+    return key is not None and key != "" and key != [] and key != {} if key in object else False
+
+
 def process_present(data_list, expected_fields):
     """Process a data JSON
 
@@ -54,18 +67,7 @@ def process_present(data_list, expected_fields):
     _type_
         _description_
     """
-
-    output = []
-    
-    for data in data_list:
-        present = {}
-        # For each data asset, check if the expected files are present or null
-        for field in expected_fields:
-            present[field] = not (data[field] == None) if field in data.keys() else False
-
-        output.append(present)
-
-    return output
+    return [{check_present(field, data) for field in expected_fields} for data in data_list]
 
 
 def compute_count_true(df):
@@ -119,12 +121,13 @@ def build_top():
 
 
 def build_csv(file, field):
+    # For everybody who is missing the currently active file/field 
     id_fields = ['name', '_id', 'location', 'creation']
 
     df_data = []
     for data in data_list:
         if not data[file] is None:
-            if mid_selector.value == ' ' or not field in data[file] or data[file][field] is None:
+            if mid_selector.value == ' ' or check_present(field, data[file]):
                 id_data = {}
                 for id_field in id_fields:
                     if id_field in data:
