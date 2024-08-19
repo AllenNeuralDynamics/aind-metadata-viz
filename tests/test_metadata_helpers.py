@@ -1,45 +1,55 @@
 """Test the main app code"""
 
 import unittest
-from aind_metadata_viz.metadata_helpers import check_present, process_present_dict, process_present_list
+from aind_metadata_viz.metadata_helpers import (
+    check_present,
+    process_present_dict,
+    process_present_list,
+)
 
 
 class TestApp(unittest.TestCase):
     """Test main app"""
 
     def setUp(self) -> None:
-        self.dict = {"test1": None,
-                     "test2": "",
-                     "test3": {},
-                     "test4": [],
-                     "test5": 'actual data',
-                     'test6': 1,
-                     'test7': {'actual key': 'actual value'},
-                     'test8': object}
-        self.expected_fields = ['test1',
-                                'test2',
-                                'test3',
-                                'test4',
-                                'test5',
-                                'test6',
-                                'test7',
-                                'test8',
-                                'meow']
-        self.expected_out = {'test1': False,
-                             'test2': False,
-                             "test3": False,
-                             "test4": False,
-                             "test5": True,
-                             "test6": True,
-                             "test7": True,
-                             "test8": True,
-                             'meow': False}
+        self.dict = {
+            "test1": None,
+            "test2": "",
+            "test3": {},
+            "test4": [],
+            "test5": "actual data",
+            "test6": 1,
+            "test7": {"actual key": "actual value"},
+            "test8": object,
+        }
+        self.expected_fields = [
+            "test1",
+            "test2",
+            "test3",
+            "test4",
+            "test5",
+            "test6",
+            "test7",
+            "test8",
+            "meow",
+        ]
+        self.expected_out = {
+            "test1": False,
+            "test2": False,
+            "test3": False,
+            "test4": False,
+            "test5": True,
+            "test6": True,
+            "test7": True,
+            "test8": True,
+            "meow": False,
+        }
 
         return super().setUp()
 
     def test_check_present(self):
         """Test the check_present function"""
-        
+
         self.assertFalse(check_present("test1", self.dict))
         self.assertFalse(check_present("test2", self.dict))
         self.assertFalse(check_present("test3", self.dict))
