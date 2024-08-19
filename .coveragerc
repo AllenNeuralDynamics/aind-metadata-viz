@@ -1,0 +1,4 @@
+[run]
+omit =
+    src/aind_metadata_viz/app.py
+    src/aind_metadata_viz/flask_proxy.py
