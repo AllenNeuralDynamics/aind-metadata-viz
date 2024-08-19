@@ -12,8 +12,28 @@ class TestApp(unittest.TestCase):
                      "test2": "",
                      "test3": {},
                      "test4": [],
-                     "test5": 'actual data'}
-        self.expected_fields = ['test1', 'test2', 'test3', 'test4', 'test5', 'meow']
+                     "test5": 'actual data',
+                     'test6': 1,
+                     'test7': {'actual key': 'actual value'},
+                     'test8': object}
+        self.expected_fields = ['test1',
+                                'test2',
+                                'test3',
+                                'test4',
+                                'test5',
+                                'test6',
+                                'test7',
+                                'test8',
+                                'meow']
+        self.expected_out = {'test1': False,
+                             'test2': False,
+                             "test3": False,
+                             "test4": False,
+                             "test5": True,
+                             "test6": True,
+                             "test7": True,
+                             "test8": True,
+                             'meow': False}
 
         return super().setUp()
 
@@ -30,27 +50,15 @@ class TestApp(unittest.TestCase):
     def test_process_present_dict(self):
         """Test the process_present_dict function"""
         out_test = process_present_dict(self.dict, self.expected_fields)
-        out = {'test1': False,
-               'test2': False,
-               "test3": False,
-               "test4": False,
-               "test5": True,
-               'meow': False}
 
-        self.assertEqual(out, out_test)
+        self.assertEqual(self.expected_out, out_test)
 
     def test_process_present(self):
         """Test that process runs properly on a list"""
         data_list = [self.dict, self.dict]
-        out = {'test1': False,
-               'test2': False,
-               "test3": False,
-               "test4": False,
-               "test5": True,
-               'meow': False}
 
         processed_list = process_present_list(data_list, self.expected_fields)
-        out_list = [out, out]
+        out_list = [self.expected_out, self.expected_out]
 
         self.assertEqual(processed_list, out_list)
 
