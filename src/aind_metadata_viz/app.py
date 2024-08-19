@@ -6,6 +6,7 @@ import altair as alt
 from io import StringIO
 
 from aind_metadata_viz.docdb import get_all
+from aind_metadata_viz.metadata_helpers import process_present_list, check_present
 
 pn.extension('vega')
 pn.extension(design='material')
@@ -39,37 +40,6 @@ expected_files = ["data_description", "acquisition", "procedures",
 #                                   'selected_field': QUERYSTR_FIELD})
 
 
-def check_present(key, object):
-    """Return true if the value of a key exists and is not None, or any of '' [] {} in a JSON object
-
-    Parameters
-    ----------
-    field : string
-        Key
-    object : dict
-        Dictionary
-    """
-    return key is not None and key != "" and key != [] and key != {} if key in object else False
-
-
-def process_present(data_list, expected_fields):
-    """Process a data JSON
-
-    Parameters
-    ----------
-    data_list : _type_
-        _description_
-    expected_files : _type_
-        _description_
-
-    Returns
-    -------
-    _type_
-        _description_
-    """
-    return [{check_present(field, data) for field in expected_fields} for data in data_list]
-
-
 def compute_count_true(df):
     """For each column, compute the count of true values
 
@@ -85,7 +55,7 @@ def compute_count_true(df):
 
 
 def build_top():
-    processed = process_present(data_list, expected_files)
+    processed = process_present_list(data_list, expected_files)
     df = pd.DataFrame(processed, columns=expected_files)
 
     sum_df = compute_count_true(df)
@@ -197,7 +167,7 @@ def build_mid(selected):
         if not data[selected]==None:
             mid_list.append(data[selected])
 
-    processed = process_present(mid_list, mid_list[0].keys())
+    processed = process_present_list(mid_list, mid_list[0].keys())
     df = pd.DataFrame(processed, columns=mid_list[0].keys())
 
     sum_df = compute_count_true(df)
