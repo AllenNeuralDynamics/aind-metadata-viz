@@ -1,5 +1,6 @@
 def check_present(key: str, object: dict):
-    """Return true if the value of a key exists and is not None, or any of '' [] {} in a JSON object
+    """Return true if the value of a key exists and is not None, or any of
+    '' [] {} in a JSON object
 
     Parameters
     ----------

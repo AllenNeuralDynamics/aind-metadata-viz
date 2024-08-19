@@ -44,7 +44,8 @@ expected_files = [
 #     selected_field = param.String(default=None)
 
 
-# Deal with setting up settings -- check first if we need to pull from query string
+# Deal with setting up settings -- check first if we need to pull from
+# query string
 # QUERYSTR_FILE = 'file'
 # QUERYSTR_FIELD = 'field'
 # settings = Settings()
@@ -170,7 +171,8 @@ document.body.removeChild(a);
 
 window.URL.revokeObjectURL(url);
 """
-    # it's not clear why this extra clear is needed, but it's necessary for the download to work
+    # it's not clear why this extra clear is needed, but it's
+    #  necessary for the download to work
     js_pane.object = ""
     js_pane.object = f"<script>{js_code}</script>"
 
@@ -189,7 +191,7 @@ download_button.on_click(build_csv_jscode)
 def build_mid(selected):
     mid_list = []
     for data in data_list:
-        if not data[selected] == None:
+        if data[selected] is not None:
             mid_list.append(data[selected])
 
     processed = process_present_list(mid_list, mid_list[0].keys())
