@@ -16,7 +16,7 @@ pn.extension(design="material")
 pn.extension("vega")
 alt.themes.enable("ggplot2")
 
-color_options = {"default": ["grey", "red"], "lemonade": ["yellow", "pink"]}
+color_options = {"default": ["grey", "red"], "lemonade": ["#FFEF00", "pink"]}
 
 colors = (
     color_options[pn.state.location.query_params["color"]]
@@ -227,10 +227,10 @@ def build_mid(selected):
     return pn.pane.Vega(chart)
 
 
-header = """
+header = f"""
 # Missing metadata viewer
 
-This app steps through all of the metadata stored in DocDB and checks whether every dictionary key's value is <span style="color:grey">present</span> or <span style="color:red">missing</span>
+This app steps through all of the metadata stored in DocDB and checks whether every dictionary key's value is <span style="color:{colors[0]}">present</span> or <span style="color:{colors[1]}">missing</span>
 """
 
 header_pane = pn.pane.Markdown(header)
