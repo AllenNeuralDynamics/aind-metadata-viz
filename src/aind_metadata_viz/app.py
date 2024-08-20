@@ -12,8 +12,9 @@ from aind_metadata_viz.metadata_helpers import (
     check_present,
 )
 
-pn.extension("vega")
 pn.extension(design="material")
+pn.extension("vega")
+alt.themes.enable("ggplot2")
 
 color_options = {"default": ["grey", "red"], "lemonade": ["yellow", "pink"]}
 
@@ -83,36 +84,22 @@ def build_top():
         .mark_bar()
         .encode(
             x=alt.X("index:N", title=None, axis=alt.Axis(grid=False)),
-            y=alt.Y("sum:Q", title="Data assets", axis=alt.Axis(grid=False)),
+            y=alt.Y(
+                "sum:Q",
+                title="Metadata assets (count)",
+                axis=alt.Axis(grid=False),
+            ),
             color=alt.Color(
                 "status:N",
                 scale=alt.Scale(domain=["present", "absent"], range=colors),
                 legend=None,
             ),
         )
-        .properties(width=400)
     )
 
-    legend = (
-        alt.Chart(
-            pd.DataFrame(
-                {
-                    "status": ["File present", "File absent"],
-                    "color": colors,
-                    "x": [0, 0],
-                    "y": [15, 0],
-                }
-            )
-        )
-        .mark_text(align="left", dx=10)
-        .encode(
-            text=alt.Text("status:N"),
-            color=alt.Color("color:N", scale=None),
-            x=alt.value(410),  # Adjust position
-            y=alt.Y("y:Q", scale=None),
-        )
-    )
-    return pn.panel(chart + legend)
+    pane = pn.pane.Vega(chart)
+
+    return pane
 
 
 def build_csv(file, field):
@@ -177,10 +164,12 @@ window.URL.revokeObjectURL(url);
     js_pane.object = f"<script>{js_code}</script>"
 
 
-top_selector = pn.widgets.Select(name="Select file:", options=expected_files)
+top_selector = pn.widgets.Select(
+    name="Select metadata file:", options=expected_files
+)
 pn.state.location.sync(top_selector, {"value": "file"})
 
-mid_selector = pn.widgets.Select(name="Sub-select for:", options=[])
+mid_selector = pn.widgets.Select(name="Sub-select for field:", options=[])
 pn.state.location.sync(mid_selector, {"value": "field"})
 
 
@@ -215,53 +204,31 @@ def build_mid(selected):
                 legend=None,
             ),
         )
-        .properties(width=400)
-    )
-
-    legend = (
-        alt.Chart(
-            pd.DataFrame(
-                {
-                    "status": ["File present", "File absent"],
-                    "color": colors,
-                    "x": [0, 0],
-                    "y": [15, 0],
-                }
-            )
-        )
-        .mark_text(align="left", dx=10)
-        .encode(
-            text=alt.Text("status:N"),
-            color=alt.Color("color:N", scale=None),
-            x=alt.value(410),  # Adjust position
-            y=alt.Y("y:Q", scale=None),
-        )
     )
 
     # Also update the selected list
     option_list = [" "] + list(mid_list[0].keys())
     mid_selector.options = option_list
 
-    return pn.panel(chart + legend)
+    return pn.panel(chart)
 
-
-top_plot = build_top()
-mid_plot = pn.bind(build_mid, selected=top_selector)
-# Setup the rows
-top_row = pn.Row(top_plot)
-second_row = pn.Row(top_selector, mid_plot)
-bot_row = pn.Row(mid_selector, download_button)
-# footer = pn.pane.JSON(data_list, width=400)
 
 header = """
-# Metadata viewer
+# Missing metadata viewer
 
-This app steps through all of the metadata stored in DocDB and checks
-whether every dictionary key is present or absent (null)
+This app steps through all of the metadata stored in DocDB and checks whether every dictionary key's value is <span style="color:grey">present</span> or <span style="color:red">missing</span>
 """
 
 header_pane = pn.pane.Markdown(header)
 
+# Left column (controls)
+left_col = pn.Column(
+    header_pane, top_selector, mid_selector, download_button, width=400
+)
+
+mid_plot = pn.bind(build_mid, selected=top_selector)
+
 # Put everything in a column and buffer it
-main_col = pn.Column(header_pane, top_row, second_row, bot_row)
-pn.Row(pn.layout.HSpacer(), main_col, pn.layout.HSpacer()).servable()
+main_col = pn.Column(build_top, mid_plot, sizing_mode="stretch_width")
+
+pn.Row(left_col, main_col, pn.layout.HSpacer()).servable()
