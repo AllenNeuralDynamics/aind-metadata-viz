@@ -26,7 +26,6 @@ colors = (
 
 data_list = get_all()
 
-# headers = ["_id", "name", "created", "location"]
 expected_files = [
     "data_description",
     "acquisition",
@@ -38,21 +37,6 @@ expected_files = [
     "session",
     "metadata",
 ]
-
-
-# class Settings(param.Parameterized):
-#     selected_file = param.String(default=None)
-#     selected_field = param.String(default=None)
-
-
-# Deal with setting up settings -- check first if we need to pull from
-# query string
-# QUERYSTR_FILE = 'file'
-# QUERYSTR_FIELD = 'field'
-# settings = Settings()
-
-# pn.state.location.sync(settings, {'selected_file': QUERYSTR_FILE,
-#                                   'selected_field': QUERYSTR_FIELD})
 
 
 def compute_count_true(df):
