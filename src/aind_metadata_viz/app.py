@@ -102,14 +102,20 @@ def build_top():
     return pane
 
 
+missing_selector = pn.widgets.Select(name='Value state', options=['Missing', 'Present'])
+
+
 def build_csv(file, field):
     # For everybody who is missing the currently active file/field
     id_fields = ["name", "_id", "location", "creation"]
 
+    get_present = missing_selector.value == 'Present'
+
     df_data = []
     for data in data_list:
         if not data[file] is None:
-            if mid_selector.value == " " or check_present(field, data[file]):
+            if mid_selector.value == " " or check_present(field, data[file], check_present=get_present):
+                # This file/field combo is present/missing, get all the id information
                 id_data = {}
                 for id_field in id_fields:
                     if id_field in data:
@@ -134,13 +140,15 @@ def build_csv_jscode(event):
         '"', '\\"'
     )  # Escape newlines and double quotes
 
+    get_missing = missing_selector.value == 'Missing'
+    missing_text = 'missing' if get_missing else 'present'
+
     if not mid_selector.value == " ":
-        filename = f"{top_selector.value}-{mid_selector.value}-missing.csv"
+        filename = f"{top_selector.value}-{mid_selector.value}-{missing_text}.csv"
     else:
-        filename = f"{top_selector.value}-missing.csv"
+        filename = f"{top_selector.value}-{missing_text}.csv"
 
     js_code = f"""
-console.log('here');
 var text = "{csv_escaped}";
 var blob = new Blob([text], {{ type: 'text/plain' }});
 
@@ -210,7 +218,7 @@ def build_mid(selected):
     option_list = [" "] + list(mid_list[0].keys())
     mid_selector.options = option_list
 
-    return pn.panel(chart)
+    return pn.pane.Vega(chart)
 
 
 header = """
@@ -223,7 +231,7 @@ header_pane = pn.pane.Markdown(header)
 
 # Left column (controls)
 left_col = pn.Column(
-    header_pane, top_selector, mid_selector, download_button, width=400
+    header_pane, top_selector, mid_selector, missing_selector, download_button, width=400
 )
 
 mid_plot = pn.bind(build_mid, selected=top_selector)
