@@ -11,7 +11,7 @@ Create a virtual environment and install the package, then launch panel.
 python -m venv .venv
 source .venv/bin/activate (or .venv/bin/Scripts/activate on Windows)
 pip install -e .
-panel serve ./src/aind_metadata_viz/app.py --show --allow-websocket-origin=10.128.141.92:5006
+panel serve ./src/aind_metadata_viz/app.py --show
 ```
 
 ## Release
@@ -30,6 +30,17 @@ To restart
 ps aux | grep panel
 kill pid
 ./start_viz.sh
+```
+
+`start_viz.sh` is:
+```
+#!/bin/bash -x
+
+cd ~/aind-metadata-viz
+
+source .venv/bin/activate
+
+nohup panel serve ./src/aind_metadata_viz/app.py --allow-websocket-origin=10.12$
 ```
 
 The process (should) auto-restart on reboot. See `crontab -e`
