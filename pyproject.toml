@@ -21,6 +21,7 @@ dependencies = [
     'panel',
     'altair',
     'aind-data-access-api[docdb]',
+    'aind-data-schema-models',
     'flask',
 ]
 
