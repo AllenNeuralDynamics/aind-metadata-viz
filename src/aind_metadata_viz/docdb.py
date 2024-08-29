@@ -99,7 +99,7 @@ class Database(param.Parameterized):
         else:
             return self._data
 
-    def get_file_presence(self, files: list[str] = EXPECTED_FILES):
+    def get_file_presence(self, files: list = EXPECTED_FILES):
         """Get the presence of a list of files
 
         Parameters
