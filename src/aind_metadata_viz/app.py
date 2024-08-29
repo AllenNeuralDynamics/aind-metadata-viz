@@ -1,16 +1,7 @@
 import panel as pn
-
-# import param
-import pandas as pd
 import altair as alt
+from aind_metadata_viz import docdb
 
-from io import StringIO
-
-from aind_metadata_viz.docdb import get_all
-from aind_metadata_viz.metadata_helpers import (
-    process_present_list,
-    check_present,
-)
 
 pn.extension(design="material")
 pn.extension("vega")
@@ -24,44 +15,31 @@ colors = (
     else color_options["default"]
 )
 
-data_list = get_all()
+db = docdb.Database()
 
-expected_files = [
-    "data_description",
-    "acquisition",
-    "procedures",
-    "subject",
-    "instrument",
-    "processing",
-    "rig",
-    "session",
-    "metadata",
-]
+modality_selector = pn.widgets.Select(
+    name="Select modality:",
+    options=["all"] + docdb.MODALITIES
+)
 
+top_selector = pn.widgets.Select(
+    name="Select metadata file:", options=docdb.EXPECTED_FILES
+)
 
-def compute_count_true(df):
-    """For each column, compute the count of true values
+mid_selector = pn.widgets.Select(name="Sub-select for field:", options=[])
 
-    Parameters
-    ----------
-    df : _type_
-        _description_
-    """
-    sum_df = df.sum().to_frame(name="present")
-    sum_df["absent"] = df.shape[0] - sum_df["present"]
+missing_selector = pn.widgets.Select(
+    name="Value state", options=["Missing", "Present"]
+)
 
-    return sum_df
+pn.state.location.sync(modality_selector, {"value": "modality"})
+pn.state.location.sync(top_selector, {"value": "file"})
+pn.state.location.sync(mid_selector, {"value": "field"})
+pn.state.location.sync(missing_selector, {"value": "missing"})
 
 
-def build_top():
-    processed = process_present_list(data_list, expected_files)
-    df = pd.DataFrame(processed, columns=expected_files)
-
-    sum_df = compute_count_true(df)
-    # convert to long form
-    sum_longform_df = sum_df.reset_index().melt(
-        id_vars="index", var_name="status", value_name="sum"
-    )
+def file_present_chart():
+    sum_longform_df = db.get_file_presence()
 
     chart = (
         alt.Chart(sum_longform_df)
@@ -70,7 +48,7 @@ def build_top():
             x=alt.X("index:N", title=None, axis=alt.Axis(grid=False)),
             y=alt.Y(
                 "sum:Q",
-                title="Metadata assets (count)",
+                title="Metadata assets (n)",
                 axis=alt.Axis(grid=False),
             ),
             color=alt.Color(
@@ -86,44 +64,40 @@ def build_top():
     return pane
 
 
-missing_selector = pn.widgets.Select(
-    name="Value state", options=["Missing", "Present"]
-)
+def notfile_present_chart():
+    sum_longform_df = db.get_field_presence()
 
+    chart = (
+        alt.Chart(sum_longform_df)
+        .mark_bar()
+        .encode(
+            x=alt.X("index:N", title=None, axis=alt.Axis(grid=False)),
+            y=alt.Y(
+                "sum:Q",
+                title=None,
+                axis=alt.Axis(grid=False),
+            ),
+            color=alt.Color(
+                "status:N",
+                scale=alt.Scale(domain=["present", "absent"], range=colors),
+                legend=None,
+            ),
+        )
+    )
 
-def build_csv(file, field):
-    # For everybody who is missing the currently active file/field
-    id_fields = ["name", "_id", "location", "creation"]
+    pane = pn.pane.Vega(chart)
 
-    get_present = missing_selector.value == "Present"
-
-    df_data = []
-    for data in data_list:
-        if not data[file] is None:
-            if mid_selector.value == " " or check_present(
-                field, data[file], check_present=get_present
-            ):
-                # This file/field combo is present/missing, get all the id information
-                id_data = {}
-                for id_field in id_fields:
-                    if id_field in data:
-                        id_data[id_field] = data[id_field]
-                    else:
-                        id_data[id_field] = None
-                df_data.append(id_data)
-
-    df = pd.DataFrame(df_data)
-
-    sio = StringIO()
-    df.to_csv(sio, index=False)
-    return sio.getvalue()
+    return pane
 
 
 js_pane = pn.pane.HTML("", height=0, width=0).servable()
 
 
 def build_csv_jscode(event):
-    csv = build_csv(top_selector.value, mid_selector.value)
+    """
+    Create the javascript code and append it to the page.
+    """
+    csv = db.get_csv(top_selector.value, mid_selector.value, missing_selector.value)
     csv_escaped = csv.replace("\n", "\\n").replace(
         '"', '\\"'
     )  # Escape newlines and double quotes
@@ -162,40 +136,23 @@ window.URL.revokeObjectURL(url);
     js_pane.object = f"<script>{js_code}</script>"
 
 
-top_selector = pn.widgets.Select(
-    name="Select metadata file:", options=expected_files
-)
-pn.state.location.sync(top_selector, {"value": "file"})
-
-mid_selector = pn.widgets.Select(name="Sub-select for field:", options=[])
-pn.state.location.sync(mid_selector, {"value": "field"})
-
-
 download_button = pn.widgets.Button(name="Download")
 download_button.on_click(build_csv_jscode)
 
 
-def build_mid(selected):
-    mid_list = []
-    for data in data_list:
-        if data[selected] is not None:
-            mid_list.append(data[selected])
+def build_mid(selected_file, **args):
+    """
+    """
+    db.set_file(selected_file)
 
-    processed = process_present_list(mid_list, mid_list[0].keys())
-    df = pd.DataFrame(processed, columns=mid_list[0].keys())
-
-    sum_df = compute_count_true(df)
-    # convert to long form
-    sum_longform_df = sum_df.reset_index().melt(
-        id_vars="index", var_name="status", value_name="sum"
-    )
+    sum_longform_df = db.get_file_field_presence()
 
     chart = (
         alt.Chart(sum_longform_df)
         .mark_bar()
         .encode(
             x=alt.X("index:N", title=None, axis=alt.Axis(grid=False)),
-            y=alt.Y("sum:Q", title="Data assets", axis=alt.Axis(grid=False)),
+            y=alt.Y("sum:Q", title="Metadata assets (n)", axis=alt.Axis(grid=False)),
             color=alt.Color(
                 "status:N",
                 scale=alt.Scale(domain=["present", "absent"], range=colors),
@@ -205,7 +162,11 @@ def build_mid(selected):
     )
 
     # Also update the selected list
-    option_list = [" "] + list(mid_list[0].keys())
+    if len(db.mid_list) > 0:
+        option_list = [" "] + list(db.mid_list[0].keys())
+    else:
+        option_list = []
+
     mid_selector.options = option_list
 
     return pn.pane.Vega(chart)
@@ -222,6 +183,7 @@ header_pane = pn.pane.Markdown(header)
 # Left column (controls)
 left_col = pn.Column(
     header_pane,
+    modality_selector,
     top_selector,
     mid_selector,
     missing_selector,
@@ -229,9 +191,18 @@ left_col = pn.Column(
     width=400,
 )
 
-mid_plot = pn.bind(build_mid, selected=top_selector)
+
+def build_row(selected_modality):
+    db.modality_filter = selected_modality
+
+    return pn.Row(file_present_chart, notfile_present_chart)
+
+
+top_row = pn.bind(build_row, selected_modality=modality_selector)
+
+mid_plot = pn.bind(build_mid, selected_file=top_selector, selected_modality=modality_selector)
 
 # Put everything in a column and buffer it
-main_col = pn.Column(build_top, mid_plot, sizing_mode="stretch_width")
+main_col = pn.Column(top_row, mid_plot, sizing_mode="stretch_width")
 
 pn.Row(left_col, main_col, pn.layout.HSpacer()).servable()
