@@ -14,4 +14,3 @@ def compute_count_true(df):
         id_vars="index", var_name="status", value_name="sum"
     )
     return sum_longform_df
-

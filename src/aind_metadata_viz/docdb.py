@@ -2,11 +2,15 @@ from aind_data_access_api.document_db import MetadataDbClient
 import numpy as np
 import panel as pn
 import pandas as pd
+import param
 
 from io import StringIO
 
 from aind_data_schema_models.modalities import Modality
-from aind_metadata_viz.metadata_helpers import process_present_list, check_present
+from aind_metadata_viz.metadata_helpers import (
+    process_present_list,
+    check_present,
+)
 from aind_metadata_viz.utils import compute_count_true
 
 API_GATEWAY_HOST = "api.allenneuraldynamics.org"
@@ -24,35 +28,39 @@ docdb_api_client = MetadataDbClient(
 CACHE_RESET_SEC = 24 * 60 * 60
 
 # Ideally this wouldn't be hard-coded, but pulled from the aind-data-schema repo
-EXPECTED_FILES = sorted([
-    "data_description",
-    "acquisition",
-    "procedures",
-    "subject",
-    "instrument",
-    "processing",
-    "rig",
-    "session",
-    "metadata",
-])
+EXPECTED_FILES = sorted(
+    [
+        "data_description",
+        "acquisition",
+        "procedures",
+        "subject",
+        "instrument",
+        "processing",
+        "rig",
+        "session",
+        "metadata",
+    ]
+)
 
 # Ideally this wouldn't be hard-coded but pulled from the aind-data-schema-models repo
 MODALITIES = [mod().abbreviation for mod in Modality.ALL]
 
 
-class Database():
-    """Local representation of aind-data-schema metadata stored in a 
+class Database(param.Parameterized):
+    """Local representation of aind-data-schema metadata stored in a
     DocDB MongoDB instance
     """
+    derived_filter = param.Boolean(default=False)
 
-    def __init__(self,
-                 api_host=API_GATEWAY_HOST,
-                 database=DATABASE,
-                 collection=COLLECTION):
-        """Initialize
-        """
+    def __init__(
+        self,
+        api_host=API_GATEWAY_HOST,
+        database=DATABASE,
+        collection=COLLECTION,
+    ):
+        """Initialize"""
         # set attributes
-        self.modality_filter = "all"
+        self.modality_filter = param.String(default="all")
 
         # get data
         self._data = get_all()
@@ -62,15 +70,31 @@ class Database():
 
     @property
     def data_filtered(self):
-        if not self.modality_filter == "all":
+        mod_filter = not self.modality_filter == "all"
+
+        if mod_filter or self.param.derived_filter:
             # filter data
             filtered_list = []
+
             for data in self._data:
-                if data["data_description"] and "modality" in data["data_description"]:
-                    modality = data["data_description"]["modality"]
-                    
-                    if isinstance(modality, list) and any([mod["abbreviation"] == self.modality_filter for mod in modality]):
-                        filtered_list.append(data)
+                include: bool = True
+
+                if mod_filter and not (
+                        data["data_description"]
+                        and "modality" in data["data_description"]
+                        and isinstance(data["data_description"]["modality"], list)
+                        and any(
+                            mod["abbreviation"] == self.modality_filter
+                            for mod in data["data_description"]["modality"]
+                        )
+                ):
+                    include = False
+                
+                if self.derived_filter and data["name"].count('_') <= 3:
+                    include = False
+
+                if include:
+                    filtered_list.append(data)
             return filtered_list
         else:
             return self._data
@@ -89,13 +113,16 @@ class Database():
         return compute_count_true(df)
 
     def get_field_presence(self):
-        """Get the presence of fields at the top-level
-        """
+        """Get the presence of fields at the top-level"""
         if len(self.data_filtered) > 0:
-            fields = [item for item in list(self.data_filtered[0].keys()) if item not in EXPECTED_FILES]
+            fields = [
+                item
+                for item in list(self.data_filtered[0].keys())
+                if item not in EXPECTED_FILES
+            ]
         else:
             fields = []
-        
+
         return self.get_file_presence(files=fields)
 
     def set_file(self, file: str = EXPECTED_FILES[0]):
@@ -126,7 +153,9 @@ class Database():
         _type_
             _description_
         """
-        expected_fields = self.mid_list[0].keys() if len(self.mid_list) > 0 else []
+        expected_fields = (
+            self.mid_list[0].keys() if len(self.mid_list) > 0 else []
+        )
         processed = process_present_list(self.mid_list, expected_fields)
         df = pd.DataFrame(processed, columns=expected_fields)
 
