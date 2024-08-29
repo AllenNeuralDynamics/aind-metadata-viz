@@ -197,10 +197,10 @@ left_col = pn.Column(
     header_pane,
     modality_selector,
     top_selector,
+    pn.Row("Filter for derived assets:", derived_switch),
     download_pane,
     mid_selector,
     missing_selector,
-    pn.Row("Derived assets only:", derived_switch),
     download_button,
     width=400,
 )
