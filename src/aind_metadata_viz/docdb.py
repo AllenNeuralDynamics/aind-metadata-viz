@@ -38,7 +38,7 @@ EXPECTED_FILES = sorted(
         "processing",
         "rig",
         "session",
-        "metadata",
+        "quality_control",
     ]
 )
 
@@ -51,19 +51,18 @@ class Database(param.Parameterized):
     DocDB MongoDB instance
     """
     derived_filter = param.Boolean(default=False)
+    modality_filter = param.String(default="all")
 
     def __init__(
         self,
         api_host=API_GATEWAY_HOST,
         database=DATABASE,
         collection=COLLECTION,
+        test_mode=False,
     ):
         """Initialize"""
-        # set attributes
-        self.modality_filter = param.String(default="all")
-
         # get data
-        self._data = get_all()
+        self._data = get_all(test_mode=test_mode)
 
         # setup
         self.set_file()
@@ -82,7 +81,8 @@ class Database(param.Parameterized):
                 if mod_filter and not (
                         data["data_description"]
                         and "modality" in data["data_description"]
-                        and isinstance(data["data_description"]["modality"], list)
+                        and isinstance(data["data_description"]["modality"],
+                                       list)
                         and any(
                             mod["abbreviation"] == self.modality_filter
                             for mod in data["data_description"]["modality"]
@@ -137,7 +137,7 @@ class Database(param.Parameterized):
 
         self.mid_list = []
         for data in self.data_filtered:
-            if data[self.file] is not None:
+            if check_present(self.file, data):
                 self.mid_list.append(data[self.file])
 
     def get_file_field_presence(self):
