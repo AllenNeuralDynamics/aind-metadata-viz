@@ -49,3 +49,10 @@ class DocDBDatabaseTest(unittest.TestCase):
             self.db.set_file(file)
 
             self.assertEqual(len(self.db.mid_list), mid_len[i])
+
+    def test_derived(self):
+        """Test filtering for derived"""
+
+        self.db.derived_filter = True
+
+        self.assertEqual(len(self.db.data_filtered), 0)

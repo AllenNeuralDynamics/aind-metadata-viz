@@ -69,9 +69,10 @@ class Database(param.Parameterized):
 
     @property
     def data_filtered(self):
-        mod_filter = not self.modality_filter == "all"
+        mod_filter = not (self.modality_filter == "all")
+        derived_filter = self.derived_filter == True
 
-        if mod_filter or self.param.derived_filter:
+        if mod_filter or derived_filter:
             # filter data
             filtered_list = []
 
@@ -90,7 +91,7 @@ class Database(param.Parameterized):
                 ):
                     include = False
                 
-                if self.derived_filter and data["name"].count('_') <= 3:
+                if derived_filter and data["name"].count('_') <= 3:
                     include = False
 
                 if include:

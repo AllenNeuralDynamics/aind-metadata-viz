@@ -2,7 +2,6 @@ import panel as pn
 import altair as alt
 from aind_metadata_viz import docdb
 
-
 pn.extension(design="material")
 pn.extension("vega")
 alt.themes.enable("ggplot2")
@@ -228,4 +227,4 @@ mid_plot = pn.bind(
 # Put everything in a column and buffer it
 main_col = pn.Column(top_row, mid_plot, sizing_mode="stretch_width")
 
-pn.Row(left_col, main_col, pn.layout.HSpacer(), title="Metadata Viz").servable()
+pn.Row(left_col, main_col, pn.layout.HSpacer()).servable(title="Metadata Viz")
