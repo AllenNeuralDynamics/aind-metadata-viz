@@ -39,8 +39,9 @@ kill pid
 cd ~/aind-metadata-viz
 
 source .venv/bin/activate
+pip install -e .
 
-nohup panel serve ./src/aind_metadata_viz/app.py --allow-websocket-origin=10.12$
+nohup panel serve ./src/aind_metadata_viz/app.py --allow-websocket-origin=10.128.141.92:5006 > ~/logfile.log 2>&1 &
 ```
 
 The process (should) auto-restart on reboot. See `crontab -e`
