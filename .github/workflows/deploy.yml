@@ -1,0 +1,33 @@
+name: Deploy to VM
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+
+      - name: Add VM to known_hosts
+        run: |
+          ssh-keyscan -H ibs-davidf-vm2.corp.alleninstitute.org >> ~/.ssh/known_hosts
+
+      - name: Deploy application
+        run: |
+          ssh daniel.birman@ibs-davidf-vm2.corp.alleninstitute.org << 'EOF'
+            cd aind-metadata-viz
+            git pull
+            cd ~
+            ./start_viz.sh
+          EOF
