@@ -1,3 +1,5 @@
+from aind_data_schema.core.metadata import Metadata
+
 def check_present(key: str, object: dict, check_present: bool = True):
     """Return true if the value of a key exists and is not None, or any of
     '' [] {} in a JSON object
@@ -18,6 +20,17 @@ def check_present(key: str, object: dict, check_present: bool = True):
         else False
     )
     return present if check_present else not present
+
+
+def check_valid_metadata(json: str):
+    """Return true if the string is a valid aind metadata object
+
+    Parameters
+    ----------
+    json : str
+        json string generated from a Metadata.dump
+    """
+    return Metadata.model_validate_json(json)
 
 
 def process_present_dict(data: dict, expected_fields: list):
