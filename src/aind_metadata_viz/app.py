@@ -228,4 +228,4 @@ mid_plot = pn.bind(
 # Put everything in a column and buffer it
 main_col = pn.Column(top_row, mid_plot, sizing_mode="stretch_width")
 
-pn.Row(left_col, main_col, pn.layout.HSpacer()).servable()
+pn.Row(left_col, main_col, pn.layout.HSpacer(), title="Metadata Viz").servable()
