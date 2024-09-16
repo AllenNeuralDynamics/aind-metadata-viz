@@ -44,20 +44,96 @@ EXPECTED_FILES = sorted(
 
 # Ideally this wouldn't be hard-coded but pulled from the aind-data-schema-models repo
 MODALITIES = [mod().abbreviation for mod in Modality.ALL]
+EXPORT_FIELDS = ["_id", "location", "name", "creation", "subject.subject_id"]
+
+
+def _agg_key_existence(expected_keys: list[str] = EXPECTED_FILES,
+                         modality_filter: str = ""):
+    """Build an aggregation pipeline to check whether a set of keys exists and have non-empty values in the records in DocDB
+
+    An optional modality filter removes records that don't match that modality
+
+    Parameters
+    ----------
+    expected_keys : list[str], optional
+        _description_, by default EXPECTED_FILES
+    modality_filter : str, optional
+        _description_, by default None
+
+    Returns
+    -------
+    _type_
+        _description_
+    """
+    aggregation = []
+
+    # if modality_filter:
+    #     aggregation.append({
+    #         "$match": {
+    #             "data_description.modality": 
+    #         }
+    #     })
+
+    aggregation.append(
+        {
+            "$project": {fname: 1 for fname in expected_keys}
+        }
+    )
+
+    aggregation.append(
+        {
+            "$project": {fname: _existence_helper(fname) for fname in expected_keys}
+        }
+    )
+
+    # remove_id_dict = {"_id": 0}
+
+    aggregation.append(
+        {
+            "$project": {
+                "_id": 0,
+            }
+        }
+    )
+
+    return aggregation
+
+
+def _existence_helper(key: str):
+    return {
+        "$cond": [
+            {
+                "$and": [
+                    {"$ne": [{"$ifNull": [f"${key}", None]}, None]},
+                    {"$ne": [{"$ifNull": [f"${key}", None]}, ""]},
+                    {"$ne": [{"$ifNull": [f"${key}", None]}, []]},
+                    {"$ne": [{"$ifNull": [f"${key}", None]}, {}]}
+                ]
+            },
+            True,
+            False
+        ]
+    }
+
+
+def _query_export(file: str, field = None, derived = False, state_missing = True,
+                  export_fields: list[str] = EXPORT_FIELDS):
+    """Query the DocDB database for file/fields that are missing or present and export
+    a set of fields from these records
+    """
+    pass
 
 
 class Database(param.Parameterized):
     """Local representation of aind-data-schema metadata stored in a
     DocDB MongoDB instance
     """
-    derived_filter = param.Boolean(default=False)
     modality_filter = param.String(default="all")
+    file_filter = param.String(default="+")
+    derived_filter = param.Boolean(default=False)
 
     def __init__(
         self,
-        api_host=API_GATEWAY_HOST,
-        database=DATABASE,
-        collection=COLLECTION,
         test_mode=False,
     ):
         """Initialize"""
@@ -66,6 +142,16 @@ class Database(param.Parameterized):
 
         # setup
         self.set_file()
+
+    def query(self, test_mode=False):
+        """Query the DocDB database according to the current modality, file, and derived filters
+
+        Parameters
+        ----------
+        test_mode : bool, optional
+            _description_, by default False
+        """
+        pass
 
     @property
     def data_filtered(self):
@@ -108,8 +194,13 @@ class Database(param.Parameterized):
         files : list[str], optional
             List of expected metadata filenames, by default EXPECTED_FILES
         """
-        processed = process_present_list(self.data_filtered, files)
-        df = pd.DataFrame(processed, columns=files)
+        pipeline = _agg_key_existence(expected_keys=EXPECTED_FILES)
+
+        print(pipeline)
+        
+        key_existence = docdb_api_client.aggregate_docdb_records(pipeline=pipeline)
+
+        df = pd.DataFrame(key_existence, columns=files)
 
         return compute_count_true(df)
 
@@ -206,7 +297,7 @@ class Database(param.Parameterized):
 
 
 @pn.cache(ttl=CACHE_RESET_SEC)
-def get_all(test_mode=False):
+def get_all(test_mode=True):
     filter = {}
     limit = 0 if not test_mode else 10
     paginate_batch_size = 1000

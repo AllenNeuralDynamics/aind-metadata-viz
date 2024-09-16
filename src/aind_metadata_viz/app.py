@@ -66,28 +66,30 @@ def file_present_chart():
 
 
 def notfile_present_chart():
-    sum_longform_df = db.get_field_presence()
+    # sum_longform_df = db.get_field_presence()
 
-    chart = (
-        alt.Chart(sum_longform_df)
-        .mark_bar()
-        .encode(
-            x=alt.X("index:N", title=None, axis=alt.Axis(grid=False)),
-            y=alt.Y(
-                "sum:Q",
-                title=None,
-                axis=alt.Axis(grid=False),
-            ),
-            color=alt.Color(
-                "status:N",
-                scale=alt.Scale(domain=["present", "absent"], range=colors),
-                legend=None,
-            ),
-        )
-        .properties(title="Other fields")
-    )
+    # chart = (
+    #     alt.Chart(sum_longform_df)
+    #     .mark_bar()
+    #     .encode(
+    #         x=alt.X("index:N", title=None, axis=alt.Axis(grid=False)),
+    #         y=alt.Y(
+    #             "sum:Q",
+    #             title=None,
+    #             axis=alt.Axis(grid=False),
+    #         ),
+    #         color=alt.Color(
+    #             "status:N",
+    #             scale=alt.Scale(domain=["present", "absent"], range=colors),
+    #             legend=None,
+    #         ),
+    #     )
+    #     .properties(title="Other fields")
+    # )
 
-    pane = pn.pane.Vega(chart)
+    # pane = pn.pane.Vega(chart)
+
+    pane = pn.pane.Markdown("# todo2") 
 
     return pane
 
@@ -207,8 +209,6 @@ left_col = pn.Column(
 
 def build_row(selected_modality, derived_filter):
     db.modality_filter = selected_modality
-
-    print(derived_filter)
 
     return pn.Row(file_present_chart, notfile_present_chart)
 
