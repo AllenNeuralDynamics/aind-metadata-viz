@@ -50,6 +50,7 @@ class Database(param.Parameterized):
     """Local representation of aind-data-schema metadata stored in a
     DocDB MongoDB instance
     """
+
     modality_filter = param.String(default="all")
     derived_filter = param.String(default="All assets")
 
@@ -79,18 +80,23 @@ class Database(param.Parameterized):
                 include: bool = True
 
                 if mod_filter and not (
-                        data["data_description"]
-                        and "modality" in data["data_description"]
-                        and isinstance(data["data_description"]["modality"],
-                                       list)
-                        and any(
-                            mod["abbreviation"] == self.modality_filter
-                            for mod in data["data_description"]["modality"]
-                        )
+                    data["data_description"]
+                    and "modality" in data["data_description"]
+                    and isinstance(data["data_description"]["modality"], list)
+                    and any(
+                        mod["abbreviation"] == self.modality_filter
+                        for mod in data["data_description"]["modality"]
+                    )
                 ):
                     include = False
-                
-                if (self.derived_filter == "Raw" and data["name"].count('_') > 3) or (self.derived_filter == "Derived" and data["name"].count('_') <= 3):
+
+                if (
+                    self.derived_filter == "Raw"
+                    and data["name"].count("_") > 3
+                ) or (
+                    self.derived_filter == "Derived"
+                    and data["name"].count("_") <= 3
+                ):
                     include = False
 
                 if include:
@@ -197,7 +203,11 @@ class Database(param.Parameterized):
                             id_data[id_field] = None
 
                     # Get subject if available
-                    if "subject" in data and data["subject"] and "subject_id" in data["subject"]:
+                    if (
+                        "subject" in data
+                        and data["subject"]
+                        and "subject_id" in data["subject"]
+                    ):
                         id_data["subject_id"] = data["subject"]["subject_id"]
                     else:
                         id_data["subject_id"] = ""

@@ -31,7 +31,8 @@ missing_selector = pn.widgets.Select(
 )
 
 derived_selector = pn.widgets.Select(
-    name="Filter for:", options=["All assets", "Raw", "Derived"],
+    name="Filter for:",
+    options=["All assets", "Raw", "Derived"],
 )
 derived_selector.value = "All assets"
 
@@ -217,15 +218,17 @@ def build_row(selected_modality, derived_filter):
     return pn.Row(file_present_chart, notfile_present_chart)
 
 
-top_row = pn.bind(build_row,
-                  selected_modality=modality_selector,
-                  derived_filter=derived_selector)
+top_row = pn.bind(
+    build_row,
+    selected_modality=modality_selector,
+    derived_filter=derived_selector,
+)
 
 mid_plot = pn.bind(
     build_mid,
     selected_file=top_selector,
     selected_modality=modality_selector,
-    derived_filter=derived_selector
+    derived_filter=derived_selector,
 )
 
 # Put everything in a column and buffer it
