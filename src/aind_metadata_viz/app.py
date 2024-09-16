@@ -36,7 +36,7 @@ pn.state.location.sync(modality_selector, {"value": "modality"})
 pn.state.location.sync(top_selector, {"value": "file"})
 pn.state.location.sync(mid_selector, {"value": "field"})
 pn.state.location.sync(missing_selector, {"value": "missing"})
-
+pn.state.location.sync(derived_switch, {"value": "derived"})
 
 def file_present_chart():
     sum_longform_df = db.get_file_presence()
