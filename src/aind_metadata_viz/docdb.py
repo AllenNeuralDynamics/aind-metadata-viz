@@ -174,7 +174,7 @@ class Database(param.Parameterized):
         Returns
         -------
         csv
-            CSV file with name, _id, location, and creation date
+            CSV file with name, _id, location, creation date, and subject_id (if available)
         """
         # For everybody who is missing the currently active file/field
         id_fields = ["name", "_id", "location", "creation"]
@@ -195,6 +195,13 @@ class Database(param.Parameterized):
                             id_data[id_field] = data[id_field]
                         else:
                             id_data[id_field] = None
+
+                    # Get subject if available
+                    if "subject" in data and data["subject"] and "subject_id" in data["subject"]:
+                        id_data["subject_id"] = data["subject"]["subject_id"]
+                    else:
+                        id_data["subject_id"] = ""
+
                     df_data.append(id_data)
 
         df = pd.DataFrame(df_data)
