@@ -33,10 +33,10 @@ class DocDBDatabaseTest(unittest.TestCase):
 
     def test_filtered_ecephys(self):
         """Test ecephys filtering"""
-        self.db.modality_filter = 'ecephys'
+        self.db.modality_filter = "ecephys"
         data = self.db.data_filtered
 
-        ecephys_subjects = ['719093', '719093']
+        ecephys_subjects = ["719093", "719093"]
         subj_id = [dat["subject"]["subject_id"] for dat in data]
 
         self.assertEqual(subj_id, ecephys_subjects)
