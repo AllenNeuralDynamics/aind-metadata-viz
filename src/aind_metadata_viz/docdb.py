@@ -50,8 +50,8 @@ class Database(param.Parameterized):
     """Local representation of aind-data-schema metadata stored in a
     DocDB MongoDB instance
     """
-    derived_filter = param.Boolean(default=False)
     modality_filter = param.String(default="all")
+    derived_filter = param.String(default="All assets")
 
     def __init__(
         self,
@@ -70,9 +70,8 @@ class Database(param.Parameterized):
     @property
     def data_filtered(self):
         mod_filter = not (self.modality_filter == "all")
-        derived_filter = self.derived_filter == True
 
-        if mod_filter or derived_filter:
+        if mod_filter or not (self.derived_filter == "All assets"):
             # filter data
             filtered_list = []
 
@@ -91,7 +90,7 @@ class Database(param.Parameterized):
                 ):
                     include = False
                 
-                if derived_filter and data["name"].count('_') <= 3:
+                if (self.derived_filter == "Raw" and data["name"].count('_') > 3) or (self.derived_filter == "Derived" and data["name"].count('_') <= 3):
                     include = False
 
                 if include:

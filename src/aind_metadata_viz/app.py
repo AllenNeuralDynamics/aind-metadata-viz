@@ -30,13 +30,17 @@ missing_selector = pn.widgets.Select(
     name="Value state", options=["Missing", "Present"]
 )
 
-derived_switch = pn.widgets.Switch.from_param(db.param.derived_filter)
+derived_selector = pn.widgets.Select(
+    name="Filter for:", options=["All assets", "Raw", "Derived"],
+)
+derived_selector.value = "All assets"
 
 pn.state.location.sync(modality_selector, {"value": "modality"})
 pn.state.location.sync(top_selector, {"value": "file"})
 pn.state.location.sync(mid_selector, {"value": "field"})
 pn.state.location.sync(missing_selector, {"value": "missing"})
-pn.state.location.sync(derived_switch, {"value": "derived"})
+pn.state.location.sync(derived_selector, {"value": "derived"})
+
 
 def file_present_chart():
     sum_longform_df = db.get_file_presence()
@@ -144,9 +148,10 @@ download_button = pn.widgets.Button(name="Download")
 download_button.on_click(build_csv_jscode)
 
 
-def build_mid(selected_file, **args):
+def build_mid(selected_file, derived_filter, **args):
     """ """
     db.set_file(selected_file)
+    db.derived_filter = derived_filter
 
     sum_longform_df = db.get_file_field_presence()
 
@@ -196,7 +201,7 @@ left_col = pn.Column(
     header_pane,
     modality_selector,
     top_selector,
-    pn.Row("Filter for derived assets:", derived_switch),
+    derived_selector,
     download_pane,
     mid_selector,
     missing_selector,
@@ -207,21 +212,20 @@ left_col = pn.Column(
 
 def build_row(selected_modality, derived_filter):
     db.modality_filter = selected_modality
-
-    print(derived_filter)
+    db.derived_filter = derived_filter
 
     return pn.Row(file_present_chart, notfile_present_chart)
 
 
 top_row = pn.bind(build_row,
                   selected_modality=modality_selector,
-                  derived_filter=derived_switch)
+                  derived_filter=derived_selector)
 
 mid_plot = pn.bind(
     build_mid,
     selected_file=top_selector,
     selected_modality=modality_selector,
-    derived_filter=derived_switch
+    derived_filter=derived_selector
 )
 
 # Put everything in a column and buffer it
