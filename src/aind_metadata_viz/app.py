@@ -2,8 +2,7 @@ import panel as pn
 import altair as alt
 from aind_metadata_viz import docdb
 
-pn.extension(design="material")
-pn.extension("vega")
+pn.extension("vega", design="material")
 alt.themes.enable("ggplot2")
 
 color_options = {"default": ["grey", "red"], "lemonade": ["#FFEF00", "pink"]}

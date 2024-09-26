@@ -14,11 +14,15 @@ from aind_metadata_viz.metadata_helpers import (
 from aind_metadata_viz.utils import compute_count_true
 
 API_GATEWAY_HOST = "api.allenneuraldynamics.org"
+API_GATEWAY_HOST_DEV = "api.allenneuraldynamics-test.org"
 DATABASE = "metadata_index"
 COLLECTION = "data_assets"
 
+using_dev = True if 'dev' in pn.state.location.query_params and pn.state.location.query_params['dev'] else False
+ACTIVE_HOST = API_GATEWAY_HOST_DEV if using_dev else API_GATEWAY_HOST
+
 docdb_api_client = MetadataDbClient(
-    host=API_GATEWAY_HOST,
+    host=ACTIVE_HOST,
     database=DATABASE,
     collection=COLLECTION,
 )
@@ -63,7 +67,7 @@ class Database(param.Parameterized):
     ):
         """Initialize"""
         # get data
-        self._data = get_all(test_mode=test_mode)
+        self._data = get_all(dev=using_dev, test_mode=test_mode)
 
         # setup
         self.set_file()
@@ -221,8 +225,7 @@ class Database(param.Parameterized):
         return sio.getvalue()
 
 
-@pn.cache(ttl=CACHE_RESET_SEC)
-def get_all(test_mode=False):
+def get_all(dev=False, test_mode=False):
     filter = {}
     limit = 0 if not test_mode else 10
     paginate_batch_size = 1000
