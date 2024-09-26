@@ -21,13 +21,6 @@ COLLECTION = "data_assets"
 using_dev = True if 'dev' in pn.state.location.query_params and pn.state.location.query_params['dev'] else False
 ACTIVE_HOST = API_GATEWAY_HOST_DEV if using_dev else API_GATEWAY_HOST
 
-docdb_api_client = MetadataDbClient(
-    host=ACTIVE_HOST,
-    database=DATABASE,
-    collection=COLLECTION,
-)
-
-
 # reset cache every 24 hours
 CACHE_RESET_SEC = 24 * 60 * 60
 
@@ -60,14 +53,17 @@ class Database(param.Parameterized):
 
     def __init__(
         self,
-        api_host=API_GATEWAY_HOST,
-        database=DATABASE,
-        collection=COLLECTION,
         test_mode=False,
     ):
         """Initialize"""
+        self.client = MetadataDbClient(
+            host=ACTIVE_HOST,
+            database=DATABASE,
+            collection=COLLECTION,
+        )
+
         # get data
-        self._data = get_all(dev=using_dev, test_mode=test_mode)
+        self._data = self.get_all(dev=using_dev, test_mode=test_mode)
 
         # setup
         self.set_file()
@@ -224,67 +220,64 @@ class Database(param.Parameterized):
         df.to_csv(sio, index=False)
         return sio.getvalue()
 
+    def get_all(self, dev=False, test_mode=False):
+        filter = {}
+        limit = 0 if not test_mode else 10
+        paginate_batch_size = 1000
+        response = self.client.retrieve_docdb_records(
+            filter_query=filter,
+            limit=limit,
+            paginate_batch_size=paginate_batch_size,
+        )
 
-def get_all(dev=False, test_mode=False):
-    filter = {}
-    limit = 0 if not test_mode else 10
-    paginate_batch_size = 1000
-    response = docdb_api_client.retrieve_docdb_records(
-        filter_query=filter,
-        limit=limit,
-        paginate_batch_size=paginate_batch_size,
-    )
+        return response
 
-    return response
+    @pn.cache(ttl=CACHE_RESET_SEC)
+    def get_subjects(self):
+        filter = {
+            "subject.subject_id": {"$exists": True},
+            "session": {"$ne": None},
+        }
+        limit = 1000
+        paginate_batch_size = 100
+        response = self.client.retrieve_docdb_records(
+            filter_query=filter,
+            projection={"_id": 0, "subject.subject_id": 1},
+            limit=limit,
+            paginate_batch_size=paginate_batch_size,
+        )
 
+        # turn this into a list instead of a nested list
+        subjects = []
+        for data in response:
+            subjects.append(np.int32(data["subject"]["subject_id"]))
 
-@pn.cache(ttl=CACHE_RESET_SEC)
-def get_subjects():
-    filter = {
-        "subject.subject_id": {"$exists": True},
-        "session": {"$ne": None},
-    }
-    limit = 1000
-    paginate_batch_size = 100
-    response = docdb_api_client.retrieve_docdb_records(
-        filter_query=filter,
-        projection={"_id": 0, "subject.subject_id": 1},
-        limit=limit,
-        paginate_batch_size=paginate_batch_size,
-    )
+        return np.unique(subjects).tolist()
 
-    # turn this into a list instead of a nested list
-    subjects = []
-    for data in response:
-        subjects.append(np.int32(data["subject"]["subject_id"]))
+    @pn.cache(ttl=CACHE_RESET_SEC)
+    def get_sessions(self, subject_id):
+        """Get the raw JSON sessions list for a subject
 
-    return np.unique(subjects).tolist()
+        Parameters
+        ----------
+        subject_id : string or int
+            _description_
 
+        Returns
+        -------
+        _type_
+            _description_
+        """
+        filter = {
+            "subject.subject_id": str(subject_id),
+            "session": {"$ne": "null"},
+        }
+        response = self.client.retrieve_docdb_records(
+            filter_query=filter, projection={"_id": 0, "session": 1}
+        )
 
-@pn.cache(ttl=CACHE_RESET_SEC)
-def get_sessions(subject_id):
-    """Get the raw JSON sessions list for a subject
+        sessions = []
+        for data in response:
+            sessions.append(data["session"])
 
-    Parameters
-    ----------
-    subject_id : string or int
-        _description_
-
-    Returns
-    -------
-    _type_
-        _description_
-    """
-    filter = {
-        "subject.subject_id": str(subject_id),
-        "session": {"$ne": "null"},
-    }
-    response = docdb_api_client.retrieve_docdb_records(
-        filter_query=filter, projection={"_id": 0, "session": 1}
-    )
-
-    sessions = []
-    for data in response:
-        sessions.append(data["session"])
-
-    return sessions
+        return sessions
