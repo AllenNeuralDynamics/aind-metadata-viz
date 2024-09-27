@@ -38,7 +38,8 @@ EXPECTED_FILES = sorted(
 )
 
 # reset cache every 24 hours
-CACHE_RESET_SEC = 24 * 60 * 60
+CACHE_RESET_DAY = 24 * 60 * 60
+CACHE_RESET_HOUR = 60 * 60
 
 MODALITIES = [mod().abbreviation for mod in Modality.ALL]
 
@@ -245,7 +246,7 @@ class Database(param.Parameterized):
         return sio.getvalue()
 
 
-@pn.cache(ttl=CACHE_RESET_SEC)
+@pn.cache(ttl=CACHE_RESET_DAY)
 def get_all(test_mode=False):
     filter = {}
     limit = 0 if not test_mode else 10
@@ -259,7 +260,10 @@ def get_all(test_mode=False):
     return response
 
 
-@pn.cache(ttl=CACHE_RESET_SEC)
+pn.state.add_periodic_callback(get_all, period=CACHE_RESET_HOUR*1000)
+
+
+@pn.cache(ttl=CACHE_RESET_DAY)
 def get_subjects():
     filter = {
         "subject.subject_id": {"$exists": True},
@@ -282,7 +286,7 @@ def get_subjects():
     return np.unique(subjects).tolist()
 
 
-@pn.cache(ttl=CACHE_RESET_SEC)
+@pn.cache(ttl=CACHE_RESET_DAY)
 def get_sessions(subject_id):
     """Get the raw JSON sessions list for a subject
 
