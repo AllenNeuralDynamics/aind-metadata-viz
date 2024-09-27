@@ -250,7 +250,7 @@ class Database(param.Parameterized):
 def get_all(test_mode=False):
     filter = {}
     limit = 0 if not test_mode else 10
-    paginate_batch_size = 1000
+    paginate_batch_size = 500
     response = docdb_api_client.retrieve_docdb_records(
         filter_query=filter,
         limit=limit,
