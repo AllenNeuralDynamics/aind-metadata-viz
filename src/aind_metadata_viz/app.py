@@ -6,7 +6,7 @@ pn.extension(design="material")
 pn.extension("vega")
 alt.themes.enable("ggplot2")
 
-color_options = {"default": ["grey", "red"], "lemonade": ["#FFEF00", "pink"]}
+color_options = {"default": ["grey", "red", "black"], "lemonade": ["#FFEF00", "pink", "black"]}
 
 colors = (
     color_options[pn.state.location.query_params["color"]]
@@ -44,7 +44,7 @@ pn.state.location.sync(derived_selector, {"value": "derived"})
 
 
 def file_present_chart():
-    sum_longform_df = db.get_file_presence()
+    sum_longform_df = db.get_file_presence(db.get_expected_files())
 
     chart = (
         alt.Chart(sum_longform_df)
@@ -85,7 +85,7 @@ def notfile_present_chart():
             ),
             color=alt.Color(
                 "status:N",
-                scale=alt.Scale(domain=["present", "absent"], range=colors),
+                scale=alt.Scale(domain=["present", "absent", "excluded"], range=colors),
                 legend=None,
             ),
         )
@@ -166,7 +166,7 @@ def build_mid(selected_file, derived_filter, **args):
             ),
             color=alt.Color(
                 "status:N",
-                scale=alt.Scale(domain=["present", "absent"], range=colors),
+                scale=alt.Scale(domain=["present", "absent", "excluded"], range=colors),
                 legend=None,
             ),
         )

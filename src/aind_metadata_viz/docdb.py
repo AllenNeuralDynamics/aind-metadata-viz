@@ -6,7 +6,7 @@ import param
 
 from io import StringIO
 
-from aind_data_schema_models.modalities import Modality
+from aind_data_schema_models.modalities import Modality, ExpectedFiles
 from aind_metadata_viz.metadata_helpers import (
     process_present_list,
     check_present,
@@ -23,11 +23,6 @@ docdb_api_client = MetadataDbClient(
     collection=COLLECTION,
 )
 
-
-# reset cache every 24 hours
-CACHE_RESET_SEC = 24 * 60 * 60
-
-# Ideally this wouldn't be hard-coded, but pulled from the aind-data-schema repo
 EXPECTED_FILES = sorted(
     [
         "data_description",
@@ -41,6 +36,9 @@ EXPECTED_FILES = sorted(
         "quality_control",
     ]
 )
+
+# reset cache every 24 hours
+CACHE_RESET_SEC = 24 * 60 * 60
 
 # Ideally this wouldn't be hard-coded but pulled from the aind-data-schema-models repo
 MODALITIES = [mod().abbreviation for mod in Modality.ALL]
@@ -72,6 +70,7 @@ class Database(param.Parameterized):
     def data_filtered(self):
         mod_filter = not (self.modality_filter == "all")
 
+        # Check if the data needs to be filtered by either modality or derived state
         if mod_filter or not (self.derived_filter == "All assets"):
             # filter data
             filtered_list = []
@@ -104,8 +103,28 @@ class Database(param.Parameterized):
             return filtered_list
         else:
             return self._data
+        
+    def get_expected_files(self):
+        """Return the current expected files, based on the active modality
 
-    def get_file_presence(self, files: list = EXPECTED_FILES):
+        Returns
+        -------
+        _type_
+            _description_
+        """
+        if self.modality_filter == "all":
+            return EXPECTED_FILES
+
+        expected_files_by_modality = EXPECTED_FILES.copy()
+
+        # now remove any files that are not expected for this modality
+        for file in getattr(ExpectedFiles, str(self.modality_filter).upper()):
+            if file in expected_files_by_modality:
+                expected_files_by_modality.remove(file)
+
+        return expected_files_by_modality
+
+    def get_file_presence(self, files: list[str]):
         """Get the presence of a list of files
 
         Parameters
@@ -131,13 +150,13 @@ class Database(param.Parameterized):
 
         return self.get_file_presence(files=fields)
 
-    def set_file(self, file: str = EXPECTED_FILES[0]):
+    def set_file(self, file: str):
         """Set the active file
 
         Parameters
         ----------
         file : str, optional
-            Active filename, by default EXPECTED_FILES[0]
+            Active filename
         """
         self.file = file
 
