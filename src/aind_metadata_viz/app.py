@@ -5,7 +5,10 @@ from aind_metadata_viz import docdb
 pn.extension("vega", design="material")
 alt.themes.enable("ggplot2")
 
-color_options = {"default": ["grey", "red"], "lemonade": ["#FFEF00", "pink"]}
+color_options = {
+    "default": ["grey", "red", "black"],
+    "lemonade": ["#FFEF00", "pink", "black"],
+}
 
 colors = (
     color_options[pn.state.location.query_params["color"]]
@@ -43,21 +46,22 @@ pn.state.location.sync(derived_selector, {"value": "derived"})
 
 
 def file_present_chart():
-    sum_longform_df = db.get_file_presence()
+    (expected_files, excluded_files) = db.get_expected_files()
+    sum_longform_df = db.get_file_presence(expected_files, excluded_files)
 
     chart = (
         alt.Chart(sum_longform_df)
         .mark_bar()
         .encode(
-            x=alt.X("index:N", title=None, axis=alt.Axis(grid=False)),
+            x=alt.X("column:N", title=None, axis=alt.Axis(grid=False)),
             y=alt.Y(
-                "sum:Q",
+                "count:Q",
                 title="Metadata assets (n)",
                 axis=alt.Axis(grid=False),
             ),
             color=alt.Color(
-                "status:N",
-                scale=alt.Scale(domain=["present", "absent"], range=colors),
+                "category:N",
+                scale=alt.Scale(domain=["present", "absent", "excluded"], range=colors),
                 legend=None,
             ),
         )
@@ -76,15 +80,17 @@ def notfile_present_chart():
         alt.Chart(sum_longform_df)
         .mark_bar()
         .encode(
-            x=alt.X("index:N", title=None, axis=alt.Axis(grid=False)),
+            x=alt.X("column:N", title=None, axis=alt.Axis(grid=False)),
             y=alt.Y(
-                "sum:Q",
+                "count:Q",
                 title=None,
                 axis=alt.Axis(grid=False),
             ),
             color=alt.Color(
-                "status:N",
-                scale=alt.Scale(domain=["present", "absent"], range=colors),
+                "category:N",
+                scale=alt.Scale(
+                    domain=["present", "absent", "excluded"], range=colors
+                ),
                 legend=None,
             ),
         )
@@ -159,13 +165,15 @@ def build_mid(selected_file, derived_filter, **args):
         alt.Chart(sum_longform_df)
         .mark_bar()
         .encode(
-            x=alt.X("index:N", title=None, axis=alt.Axis(grid=False)),
+            x=alt.X("column:N", title=None, axis=alt.Axis(grid=False)),
             y=alt.Y(
-                "sum:Q", title="Metadata assets (n)", axis=alt.Axis(grid=False)
+                "count:Q", title="Metadata assets (n)", axis=alt.Axis(grid=False)
             ),
             color=alt.Color(
-                "status:N",
-                scale=alt.Scale(domain=["present", "absent"], range=colors),
+                "category:N",
+                scale=alt.Scale(
+                    domain=["present", "absent", "excluded"], range=colors
+                ),
                 legend=None,
             ),
         )
