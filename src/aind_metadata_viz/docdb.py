@@ -6,7 +6,7 @@ import param
 
 from io import StringIO
 
-from aind_data_schema_models.modalities import Modality, ExpectedFiles
+from aind_data_schema_models.modalities import Modality, ExpectedFiles, FileRequirement
 from aind_metadata_viz.metadata_helpers import (
     process_present_list,
     check_present,
@@ -40,7 +40,6 @@ EXPECTED_FILES = sorted(
 # reset cache every 24 hours
 CACHE_RESET_SEC = 24 * 60 * 60
 
-# Ideally this wouldn't be hard-coded but pulled from the aind-data-schema-models repo
 MODALITIES = [mod().abbreviation for mod in Modality.ALL]
 
 
@@ -64,7 +63,8 @@ class Database(param.Parameterized):
         self._data = get_all(test_mode=test_mode)
 
         # setup
-        self.set_file()
+        (expected_files, _) = self.get_expected_files()
+        self.set_file(expected_files[0])
 
     @property
     def data_filtered(self):
@@ -103,28 +103,28 @@ class Database(param.Parameterized):
             return filtered_list
         else:
             return self._data
-        
-    def get_expected_files(self):
-        """Return the current expected files, based on the active modality
 
-        Returns
-        -------
-        _type_
-            _description_
-        """
+    def get_expected_files(self) -> tuple[list[str], list[str]]:
         if self.modality_filter == "all":
-            return EXPECTED_FILES
+            return (EXPECTED_FILES, [])
 
         expected_files_by_modality = EXPECTED_FILES.copy()
+        excluded_files_by_modality = []
 
-        # now remove any files that are not expected for this modality
-        for file in getattr(ExpectedFiles, str(self.modality_filter).upper()):
-            if file in expected_files_by_modality:
+        # get the ExpectedFiles object for this modality
+        expected_files = getattr(ExpectedFiles, str(self.modality_filter).upper())
+
+        # loop through the actual files and remove any that are not expected
+        for file in expected_files_by_modality:
+            if getattr(expected_files, file) == FileRequirement.EXCLUDED:
                 expected_files_by_modality.remove(file)
+                excluded_files_by_modality.append(file)
 
-        return expected_files_by_modality
-
-    def get_file_presence(self, files: list[str]):
+        return (expected_files_by_modality, excluded_files_by_modality)
+    
+    def get_file_presence(
+        self, files: list[str], excluded_files: list[str] = []
+    ):
         """Get the presence of a list of files
 
         Parameters
@@ -132,7 +132,9 @@ class Database(param.Parameterized):
         files : list[str], optional
             List of expected metadata filenames, by default EXPECTED_FILES
         """
-        processed = process_present_list(self.data_filtered, files)
+        processed = process_present_list(
+            self.data_filtered, files, excluded_files
+        )
         df = pd.DataFrame(processed, columns=files)
 
         return compute_count_true(df)
@@ -162,7 +164,7 @@ class Database(param.Parameterized):
 
         self.mid_list = []
         for data in self.data_filtered:
-            if check_present(self.file, data):
+            if check_present(self.file, data) == "present":
                 self.mid_list.append(data[self.file])
 
     def get_file_field_presence(self):
@@ -178,13 +180,16 @@ class Database(param.Parameterized):
         _type_
             _description_
         """
-        expected_fields = (
-            self.mid_list[0].keys() if len(self.mid_list) > 0 else []
-        )
-        processed = process_present_list(self.mid_list, expected_fields)
-        df = pd.DataFrame(processed, columns=expected_fields)
+        if len(self.mid_list) > 0:
+            expected_fields = (
+                self.mid_list[0].keys() if len(self.mid_list) > 0 else []
+            )
+            processed = process_present_list(self.mid_list, expected_fields, [])
+            df = pd.DataFrame(processed, columns=expected_fields)
 
-        return compute_count_true(df)
+            return compute_count_true(df)
+        else:
+            return pd.DataFrame()
 
     def get_csv(self, file: str, field: str = " ", missing: str = "Missing"):
         """Build a CSV file of export data based on the selected file and field
