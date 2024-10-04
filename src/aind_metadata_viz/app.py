@@ -1,5 +1,6 @@
 import panel as pn
 import altair as alt
+import pandas as pd
 from aind_metadata_viz import docdb
 from aind_data_schema import __version__ as ads_version
 
@@ -67,7 +68,7 @@ def file_present_chart():
                 axis=alt.Axis(grid=False),
             ),
             color=alt.Color(
-                "category:N",
+                "status:N",
                 scale=alt.Scale(
                     domain=["valid", "present", "missing", "excluded"],
                     range=color_list,

@@ -1,4 +1,24 @@
-from aind_data_schema.core.metadata import Metadata
+from aind_data_schema.core.acquisition import Acquisition
+from aind_data_schema.core.data_description import DataDescription
+from aind_data_schema.core.instrument import Instrument
+from aind_data_schema.core.processing import Processing
+from aind_data_schema.core.procedures import Procedures
+from aind_data_schema.core.quality_control import QualityControl
+from aind_data_schema.core.rig import Rig
+from aind_data_schema.core.session import Session
+from aind_data_schema.core.subject import Subject
+
+field_mapping = {
+    "data_description": DataDescription,
+    "acquisition": Acquisition,
+    "procedures": Procedures,
+    "subject": Subject,
+    "instrument": Instrument,
+    "processing": Processing,
+    "rig": Rig,
+    "session": Session,
+    "quality_control": QualityControl,
+}
 
 
 def check_present(key: str, object: dict, check_present: bool = True):
@@ -23,15 +43,15 @@ def check_present(key: str, object: dict, check_present: bool = True):
     return present if check_present else not present
 
 
-def check_valid_metadata(json: str):
-    """Return true if the string is a valid aind metadata object
+def check_valid_metadata(field:str, json: str):
+    """Return true if the json data is a valid object of the particular field class
 
     Parameters
     ----------
     json : str
-        json string generated from a Metadata.dump
+        json string generated from a AindCoreModel dump
     """
-    return Metadata.model_validate_json(json)
+    return field_mapping[field].model_validate_json(json) is not None
 
 
 def process_present_dict(data: dict, expected_fields: list):

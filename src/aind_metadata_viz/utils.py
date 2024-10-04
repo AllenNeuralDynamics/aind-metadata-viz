@@ -8,7 +8,7 @@ def compute_count_true(df):
         Dataframe of False/True values
     """
     sum_df = df.sum().to_frame(name="present")
-    sum_df["absent"] = df.shape[0] - sum_df["present"]
+    sum_df["missing"] = df.shape[0] - sum_df["present"]
 
     sum_longform_df = sum_df.reset_index().melt(
         id_vars="index", var_name="status", value_name="sum"
