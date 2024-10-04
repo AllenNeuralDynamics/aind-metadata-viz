@@ -50,6 +50,7 @@ class Database(param.Parameterized):
     """Local representation of aind-data-schema metadata stored in a
     DocDB MongoDB instance
     """
+
     derived_filter = param.Boolean(default=False)
     modality_filter = param.String(default="all")
 
@@ -80,18 +81,17 @@ class Database(param.Parameterized):
                 include: bool = True
 
                 if mod_filter and not (
-                        data["data_description"]
-                        and "modality" in data["data_description"]
-                        and isinstance(data["data_description"]["modality"],
-                                       list)
-                        and any(
-                            mod["abbreviation"] == self.modality_filter
-                            for mod in data["data_description"]["modality"]
-                        )
+                    data["data_description"]
+                    and "modality" in data["data_description"]
+                    and isinstance(data["data_description"]["modality"], list)
+                    and any(
+                        mod["abbreviation"] == self.modality_filter
+                        for mod in data["data_description"]["modality"]
+                    )
                 ):
                     include = False
-                
-                if derived_filter and data["name"].count('_') <= 3:
+
+                if derived_filter and data["name"].count("_") <= 3:
                     include = False
 
                 if include:

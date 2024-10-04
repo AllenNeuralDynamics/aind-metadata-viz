@@ -1,5 +1,6 @@
 from aind_data_schema.core.metadata import Metadata
 
+
 def check_present(key: str, object: dict, check_present: bool = True):
     """Return true if the value of a key exists and is not None, or any of
     '' [] {} in a JSON object

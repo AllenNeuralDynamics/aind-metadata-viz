@@ -1,18 +1,33 @@
 import panel as pn
 import altair as alt
 from aind_metadata_viz import docdb
+from aind_data_schema import __version__ as ads_version
 
 pn.extension(design="material")
 pn.extension("vega")
 alt.themes.enable("ggplot2")
 
-color_options = {"default": ["grey", "red"], "lemonade": ["#FFEF00", "pink"]}
+color_options = {
+    "default": {
+        "valid": "green",
+        "present": "grey",
+        "missing": "red",
+        "excluded": "black",
+    },
+    "lemonade": {
+        "valid": "#9FF2F5",
+        "present": "#F49FD7",
+        "missing": "#F49FD7",
+        "excluded": "#9FF2F5",
+    },
+}
 
 colors = (
     color_options[pn.state.location.query_params["color"]]
     if "color" in pn.state.location.query_params
     else color_options["default"]
 )
+color_list = list(colors.values())
 
 db = docdb.Database()
 
@@ -52,8 +67,11 @@ def file_present_chart():
                 axis=alt.Axis(grid=False),
             ),
             color=alt.Color(
-                "status:N",
-                scale=alt.Scale(domain=["present", "absent"], range=colors),
+                "category:N",
+                scale=alt.Scale(
+                    domain=["valid", "present", "missing", "excluded"],
+                    range=color_list,
+                ),
                 legend=None,
             ),
         )
@@ -79,8 +97,11 @@ def notfile_present_chart():
                 axis=alt.Axis(grid=False),
             ),
             color=alt.Color(
-                "status:N",
-                scale=alt.Scale(domain=["present", "absent"], range=colors),
+                "category:N",
+                scale=alt.Scale(
+                    domain=["valid", "present", "missing", "excluded"],
+                    range=color_list,
+                ),
                 legend=None,
             ),
         )
@@ -159,8 +180,11 @@ def build_mid(selected_file, **args):
                 "sum:Q", title="Metadata assets (n)", axis=alt.Axis(grid=False)
             ),
             color=alt.Color(
-                "status:N",
-                scale=alt.Scale(domain=["present", "absent"], range=colors),
+                "category:N",
+                scale=alt.Scale(
+                    domain=["valid", "present", "missing", "excluded"],
+                    range=color_list,
+                ),
                 legend=None,
             ),
         )
@@ -178,11 +202,21 @@ def build_mid(selected_file, **args):
     return pn.pane.Vega(chart)
 
 
-header = f"""
-# Missing metadata viewer
+def hd_style(text):
+    return (
+        f"<span style='font-weight: bold; color:{colors[text]}'>{text}</span>"
+    )
 
-This app steps through all of the metadata stored in DocDB and checks whether every dictionary key's value is <span style="color:{colors[0]}">present</span> or <span style="color:{colors[1]}">missing</span>
-"""
+
+header = (
+    f"# Metadata Portal\n\n"
+    "This app steps through all of the metadata stored in DocDB and determines whether every record's fields "
+    "(and subfields) are "
+    f"{hd_style('valid')} for aind-data-schema v{ads_version}, "
+    f"{hd_style('present')} but invalid, "
+    f"{hd_style('missing')}, or "
+    f"{hd_style('excluded')} for the record's modality."
+)
 
 download_md = """
 **Download options**
@@ -213,18 +247,22 @@ def build_row(selected_modality, derived_filter):
     return pn.Row(file_present_chart, notfile_present_chart)
 
 
-top_row = pn.bind(build_row,
-                  selected_modality=modality_selector,
-                  derived_filter=derived_switch)
+top_row = pn.bind(
+    build_row,
+    selected_modality=modality_selector,
+    derived_filter=derived_switch,
+)
 
 mid_plot = pn.bind(
     build_mid,
     selected_file=top_selector,
     selected_modality=modality_selector,
-    derived_filter=derived_switch
+    derived_filter=derived_switch,
 )
 
 # Put everything in a column and buffer it
 main_col = pn.Column(top_row, mid_plot, sizing_mode="stretch_width")
 
-pn.Row(left_col, main_col, pn.layout.HSpacer()).servable(title="Metadata Viz")
+pn.Row(left_col, main_col, pn.layout.HSpacer()).servable(
+    title="Metadata Portal"
+)
