@@ -6,7 +6,7 @@ import param
 
 from io import StringIO
 
-from aind_data_schema_models.modalities import Modality
+from aind_data_schema_models.modalities import Modality, ExpectedFiles, FileRequirement
 from aind_metadata_viz.metadata_helpers import (
     process_record_list,
     _metadata_present_helper,
@@ -23,11 +23,6 @@ docdb_api_client = MetadataDbClient(
     collection=COLLECTION,
 )
 
-
-# reset cache every 24 hours
-CACHE_RESET_SEC = 24 * 60 * 60
-
-# Ideally this wouldn't be hard-coded, but pulled from the aind-data-schema repo
 EXPECTED_FILES = sorted(
     [
         "data_description",
@@ -42,7 +37,10 @@ EXPECTED_FILES = sorted(
     ]
 )
 
-# Ideally this wouldn't be hard-coded but pulled from the aind-data-schema-models repo
+# reset cache every 24 hours
+CACHE_RESET_DAY = 24 * 60 * 60
+CACHE_RESET_HOUR = 60 * 60
+
 MODALITIES = [mod().abbreviation for mod in Modality.ALL]
 
 
@@ -51,8 +49,8 @@ class Database(param.Parameterized):
     DocDB MongoDB instance
     """
 
-    derived_filter = param.Boolean(default=False)
     modality_filter = param.String(default="all")
+    derived_filter = param.String(default="All assets")
 
     def __init__(
         self,
@@ -66,14 +64,15 @@ class Database(param.Parameterized):
         self._data = get_all(test_mode=test_mode)
 
         # setup
-        self.set_file()
+        (expected_files, _) = self.get_expected_files()
+        self.set_file(expected_files[0])
 
     @property
     def data_filtered(self):
         mod_filter = not (self.modality_filter == "all")
-        derived_filter = self.derived_filter == True
 
-        if mod_filter or derived_filter:
+        # Check if the data needs to be filtered by either modality or derived state
+        if mod_filter or not (self.derived_filter == "All assets"):
             # filter data
             filtered_list = []
 
@@ -91,7 +90,13 @@ class Database(param.Parameterized):
                 ):
                     include = False
 
-                if derived_filter and data["name"].count("_") <= 3:
+                if (
+                    self.derived_filter == "Raw"
+                    and data["name"].count("_") > 3
+                ) or (
+                    self.derived_filter == "Derived"
+                    and data["name"].count("_") <= 3
+                ):
                     include = False
 
                 if include:
@@ -100,7 +105,27 @@ class Database(param.Parameterized):
         else:
             return self._data
 
-    def get_file_presence(self, files: list = EXPECTED_FILES):
+    def get_expected_files(self) -> tuple[list[str], list[str]]:
+        if self.modality_filter == "all":
+            return (EXPECTED_FILES, [])
+
+        expected_files_by_modality = EXPECTED_FILES.copy()
+        excluded_files_by_modality = []
+
+        # get the ExpectedFiles object for this modality
+        expected_files = getattr(ExpectedFiles, str(self.modality_filter).upper())
+
+        # loop through the actual files and remove any that are not expected
+        for file in expected_files_by_modality:
+            if getattr(expected_files, file) == FileRequirement.EXCLUDED:
+                expected_files_by_modality.remove(file)
+                excluded_files_by_modality.append(file)
+
+        return (expected_files_by_modality, excluded_files_by_modality)
+    
+    def get_file_presence(
+        self, files: list[str], excluded_files: list[str] = []
+    ):
         """Get the presence of a list of files
 
         Parameters
@@ -132,13 +157,13 @@ class Database(param.Parameterized):
 
         return self.get_file_presence(files=fields)
 
-    def set_file(self, file: str = EXPECTED_FILES[0]):
+    def set_file(self, file: str):
         """Set the active file
 
         Parameters
         ----------
         file : str, optional
-            Active filename, by default EXPECTED_FILES[0]
+            Active filename
         """
         self.file = file
 
@@ -185,7 +210,7 @@ class Database(param.Parameterized):
         Returns
         -------
         csv
-            CSV file with name, _id, location, and creation date
+            CSV file with name, _id, location, creation date, and subject_id (if available)
         """
         # For everybody who is missing the currently active file/field
         id_fields = ["name", "_id", "location", "creation"]
@@ -206,6 +231,17 @@ class Database(param.Parameterized):
                             id_data[id_field] = data[id_field]
                         else:
                             id_data[id_field] = None
+
+                    # Get subject if available
+                    if (
+                        "subject" in data
+                        and data["subject"]
+                        and "subject_id" in data["subject"]
+                    ):
+                        id_data["subject_id"] = data["subject"]["subject_id"]
+                    else:
+                        id_data["subject_id"] = ""
+
                     df_data.append(id_data)
 
         df = pd.DataFrame(df_data)
@@ -215,7 +251,7 @@ class Database(param.Parameterized):
         return sio.getvalue()
 
 
-@pn.cache(ttl=CACHE_RESET_SEC)
+@pn.cache(ttl=CACHE_RESET_DAY)
 def get_all(test_mode=False):
     filter = {}
     # limit = 0 if not test_mode else 10

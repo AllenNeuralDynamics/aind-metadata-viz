@@ -20,7 +20,11 @@ def _metadata_present_helper(json: str, check_present: bool = True):
         and json != []
         and json != {}
     )
-    return present if check_present else not present
+
+    if check_present:
+        return "present" if present else "absent"
+    else:
+        return "absent" if present else "present"
 
 
 def _metadata_valid_helper(field: str, json: str, mapping: dict, ):
