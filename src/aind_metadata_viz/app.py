@@ -56,22 +56,24 @@ pn.state.location.sync(missing_selector, {"value": "missing"})
 
 def file_present_chart():
     sum_longform_df = db.get_file_presence()
+    local_states = sum_longform_df["state"].unique()
+    local_color_list = [colors[state] for state in local_states]
 
     chart = (
         alt.Chart(sum_longform_df)
         .mark_bar()
         .encode(
-            x=alt.X("index:N", title=None, axis=alt.Axis(grid=False)),
+            x=alt.X("file:N", title=None, axis=alt.Axis(grid=False)),
             y=alt.Y(
                 "sum:Q",
                 title="Metadata assets (n)",
                 axis=alt.Axis(grid=False),
             ),
             color=alt.Color(
-                "status:N",
+                "state:N",
                 scale=alt.Scale(
-                    domain=["valid", "present", "missing", "excluded"],
-                    range=color_list,
+                    domain=local_states,
+                    range=local_color_list,
                 ),
                 legend=None,
             ),

@@ -56,7 +56,7 @@ def check_metadata_state(field: str, object: dict, parent: str = None, excluded_
     """
     # if excluded, just return that
     if field in excluded_fields:
-        return MetaState.EXCLUDED
+        return MetaState.EXCLUDED.value
 
     # if you're looking at a parent file's data then you need a different mapping
     if parent:
@@ -69,17 +69,17 @@ def check_metadata_state(field: str, object: dict, parent: str = None, excluded_
     if field in object:
         value = object[field]
     else:
-        return MetaState.MISSING
+        return MetaState.MISSING.value
 
     # attempt validation
     if _metadata_valid_helper(field, value, class_map):
-        return MetaState.VALID
+        return MetaState.VALID.value
     
     # check missing 
     if _metadata_present_helper(value):
-        return MetaState.PRESENT
+        return MetaState.PRESENT.value
     
-    return MetaState.MISSING
+    return MetaState.MISSING.value
 
 
 def process_record_list(record_list: list, expected_fields: list):

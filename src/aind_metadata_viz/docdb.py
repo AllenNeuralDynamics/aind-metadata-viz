@@ -11,7 +11,7 @@ from aind_metadata_viz.metadata_helpers import (
     process_record_list,
     _metadata_present_helper,
 )
-from aind_metadata_viz.utils import compute_count_true
+from aind_metadata_viz.utils import compute_count_true, MetaState
 
 API_GATEWAY_HOST = "api.allenneuraldynamics.org"
 DATABASE = "metadata_index"
@@ -108,10 +108,16 @@ class Database(param.Parameterized):
         files : list[str], optional
             List of expected metadata filenames, by default EXPECTED_FILES
         """
+        # Get the short form df, each row is a record and each column is it's file:MetaState
         processed = process_record_list(self.data_filtered, files)
         df = pd.DataFrame(processed, columns=files)
 
-        return compute_count_true(df)
+        # Melt to long form
+        df_melted = df.melt(var_name='file', value_name='state')
+        # Get sum
+        df_summary = df_melted.groupby(["file", "state"]).size().reset_index(name="sum")
+
+        return df_summary
 
     def get_field_presence(self):
         """Get the presence of fields at the top-level"""
@@ -138,7 +144,7 @@ class Database(param.Parameterized):
 
         self.mid_list = []
         for data in self.data_filtered:
-            if _metadata_present_helper(self.file, data):
+            if _metadata_present_helper(data[self.file]):
                 self.mid_list.append(data[self.file])
 
     def get_file_field_presence(self):
@@ -154,13 +160,17 @@ class Database(param.Parameterized):
         _type_
             _description_
         """
-        expected_fields = (
-            self.mid_list[0].keys() if len(self.mid_list) > 0 else []
-        )
-        processed = process_record_list(self.mid_list, expected_fields)
-        df = pd.DataFrame(processed, columns=expected_fields)
+        return pd.DataFrame()
+        # expected_fields = (
+        #     self.mid_list[0].keys() if len(self.mid_list) > 0 else []
+        # )
+        # processed = process_record_list(self.mid_list, expected_fields)
 
-        return compute_count_true(df)
+        # print(processed)
+        # df = pd.DataFrame()
+        # df = pd.DataFrame(processed, columns=expected_fields)
+
+        # return compute_count_true(df)
 
     def get_csv(self, file: str, field: str = " ", missing: str = "Missing"):
         """Build a CSV file of export data based on the selected file and field
@@ -208,8 +218,9 @@ class Database(param.Parameterized):
 @pn.cache(ttl=CACHE_RESET_SEC)
 def get_all(test_mode=False):
     filter = {}
-    limit = 0 if not test_mode else 10
-    paginate_batch_size = 1000
+    # limit = 0 if not test_mode else 10
+    limit = 10
+    paginate_batch_size = 500
     response = docdb_api_client.retrieve_docdb_records(
         filter_query=filter,
         limit=limit,
@@ -217,55 +228,3 @@ def get_all(test_mode=False):
     )
 
     return response
-
-
-@pn.cache(ttl=CACHE_RESET_SEC)
-def get_subjects():
-    filter = {
-        "subject.subject_id": {"$exists": True},
-        "session": {"$ne": None},
-    }
-    limit = 1000
-    paginate_batch_size = 100
-    response = docdb_api_client.retrieve_docdb_records(
-        filter_query=filter,
-        projection={"_id": 0, "subject.subject_id": 1},
-        limit=limit,
-        paginate_batch_size=paginate_batch_size,
-    )
-
-    # turn this into a list instead of a nested list
-    subjects = []
-    for data in response:
-        subjects.append(np.int32(data["subject"]["subject_id"]))
-
-    return np.unique(subjects).tolist()
-
-
-@pn.cache(ttl=CACHE_RESET_SEC)
-def get_sessions(subject_id):
-    """Get the raw JSON sessions list for a subject
-
-    Parameters
-    ----------
-    subject_id : string or int
-        _description_
-
-    Returns
-    -------
-    _type_
-        _description_
-    """
-    filter = {
-        "subject.subject_id": str(subject_id),
-        "session": {"$ne": "null"},
-    }
-    response = docdb_api_client.retrieve_docdb_records(
-        filter_query=filter, projection={"_id": 0, "session": 1}
-    )
-
-    sessions = []
-    for data in response:
-        sessions.append(data["session"])
-
-    return sessions
