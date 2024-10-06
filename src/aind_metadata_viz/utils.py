@@ -1,3 +1,13 @@
+from enum import Enum
+
+
+class MetaState(str, Enum):
+    VALID = "valid"
+    PRESENT = "present"
+    MISSING = "missing"
+    EXCLUDED = "excluded"
+
+
 def compute_count_true(df):
     """For each column, compute the count of true values and return as a
     longform dataframe

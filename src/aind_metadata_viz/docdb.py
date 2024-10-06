@@ -8,8 +8,8 @@ from io import StringIO
 
 from aind_data_schema_models.modalities import Modality
 from aind_metadata_viz.metadata_helpers import (
-    process_present_list,
-    check_present,
+    process_record_list,
+    _metadata_present_helper,
 )
 from aind_metadata_viz.utils import compute_count_true
 
@@ -108,7 +108,7 @@ class Database(param.Parameterized):
         files : list[str], optional
             List of expected metadata filenames, by default EXPECTED_FILES
         """
-        processed = process_present_list(self.data_filtered, files)
+        processed = process_record_list(self.data_filtered, files)
         df = pd.DataFrame(processed, columns=files)
 
         return compute_count_true(df)
@@ -138,7 +138,7 @@ class Database(param.Parameterized):
 
         self.mid_list = []
         for data in self.data_filtered:
-            if check_present(self.file, data):
+            if _metadata_present_helper(self.file, data):
                 self.mid_list.append(data[self.file])
 
     def get_file_field_presence(self):
@@ -157,7 +157,7 @@ class Database(param.Parameterized):
         expected_fields = (
             self.mid_list[0].keys() if len(self.mid_list) > 0 else []
         )
-        processed = process_present_list(self.mid_list, expected_fields)
+        processed = process_record_list(self.mid_list, expected_fields)
         df = pd.DataFrame(processed, columns=expected_fields)
 
         return compute_count_true(df)
@@ -185,7 +185,7 @@ class Database(param.Parameterized):
         df_data = []
         for data in self.data_filtered:
             if not data[file] is None:
-                if field == " " or check_present(
+                if field == " " or _metadata_present_helper(
                     field, data[file], check_present=get_present
                 ):
                     # This file/field combo is present/missing, get all the id

@@ -2,9 +2,9 @@
 
 import unittest
 from aind_metadata_viz.metadata_helpers import (
-    check_present,
+    _metadata_present_helper,
     process_present_dict,
-    process_present_list,
+    process_record_list,
 )
 
 
@@ -49,17 +49,17 @@ class TestApp(unittest.TestCase):
 
     def test_check_present(self):
         """Test the check_present function"""
-        self.assertFalse(check_present("test1", self.dict))
-        self.assertFalse(check_present("test2", self.dict))
-        self.assertFalse(check_present("test3", self.dict))
-        self.assertFalse(check_present("test4", self.dict))
+        self.assertFalse(_metadata_present_helper("test1", self.dict))
+        self.assertFalse(_metadata_present_helper("test2", self.dict))
+        self.assertFalse(_metadata_present_helper("test3", self.dict))
+        self.assertFalse(_metadata_present_helper("test4", self.dict))
 
-        self.assertTrue(check_present("test5", self.dict))
-        self.assertTrue(check_present("test6", self.dict))
-        self.assertTrue(check_present("test7", self.dict))
-        self.assertTrue(check_present("test8", self.dict))
+        self.assertTrue(_metadata_present_helper("test5", self.dict))
+        self.assertTrue(_metadata_present_helper("test6", self.dict))
+        self.assertTrue(_metadata_present_helper("test7", self.dict))
+        self.assertTrue(_metadata_present_helper("test8", self.dict))
 
-        self.assertFalse(check_present("test8", self.dict, check_present=False))
+        self.assertFalse(_metadata_present_helper("test8", self.dict, check_present=False))
 
     def test_process_present_dict(self):
         """Test the process_present_dict function"""
@@ -71,7 +71,7 @@ class TestApp(unittest.TestCase):
         """Test that process runs properly on a list"""
         data_list = [self.dict, self.dict]
 
-        processed_list = process_present_list(data_list, self.expected_fields)
+        processed_list = process_record_list(data_list, self.expected_fields)
         out_list = [self.expected_out, self.expected_out]
 
         self.assertEqual(processed_list, out_list)
