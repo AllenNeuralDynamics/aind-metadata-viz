@@ -86,7 +86,7 @@ def check_metadata_state(field: str, object: dict, parent: str = None, excluded_
     return MetaState.MISSING.value
 
 
-def process_record_list(record_list: list, expected_fields: list):
+def process_record_list(record_list: list, expected_fields: list, excluded_fields:list = []):
     """Process a list of Metadata JSON records from DocDB
 
     For each record, check each of the expected fields and see if they are valid/present/missing/excluded
@@ -102,4 +102,4 @@ def process_record_list(record_list: list, expected_fields: list):
     -------
     list[{field: MetaState}]
     """
-    return [{field: check_metadata_state(field, data) for field in expected_fields} for data in record_list]
+    return [{field: check_metadata_state(field, data, excluded_fields) for field in expected_fields} for data in record_list]

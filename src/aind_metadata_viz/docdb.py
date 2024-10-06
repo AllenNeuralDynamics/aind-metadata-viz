@@ -11,7 +11,7 @@ from aind_metadata_viz.metadata_helpers import (
     process_record_list,
     _metadata_present_helper,
 )
-from aind_metadata_viz.utils import compute_count_true, MetaState
+from aind_metadata_viz.utils import MetaState
 
 API_GATEWAY_HOST = "api.allenneuraldynamics.org"
 DATABASE = "metadata_index"
@@ -124,7 +124,7 @@ class Database(param.Parameterized):
         return (expected_files_by_modality, excluded_files_by_modality)
     
     def get_file_presence(
-        self, files: list[str], excluded_files: list[str] = []
+        self
     ):
         """Get the presence of a list of files
 
@@ -133,8 +133,11 @@ class Database(param.Parameterized):
         files : list[str], optional
             List of expected metadata filenames, by default EXPECTED_FILES
         """
+        (expected_files, excluded_files) = self.get_expected_files()
+        files = expected_files + excluded_files
+
         # Get the short form df, each row is a record and each column is it's file:MetaState
-        processed = process_record_list(self.data_filtered, files)
+        processed = process_record_list(self.data_filtered, expected_files)
         df = pd.DataFrame(processed, columns=files)
 
         # Melt to long form
@@ -146,16 +149,17 @@ class Database(param.Parameterized):
 
     def get_field_presence(self):
         """Get the presence of fields at the top-level"""
-        if len(self.data_filtered) > 0:
-            fields = [
-                item
-                for item in list(self.data_filtered[0].keys())
-                if item not in EXPECTED_FILES
-            ]
-        else:
-            fields = []
+        return pd.DataFrame()
+        # if len(self.data_filtered) > 0:
+        #     fields = [
+        #         item
+        #         for item in list(self.data_filtered[0].keys())
+        #         if item not in EXPECTED_FILES
+        #     ]
+        # else:
+        #     fields = []
 
-        return self.get_file_presence(files=fields)
+        # return self.get_file_presence(files=fields)
 
     def set_file(self, file: str):
         """Set the active file
