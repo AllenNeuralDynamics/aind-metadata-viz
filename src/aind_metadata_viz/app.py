@@ -1,8 +1,10 @@
 import panel as pn
 import altair as alt
-import pandas as pd
 from aind_metadata_viz import docdb
+from aind_metadata_viz.docdb import _get_all
 from aind_data_schema import __version__ as ads_version
+
+_get_all(test_mode=True)
 
 pn.extension(design="material")
 pn.extension("vega")
@@ -12,14 +14,16 @@ color_options = {
     "default": {
         "valid": "green",
         "present": "grey",
+        "optional": "grey",
         "missing": "red",
-        "excluded": "black",
+        "excluded": "white",
     },
     "lemonade": {
         "valid": "#9FF2F5",
-        "present": "#F49FD7",
+        "optional": "#F49FD7",
+        "optional": "grey",
         "missing": "#F49FD7",
-        "excluded": "black",
+        "excluded": "white",
     },
 }
 
@@ -37,10 +41,10 @@ modality_selector = pn.widgets.Select(
 )
 
 top_selector = pn.widgets.Select(
-    name="Select metadata file:", options=docdb.EXPECTED_FILES
+    name="Select metadata file:", options=docdb.ALL_FILES
 )
 
-mid_selector = pn.widgets.Select(name="Sub-select for field:", options=[])
+field_selector = pn.widgets.Select(name="Sub-select for field:", options=[])
 
 missing_selector = pn.widgets.Select(
     name="Value state", options=["Missing", "Present"]
@@ -54,7 +58,7 @@ derived_selector.value = "All assets"
 
 pn.state.location.sync(modality_selector, {"value": "modality"})
 pn.state.location.sync(top_selector, {"value": "file"})
-pn.state.location.sync(mid_selector, {"value": "field"})
+pn.state.location.sync(field_selector, {"value": "field"})
 pn.state.location.sync(missing_selector, {"value": "missing"})
 pn.state.location.sync(derived_selector, {"value": "derived"})
 
@@ -130,7 +134,7 @@ def build_csv_jscode(event):
     Create the javascript code and append it to the page.
     """
     csv = db.get_csv(
-        top_selector.value, mid_selector.value, missing_selector.value
+        top_selector.value, field_selector.value, missing_selector.value
     )
     csv_escaped = csv.replace("\n", "\\n").replace(
         '"', '\\"'
@@ -139,9 +143,9 @@ def build_csv_jscode(event):
     get_missing = missing_selector.value == "Missing"
     missing_text = "missing" if get_missing else "present"
 
-    if not mid_selector.value == " ":
+    if not field_selector.value == " ":
         filename = (
-            f"{top_selector.value}-{mid_selector.value}-{missing_text}.csv"
+            f"{top_selector.value}-{field_selector.value}-{missing_text}.csv"
         )
     else:
         filename = f"{top_selector.value}-{missing_text}.csv"
@@ -187,7 +191,9 @@ def build_mid(selected_file, derived_filter, **args):
         .encode(
             x=alt.X("column:N", title=None, axis=alt.Axis(grid=False)),
             y=alt.Y(
-                "count:Q", title="Metadata assets (n)", axis=alt.Axis(grid=False)
+                "count:Q",
+                title="Metadata assets (n)",
+                axis=alt.Axis(grid=False),
             ),
             color=alt.Color(
                 "category:N",
@@ -202,15 +208,9 @@ def build_mid(selected_file, derived_filter, **args):
     )
 
     # Also update the selected list
-    if len(db.mid_list) > 0:
-        if len(db.mid_list) > 0 and db.mid_list[0]:
-            option_list = [" "] + list(db.mid_list[0].keys())
-        else:
-            option_list = [" "]
-    else:
-        option_list = []
+    option_list = [" "] + db.field_list
 
-    mid_selector.options = option_list
+    field_selector.options = option_list
 
     return pn.pane.Vega(chart)
 
@@ -226,7 +226,7 @@ header = (
     "This app steps through all of the metadata stored in DocDB and determines whether every record's fields "
     "(and subfields) are "
     f"{hd_style('valid')} for aind-data-schema v{ads_version}, "
-    f"{hd_style('present')} but invalid, "
+    f"{hd_style('present')} but invalid or {hd_style('optional')}, "
     f"{hd_style('missing')}, or "
     f"{hd_style('excluded')} for the record's modality."
 )
@@ -245,7 +245,7 @@ left_col = pn.Column(
     top_selector,
     derived_selector,
     download_pane,
-    mid_selector,
+    field_selector,
     missing_selector,
     download_button,
     width=400,

@@ -1,5 +1,10 @@
-from aind_metadata_viz.metadata_class_map import first_layer_field_mapping, second_layer_field_mappings, first_layer_versions
-from aind_metadata_viz.utils import MetaState
+from aind_metadata_viz.metadata_class_map import (
+    first_layer_field_mapping,
+    second_layer_field_mappings,
+    first_layer_versions,
+)
+from aind_metadata_viz.utils import MetaState, expected_files_from_modalities
+from aind_data_schema_models.modalities import FileRequirement
 from pydantic import ValidationError
 from typing import Literal
 
@@ -15,12 +20,7 @@ def _metadata_present_helper(json: str, check_present: bool = True):
     object : dict
         Dictionary
     """
-    present = (
-        json is not None
-        and json != ""
-        and json != []
-        and json != {}
-    )
+    present = json is not None and json != "" and json != [] and json != {}
 
     if check_present:
         return "present" if present else "absent"
@@ -28,7 +28,11 @@ def _metadata_present_helper(json: str, check_present: bool = True):
         return "absent" if present else "present"
 
 
-def _metadata_valid_helper(field: str, json: str, mapping: dict, ):
+def _metadata_valid_helper(
+    field: str,
+    json: str,
+    mapping: dict,
+):
     """Return true if the json data is a valid object of the particular field class
 
     Parameters
@@ -44,11 +48,11 @@ def _metadata_valid_helper(field: str, json: str, mapping: dict, ):
         try:
             return mapping[field](**json) is not None
         except Exception as e:
-            print(e)
+            # print(e)
             return False
 
 
-def check_metadata_state(field: str, object: dict, parent: str = None, excluded_fields: list = []) -> MetaState:
+def check_metadata_state(field: str, object: dict, parent: str = None) -> str:
     """Get the MetaState for a specific key in a dictinoary
 
     Parameters
@@ -64,12 +68,29 @@ def check_metadata_state(field: str, object: dict, parent: str = None, excluded_
         _description_
     """
     # if excluded, just return that
-    if field in excluded_fields:
-        return MetaState.EXCLUDED.value
+    # get the excluded fields from the class map
+    if (
+        "data_description" in object
+        and object["data_description"]
+        and "modality" in object["data_description"]
+    ):
+        modality_map = expected_files_from_modalities(
+            modalities=object["data_description"]["modality"]
+        )
+
+        if field in modality_map:
+            file_req = modality_map[field]
+            if modality_map[field] == FileRequirement.EXCLUDED:
+                return MetaState.EXCLUDED.value
+        else:
+            print(
+                f"Warning: field {field} had incorrect modalities, so no file requirement is defined"
+            )
+            file_req = FileRequirement.REQUIRED
 
     # if you're looking at a parent file's data then you need a different mapping
     if parent:
-        print('not implemented')
+        print("not implemented")
     # we're at the top level, just check the first layer mappings
     else:
         class_map = first_layer_field_mapping
@@ -83,15 +104,18 @@ def check_metadata_state(field: str, object: dict, parent: str = None, excluded_
     # attempt validation
     if _metadata_valid_helper(field, value, class_map):
         return MetaState.VALID.value
-    
-    # check missing 
+
+    # check missing
     if _metadata_present_helper(value):
         return MetaState.PRESENT.value
-    
-    return MetaState.MISSING.value
+
+    if file_req == FileRequirement.OPTIONAL:
+        return MetaState.OPTIONAL.value
+    else:
+        return MetaState.MISSING.value
 
 
-def process_record_list(record_list: list, expected_fields: list, excluded_fields:list = []):
+def process_record_list(record_list: list, expected_fields: list):
     """Process a list of Metadata JSON records from DocDB
 
     For each record, check each of the expected fields and see if they are valid/present/missing/excluded
@@ -107,4 +131,7 @@ def process_record_list(record_list: list, expected_fields: list, excluded_field
     -------
     list[{field: MetaState}]
     """
-    return [{field: check_metadata_state(field, data, excluded_fields) for field in expected_fields} for data in record_list]
+    return [
+        {field: check_metadata_state(field, data) for field in expected_fields}
+        for data in record_list
+    ]

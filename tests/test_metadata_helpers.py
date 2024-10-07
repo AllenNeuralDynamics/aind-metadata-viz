@@ -59,7 +59,9 @@ class TestApp(unittest.TestCase):
         self.assertTrue(_metadata_present_helper("test7", self.dict))
         self.assertTrue(_metadata_present_helper("test8", self.dict))
 
-        self.assertFalse(_metadata_present_helper("test8", self.dict, check_present=False))
+        self.assertFalse(
+            _metadata_present_helper("test8", self.dict, check_present=False)
+        )
 
     def test_process_present_dict(self):
         """Test the process_present_dict function"""

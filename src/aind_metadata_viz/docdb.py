@@ -1,17 +1,22 @@
 from aind_data_access_api.document_db import MetadataDbClient
-import numpy as np
 import panel as pn
 import pandas as pd
 import param
 
 from io import StringIO
 
-from aind_data_schema_models.modalities import Modality, ExpectedFiles, FileRequirement
+from aind_data_schema_models.modalities import (
+    Modality,
+    ExpectedFiles,
+    FileRequirement,
+)
 from aind_metadata_viz.metadata_helpers import (
     process_record_list,
-    _metadata_present_helper,
 )
-from aind_metadata_viz.utils import MetaState
+from aind_metadata_viz.metadata_class_map import (
+    first_layer_field_mapping,
+    second_layer_field_mappings,
+)
 
 API_GATEWAY_HOST = "api.allenneuraldynamics.org"
 DATABASE = "metadata_index"
@@ -23,7 +28,7 @@ docdb_api_client = MetadataDbClient(
     collection=COLLECTION,
 )
 
-EXPECTED_FILES = sorted(
+ALL_FILES = sorted(
     [
         "data_description",
         "acquisition",
@@ -36,6 +41,8 @@ EXPECTED_FILES = sorted(
         "quality_control",
     ]
 )
+# These are the fields that need to be dropped from that data frame when building charts
+EXTRA_FIELDS = ["modalities", "derived", "name", "_id", "location", "created"]
 
 # reset cache every 24 hours
 CACHE_RESET_DAY = 24 * 60 * 60
@@ -61,61 +68,43 @@ class Database(param.Parameterized):
     ):
         """Initialize"""
         # get data
-        self._data = _get_all(test_mode=test_mode)
+        self._data = _get_file_presence()
 
         # setup
         (expected_files, _) = self.get_expected_files()
         self.set_file(expected_files[0])
 
-        # run validation
-
     @property
     def data_filtered(self):
         mod_filter = not (self.modality_filter == "all")
 
-        # Check if the data needs to be filtered by either modality or derived state
-        if mod_filter or not (self.derived_filter == "All assets"):
-            # filter data
-            filtered_list = []
+        filtered_df = self._data.copy()
 
-            for data in self._data:
-                include: bool = True
+        # Filter by modality
+        if mod_filter:
+            filtered_df = filtered_df[
+                filtered_df["modalities"].str.contains(self.modality_filter)
+            ]
 
-                if mod_filter and not (
-                    data["data_description"]
-                    and "modality" in data["data_description"]
-                    and isinstance(data["data_description"]["modality"], list)
-                    and any(
-                        mod["abbreviation"] == self.modality_filter
-                        for mod in data["data_description"]["modality"]
-                    )
-                ):
-                    include = False
+        if not (self.derived_filter == "All assets"):
+            if self.derived_filter == "Raw":
+                filtered_df = filtered_df[filtered_df["derived"] == False]
+            elif self.derived_filter == "Derived":
+                filtered_df = filtered_df[filtered_df["derived"] == True]
 
-                if (
-                    self.derived_filter == "Raw"
-                    and data["name"].count("_") > 3
-                ) or (
-                    self.derived_filter == "Derived"
-                    and data["name"].count("_") <= 3
-                ):
-                    include = False
-
-                if include:
-                    filtered_list.append(data)
-            return filtered_list
-        else:
-            return self._data
+        return filtered_df
 
     def get_expected_files(self) -> tuple[list[str], list[str]]:
         if self.modality_filter == "all":
-            return (EXPECTED_FILES, [])
+            return (ALL_FILES, [])
 
-        expected_files_by_modality = EXPECTED_FILES.copy()
+        expected_files_by_modality = ALL_FILES.copy()
         excluded_files_by_modality = []
 
         # get the ExpectedFiles object for this modality
-        expected_files = getattr(ExpectedFiles, str(self.modality_filter).upper())
+        expected_files = getattr(
+            ExpectedFiles, str(self.modality_filter).upper()
+        )
 
         # loop through the actual files and remove any that are not expected
         for file in expected_files_by_modality:
@@ -124,10 +113,8 @@ class Database(param.Parameterized):
                 excluded_files_by_modality.append(file)
 
         return (expected_files_by_modality, excluded_files_by_modality)
-    
-    def get_file_presence(
-        self
-    ):
+
+    def get_file_presence(self):
         """Get the presence of a list of files
 
         Parameters
@@ -135,18 +122,17 @@ class Database(param.Parameterized):
         files : list[str], optional
             List of expected metadata filenames, by default EXPECTED_FILES
         """
-        (expected_files, excluded_files) = self.get_expected_files()
-        files = expected_files + excluded_files
-
-        # Get the short form df, each row is a record and each column is it's file:MetaState
-        processed = process_record_list(self.data_filtered, expected_files)
-        df = pd.DataFrame(processed, columns=files)
-
         # Melt to long form
-        df_melted = df.melt(var_name='file', value_name='state')
-        # Get sum
-        df_summary = df_melted.groupby(["file", "state"]).size().reset_index(name="sum")
+        df = self._data.copy()
+        df.drop(EXTRA_FIELDS, axis=1, inplace=True)
 
+        df_melted = df.melt(var_name="file", value_name="state")
+        # Get sum
+        df_summary = (
+            df_melted.groupby(["file", "state"]).size().reset_index(name="sum")
+        )
+
+        print(df_summary)
         return df_summary
 
     def get_field_presence(self):
@@ -173,10 +159,7 @@ class Database(param.Parameterized):
         """
         self.file = file
 
-        self.mid_list = []
-        for data in self.data_filtered:
-            if _metadata_present_helper(data[self.file]):
-                self.mid_list.append(data[self.file])
+        self.field_list = list(second_layer_field_mappings[file].keys())
 
     def get_file_field_presence(self):
         """Get the presence of fields in a specific file
@@ -193,9 +176,9 @@ class Database(param.Parameterized):
         """
         return pd.DataFrame()
         # expected_fields = (
-        #     self.mid_list[0].keys() if len(self.mid_list) > 0 else []
+        #     self.field_list[0].keys() if len(self.field_list) > 0 else []
         # )
-        # processed = process_record_list(self.mid_list, expected_fields)
+        # processed = process_record_list(self.field_list, expected_fields)
 
         # print(processed)
         # df = pd.DataFrame()
@@ -223,42 +206,90 @@ class Database(param.Parameterized):
 
         get_present = missing == "Present"
 
-        df_data = []
-        for data in self.data_filtered:
-            if not data[file] is None:
-                if field == " " or _metadata_present_helper(
-                    field, data[file], check_present=get_present
-                ):
-                    # This file/field combo is present/missing, get all the id
-                    # information
-                    id_data = {}
-                    for id_field in id_fields:
-                        if id_field in data:
-                            id_data[id_field] = data[id_field]
-                        else:
-                            id_data[id_field] = None
+        # df_data = []
+        # for data in self.data_filtered:
+        #     if not data[file] is None:
+        #         if field == " " or _metadata_present_helper(
+        #             field, data[file], check_present=get_present
+        #         ):
+        #             # This file/field combo is present/missing, get all the id
+        #             # information
+        #             id_data = {}
+        #             for id_field in id_fields:
+        #                 if id_field in data:
+        #                     id_data[id_field] = data[id_field]
+        #                 else:
+        #                     id_data[id_field] = None
 
-                    # Get subject if available
-                    if (
-                        "subject" in data
-                        and data["subject"]
-                        and "subject_id" in data["subject"]
-                    ):
-                        id_data["subject_id"] = data["subject"]["subject_id"]
-                    else:
-                        id_data["subject_id"] = ""
+        #             # Get subject if available
+        #             if (
+        #                 "subject" in data
+        #                 and data["subject"]
+        #                 and "subject_id" in data["subject"]
+        #             ):
+        #                 id_data["subject_id"] = data["subject"]["subject_id"]
+        #             else:
+        #                 id_data["subject_id"] = ""
 
-                    df_data.append(id_data)
+        #             df_data.append(id_data)
 
-        df = pd.DataFrame(df_data)
+        df = pd.DataFrame()
 
         sio = StringIO()
         df.to_csv(sio, index=False)
         return sio.getvalue()
 
 
+@pn.cache(ttl=CACHE_RESET_DAY)
+def _get_file_presence() -> pd.DataFrame:
+    """Get all and convert to data frame format
+
+    Parameters
+    ----------
+    test_mode : bool, optional
+        _description_, by default False
+    """
+    record_list = _get_all()
+    files = list(first_layer_field_mapping.keys())
+
+    processed = process_record_list(record_list, files)
+
+    # Now add some information about the records, i.e. modality, derived state, etc.
+    for i, record in enumerate(record_list):
+        if (
+            "data_description" in record
+            and record["data_description"]
+            and "modality" in record["data_description"]
+        ):
+            if isinstance(record["data_description"]["modality"], list):
+                modalities = [
+                    mod["abbreviation"]
+                    for mod in record["data_description"]["modality"]
+                ]
+        else:
+            modalities = []
+        derived = True if record["name"].count("_") <= 3 else False
+
+        info_data = {
+            "modalities": ",".join(modalities),
+            "derived": derived,
+            "name": record["name"],
+            "_id": record["_id"],
+            "location": record["location"],
+            "created": record["created"],
+        }
+
+        processed[i] = {**processed[i], **info_data}
+
+    return pd.DataFrame(
+        processed,
+        columns=files
+        + ["modalities", "derived", "name", "_id", "location", "created"],
+    )
+
+
 # @pn.cache(ttl=CACHE_RESET_DAY)
-# def _get_all_df(test_mode=False):
+# def _get_field_presence(file: str):
 #     """Get all and convert to data frame format
 
 #     Parameters
@@ -266,15 +297,17 @@ class Database(param.Parameterized):
 #     test_mode : bool, optional
 #         _description_, by default False
 #     """
-#     record_list = _get_all(test_mode=test_mode)
+#     record_list = _get_all()
 
+#     # filter by file
 
+#     # get field presence
 
 
 @pn.cache(ttl=CACHE_RESET_DAY)
 def _get_all(test_mode=False):
     filter = {}
-    limit = 250 if not test_mode else 10
+    limit = 0 if not test_mode else 10
     paginate_batch_size = 500
     response = docdb_api_client.retrieve_docdb_records(
         filter_query=filter,
