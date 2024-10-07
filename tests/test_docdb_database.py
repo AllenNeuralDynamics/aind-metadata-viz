@@ -2,7 +2,7 @@
 
 import unittest
 
-from aind_metadata_viz.docdb import Database, EXPECTED_FILES
+from aind_metadata_viz.docdb import Database, ALL_FILES
 
 
 class DocDBDatabaseTest(unittest.TestCase):
@@ -45,10 +45,10 @@ class DocDBDatabaseTest(unittest.TestCase):
         """Test filtering by file"""
         mid_len = [0, 10, 0, 10, 10, 0, 10, 2, 10]
 
-        for i, file in enumerate(EXPECTED_FILES):
+        for i, file in enumerate(ALL_FILES):
             self.db.set_file(file)
 
-            self.assertEqual(len(self.db.mid_list), mid_len[i])
+            self.assertEqual(len(self.db.field_list), mid_len[i])
 
     def test_derived(self):
         """Test filtering for derived"""

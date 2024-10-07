@@ -1,29 +1,87 @@
-import pandas as pd
+from enum import Enum
+from aind_data_schema_models.modalities import ExpectedFiles, FileRequirement
+
+# from aind_data_schema.core.metadata import CORE_FILES  # todo: import instead of declaring
+
+CORE_FILES = [
+    "subject",
+    "data_description",
+    "procedures",
+    "session",
+    "rig",
+    "processing",
+    "acquisition",
+    "instrument",
+    "quality_control",
+]
 
 
-def compute_count_true(df):
-    """For each column, compute the count of true values and return as a
-    longform dataframe
+class MetaState(str, Enum):
+    VALID = "valid"
+    PRESENT = "present"
+    OPTIONAL = "optional"
+    MISSING = "missing"
+    EXCLUDED = "excluded"
+
+
+REMAPS = {
+    "OPHYS": "POPHYS",
+    "EPHYS": "ECEPHYS",
+    "TRAINED_BEHAVIOR": "BEHAVIOR",
+    "HSFP": "FIB",
+    "DISPIM": "SPIM",
+    "MULTIPLANE_OPHYS": "POPHYS",
+}
+
+
+def expected_files_from_modalities(
+    modalities: list[str],
+) -> dict[str, FileRequirement]:
+    """Get the expected files for a list of modalities
 
     Parameters
     ----------
-    df : dataframe
-        Dataframe of "absent"/"present"/"excluded" values
+    modalities : list[str]
+        List of modalities to get expected files for
+
+    Returns
+    -------
+    list[str]
+        List of expected files
     """
+    requirement_dict = {}
 
-    categories = ['absent', 'present', 'excluded']
+    # I can't believe I have to do this
+    if not isinstance(modalities, list):
+        modalities = [modalities]
 
-    # Apply value_counts to each column and fill missing categories with 0
-    count_df = pd.DataFrame({col: df[col].value_counts() for col in df.columns}).fillna(0)
+    for modality in modalities:
+        if "abbreviation" not in modality:
+            continue
 
-    # Reindex with categories to ensure all categories are present
-    count_df = count_df.reindex(categories).fillna(0)
+        for file in CORE_FILES:
+            #  For each field, check if this is a required/excluded file
 
-    # Transpose so that columns are "absent", "present", "excluded" with count per original column
-    count_df = count_df.transpose()
+            # remap 
+            abbreviation = str(modality["abbreviation"]).replace("-", "_").upper()
+            if abbreviation in REMAPS:
+                abbreviation = REMAPS[abbreviation]
 
-    long_df = count_df.reset_index().melt(id_vars='index', var_name='category', value_name='count')
+            file_requirement = getattr(
+                getattr(
+                    ExpectedFiles,
+                    abbreviation,
+                ),
+                file,
+            )
 
-    # Rename 'index' to something more meaningful like 'column'
-    long_df.rename(columns={'index': 'column'}, inplace=True)
-    return long_df
+            if file not in requirement_dict:
+                requirement_dict[file] = file_requirement
+            elif (file_requirement == FileRequirement.REQUIRED) or (
+                file_requirement == FileRequirement.OPTIONAL
+                and requirement_dict[file] == FileRequirement.EXCLUDED
+            ):
+                # override, required wins over all else, and optional wins over excluded
+                requirement_dict[file] = file_requirement
+
+    return requirement_dict
