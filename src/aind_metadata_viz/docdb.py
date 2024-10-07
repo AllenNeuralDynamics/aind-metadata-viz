@@ -61,11 +61,13 @@ class Database(param.Parameterized):
     ):
         """Initialize"""
         # get data
-        self._data = get_all(test_mode=test_mode)
+        self._data = _get_all(test_mode=test_mode)
 
         # setup
         (expected_files, _) = self.get_expected_files()
         self.set_file(expected_files[0])
+
+        # run validation
 
     @property
     def data_filtered(self):
@@ -255,11 +257,24 @@ class Database(param.Parameterized):
         return sio.getvalue()
 
 
+# @pn.cache(ttl=CACHE_RESET_DAY)
+# def _get_all_df(test_mode=False):
+#     """Get all and convert to data frame format
+
+#     Parameters
+#     ----------
+#     test_mode : bool, optional
+#         _description_, by default False
+#     """
+#     record_list = _get_all(test_mode=test_mode)
+
+
+
+
 @pn.cache(ttl=CACHE_RESET_DAY)
-def get_all(test_mode=False):
+def _get_all(test_mode=False):
     filter = {}
-    # limit = 0 if not test_mode else 10
-    limit = 10
+    limit = 250 if not test_mode else 10
     paginate_batch_size = 500
     response = docdb_api_client.retrieve_docdb_records(
         filter_query=filter,

@@ -19,7 +19,7 @@ color_options = {
         "valid": "#9FF2F5",
         "present": "#F49FD7",
         "missing": "#F49FD7",
-        "excluded": "#9FF2F5",
+        "excluded": "black",
     },
 }
 
@@ -61,6 +61,7 @@ pn.state.location.sync(derived_selector, {"value": "derived"})
 
 def file_present_chart():
     sum_longform_df = db.get_file_presence()
+    # print(sum_longform_df)
     local_states = sum_longform_df["state"].unique()
     local_color_list = [colors[state] for state in local_states]
 
@@ -70,7 +71,7 @@ def file_present_chart():
         .encode(
             x=alt.X("file:N", title=None, axis=alt.Axis(grid=False)),
             y=alt.Y(
-                "count:Q",
+                "sum:Q",
                 title="Metadata assets (n)",
                 axis=alt.Axis(grid=False),
             ),

@@ -118,6 +118,18 @@ from aind_data_schema.core.subject import (
 )
 from aind_data_schema_models.species import Species
 
+first_layer_versions = {
+    "data_description": DataDescription.model_construct().schema_version,
+    "acquisition": Acquisition.model_construct().schema_version,
+    "procedures": Procedures.model_construct().schema_version,
+    "subject": Subject.model_construct().schema_version,
+    "instrument": Instrument.model_construct().schema_version,
+    "processing": Processing.model_construct().schema_version,
+    "rig": Rig.model_construct().schema_version,
+    "session": Session.model_construct().schema_version,
+    "quality_control": QualityControl.model_construct().schema_version,
+}
+
 first_layer_field_mapping = {
     "data_description": DataDescription,
     "acquisition": Acquisition,

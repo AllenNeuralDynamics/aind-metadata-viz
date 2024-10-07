@@ -1,6 +1,7 @@
-from aind_metadata_viz.metadata_class_map import first_layer_field_mapping, second_layer_field_mappings
+from aind_metadata_viz.metadata_class_map import first_layer_field_mapping, second_layer_field_mappings, first_layer_versions
 from aind_metadata_viz.utils import MetaState
 from pydantic import ValidationError
+from typing import Literal
 
 
 def _metadata_present_helper(json: str, check_present: bool = True):
@@ -35,10 +36,14 @@ def _metadata_valid_helper(field: str, json: str, mapping: dict, ):
     json : str
         json string generated from a AindCoreModel dump
     """
+    if "schema_version" in json:
+        # force the schema version to match the current one
+        json["schema_version"] = first_layer_versions[field]
+
     if field in mapping:
         try:
-            return mapping[field].model_validate_json(json) is not None
-        except ValidationError as e:
+            return mapping[field](**json) is not None
+        except Exception as e:
             print(e)
             return False
 
@@ -69,8 +74,8 @@ def check_metadata_state(field: str, object: dict, parent: str = None, excluded_
     else:
         class_map = first_layer_field_mapping
 
-    # First check that the key exists at all
-    if field in object:
+    # First check that the key exists at all and is not None
+    if field in object and object[field]:
         value = object[field]
     else:
         return MetaState.MISSING.value
