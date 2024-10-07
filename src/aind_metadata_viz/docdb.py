@@ -2,6 +2,7 @@ from aind_data_access_api.document_db import MetadataDbClient
 import panel as pn
 import pandas as pd
 import param
+import os
 
 from io import StringIO
 
@@ -18,9 +19,9 @@ from aind_metadata_viz.metadata_class_map import (
     second_layer_field_mappings,
 )
 
-API_GATEWAY_HOST = "api.allenneuraldynamics.org"
-DATABASE = "metadata_index"
-COLLECTION = "data_assets"
+API_GATEWAY_HOST = os.getenv("API_GATEWAY_HOST", "api.allenneuraldynamics-test.org")
+DATABASE = os.getenv("DATABASE", "test")
+COLLECTION = os.getenv("COLLECTION", "data_assets")
 
 docdb_api_client = MetadataDbClient(
     host=API_GATEWAY_HOST,
