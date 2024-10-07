@@ -68,7 +68,7 @@ class Database(param.Parameterized):
     ):
         """Initialize"""
         # get data
-        self._data = _get_file_presence()
+        self._data = _get_file_presence(test_mode=test_mode)
 
         # setup
         (expected_files, _) = self.get_expected_files()
@@ -88,9 +88,9 @@ class Database(param.Parameterized):
 
         if not (self.derived_filter == "All assets"):
             if self.derived_filter == "Raw":
-                filtered_df = filtered_df[filtered_df["derived"] == False]
+                filtered_df = filtered_df[filtered_df["derived"]==False]
             elif self.derived_filter == "Derived":
-                filtered_df = filtered_df[filtered_df["derived"] == True]
+                filtered_df = filtered_df[filtered_df["derived"]==True]
 
         return filtered_df
 
@@ -123,31 +123,14 @@ class Database(param.Parameterized):
             List of expected metadata filenames, by default EXPECTED_FILES
         """
         # Melt to long form
-        df = self._data.copy()
+        df = self.data_filtered.copy()
         df.drop(EXTRA_FIELDS, axis=1, inplace=True)
 
         df_melted = df.melt(var_name="file", value_name="state")
         # Get sum
-        df_summary = (
-            df_melted.groupby(["file", "state"]).size().reset_index(name="sum")
-        )
+        df_summary = df_melted.groupby(["file", "state"]).size().reset_index(name="sum")
 
-        print(df_summary)
         return df_summary
-
-    def get_field_presence(self):
-        """Get the presence of fields at the top-level"""
-        return pd.DataFrame()
-        # if len(self.data_filtered) > 0:
-        #     fields = [
-        #         item
-        #         for item in list(self.data_filtered[0].keys())
-        #         if item not in EXPECTED_FILES
-        #     ]
-        # else:
-        #     fields = []
-
-        # return self.get_file_presence(files=fields)
 
     def set_file(self, file: str):
         """Set the active file
@@ -186,7 +169,7 @@ class Database(param.Parameterized):
 
         # return compute_count_true(df)
 
-    def get_csv(self, file: str, field: str = " ", missing: str = "Missing"):
+    def get_csv(self, vp_state: str = "Not Valid/Present"):
         """Build a CSV file of export data based on the selected file and field
 
         Parameters
@@ -199,41 +182,21 @@ class Database(param.Parameterized):
         Returns
         -------
         csv
-            CSV file with name, _id, location, creation date, and subject_id (if available)
+            CSV file with name, _id, location, created date, and subject_id (if available)
         """
         # For everybody who is missing the currently active file/field
-        id_fields = ["name", "_id", "location", "creation"]
+        df = self.data_filtered
 
-        get_present = missing == "Present"
+        df = df[["name", "_id", "location", "created"]]
 
-        # df_data = []
-        # for data in self.data_filtered:
-        #     if not data[file] is None:
-        #         if field == " " or _metadata_present_helper(
-        #             field, data[file], check_present=get_present
-        #         ):
-        #             # This file/field combo is present/missing, get all the id
-        #             # information
-        #             id_data = {}
-        #             for id_field in id_fields:
-        #                 if id_field in data:
-        #                     id_data[id_field] = data[id_field]
-        #                 else:
-        #                     id_data[id_field] = None
+        print(self.file)
 
-        #             # Get subject if available
-        #             if (
-        #                 "subject" in data
-        #                 and data["subject"]
-        #                 and "subject_id" in data["subject"]
-        #             ):
-        #                 id_data["subject_id"] = data["subject"]["subject_id"]
-        #             else:
-        #                 id_data["subject_id"] = ""
+        if vp_state == "Not Valid/Present":
+            df = df[(self.data_filtered[self.file] == "missing") | (self.data_filtered[self.file] == "optional")]
+        elif vp_state == "Valid/Present":
+            df = df[(self.data_filtered[self.file] == "present") | (self.data_filtered[self.file] == "valid")]
 
-        #             df_data.append(id_data)
-
-        df = pd.DataFrame()
+        # [TODO] add back in filtering by field and not just file
 
         sio = StringIO()
         df.to_csv(sio, index=False)
@@ -241,7 +204,7 @@ class Database(param.Parameterized):
 
 
 @pn.cache(ttl=CACHE_RESET_DAY)
-def _get_file_presence() -> pd.DataFrame:
+def _get_file_presence(test_mode=False) -> pd.DataFrame:
     """Get all and convert to data frame format
 
     Parameters
@@ -249,7 +212,7 @@ def _get_file_presence() -> pd.DataFrame:
     test_mode : bool, optional
         _description_, by default False
     """
-    record_list = _get_all()
+    record_list = _get_all(test_mode=test_mode)
     files = list(first_layer_field_mapping.keys())
 
     processed = process_record_list(record_list, files)

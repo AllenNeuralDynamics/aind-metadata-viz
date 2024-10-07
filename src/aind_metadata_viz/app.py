@@ -20,7 +20,7 @@ color_options = {
     },
     "lemonade": {
         "valid": "#9FF2F5",
-        "optional": "#F49FD7",
+        "present": "#F49FD7",
         "optional": "grey",
         "missing": "#F49FD7",
         "excluded": "white",
@@ -47,8 +47,9 @@ top_selector = pn.widgets.Select(
 field_selector = pn.widgets.Select(name="Sub-select for field:", options=[])
 
 missing_selector = pn.widgets.Select(
-    name="Value state", options=["Missing", "Present"]
+    name="Value state", options=["Not Valid/Present", "Valid/Present"]
 )
+missing_selector.value = "Not Valid/Present"
 
 derived_selector = pn.widgets.Select(
     name="Filter for:",
@@ -96,36 +97,6 @@ def file_present_chart():
     return pane
 
 
-def notfile_present_chart():
-    sum_longform_df = db.get_field_presence()
-
-    chart = (
-        alt.Chart(sum_longform_df)
-        .mark_bar()
-        .encode(
-            x=alt.X("column:N", title=None, axis=alt.Axis(grid=False)),
-            y=alt.Y(
-                "count:Q",
-                title=None,
-                axis=alt.Axis(grid=False),
-            ),
-            color=alt.Color(
-                "category:N",
-                scale=alt.Scale(
-                    domain=["valid", "present", "missing", "excluded"],
-                    range=color_list,
-                ),
-                legend=None,
-            ),
-        )
-        .properties(title="Other fields")
-    )
-
-    pane = pn.pane.Vega(chart)
-
-    return pane
-
-
 js_pane = pn.pane.HTML("", height=0, width=0).servable()
 
 
@@ -133,15 +104,13 @@ def build_csv_jscode(event):
     """
     Create the javascript code and append it to the page.
     """
-    csv = db.get_csv(
-        top_selector.value, field_selector.value, missing_selector.value
-    )
+    csv = db.get_csv(missing_selector.value)
     csv_escaped = csv.replace("\n", "\\n").replace(
         '"', '\\"'
     )  # Escape newlines and double quotes
 
-    get_missing = missing_selector.value == "Missing"
-    missing_text = "missing" if get_missing else "present"
+    get_missing = missing_selector.value == "Not Valid/Present"
+    missing_text = "bad" if get_missing else "good"
 
     if not field_selector.value == " ":
         filename = (
@@ -256,7 +225,7 @@ def build_row(selected_modality, derived_filter):
     db.modality_filter = selected_modality
     db.derived_filter = derived_filter
 
-    return pn.Row(file_present_chart, notfile_present_chart)
+    return file_present_chart
 
 
 top_row = pn.bind(
