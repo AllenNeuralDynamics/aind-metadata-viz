@@ -273,8 +273,8 @@ mid_plot = pn.bind(
 )
 
 # Put everything in a column and buffer it
-main_col = pn.Column(top_row, mid_plot, sizing_mode="stretch_width", styles=outer_style)
+main_col = pn.Column(top_row, mid_plot, styles=outer_style, width=400)
 
-pn.Row(left_col, pn.Spacer(width=20), main_col, pn.HSpacer(), margin=20).servable(
+pn.Row(pn.HSpacer(), left_col, pn.Spacer(width=20), main_col, pn.HSpacer(), margin=20).servable(
     title="Metadata Portal",
 )
