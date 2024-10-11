@@ -10,6 +10,14 @@ pn.extension(design="material")
 pn.extension("vega")
 alt.themes.enable("ggplot2")
 
+aind_colors = colors = {
+    "dark_blue": "#003057",
+    "light_blue": "#2A7DE1",
+    "green": "#1D8649",
+    "yellow": "#FFB71B",
+    "grey": "#7C7C7F"
+}
+
 color_options = {
     "default": {
         "valid": "green",
@@ -19,17 +27,24 @@ color_options = {
         "excluded": "white",
     },
     "lemonade": {
-        "valid": "#9FF2F5",
-        "present": "#F49FD7",
+        "valid": "#F49FD7",
+        "present": "#FFD966",
         "optional": "grey",
-        "missing": "#F49FD7",
+        "missing": "#9FF2F5",
         "excluded": "white",
     },
+    "aind": {
+        "valid": aind_colors["green"],
+        "present": aind_colors["light_blue"],
+        "optional": "grey",
+        "missing": aind_colors["yellow"],
+        "excluded": "white",
+    }
 }
 
 colors = (
-    color_options[pn.state.location.query_params["color"]]
-    if "color" in pn.state.location.query_params
+    color_options[pn.state.location.query_params["colors"]]
+    if "colors" in pn.state.location.query_params
     else color_options["default"]
 )
 color_list = list(colors.values())
@@ -204,12 +219,20 @@ download_md = """
 **Download options**
 """
 
-header_pane = pn.pane.Markdown(header)
+outer_style = {
+    'background': '#ffffff',
+    'border-radius': '5px',
+    'border': '2px solid black',
+    'padding': '10px',
+    'box-shadow': '5px 5px 5px #bcbcbc',
+    'margin': "5px",
+}
+
+
+header_pane = pn.pane.Markdown(header, styles=outer_style, width=420)
 download_pane = pn.pane.Markdown(download_md)
 
-# Left column (controls)
-left_col = pn.Column(
-    header_pane,
+control_col = pn.Column(
     modality_selector,
     top_selector,
     derived_selector,
@@ -217,7 +240,15 @@ left_col = pn.Column(
     field_selector,
     missing_selector,
     download_button,
-    width=400,
+    styles=outer_style,
+    width=420,
+)
+
+# Left column (controls)
+left_col = pn.Column(
+    header_pane,
+    control_col,
+    width=420,
 )
 
 
@@ -242,8 +273,8 @@ mid_plot = pn.bind(
 )
 
 # Put everything in a column and buffer it
-main_col = pn.Column(top_row, mid_plot, sizing_mode="stretch_width")
+main_col = pn.Column(top_row, mid_plot, sizing_mode="stretch_width", styles=outer_style)
 
-pn.Row(left_col, main_col, pn.layout.HSpacer()).servable(
-    title="Metadata Portal"
+pn.Row(left_col, pn.Spacer(width=20), main_col, pn.HSpacer(), margin=20).servable(
+    title="Metadata Portal",
 )
