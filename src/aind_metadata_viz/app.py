@@ -37,22 +37,22 @@ color_list = list(colors.values())
 db = docdb.Database()
 
 modality_selector = pn.widgets.Select(
-    name="Select modality:", options=["all"] + docdb.MODALITIES
+    name="Filter by modality:", options=["all"] + docdb.MODALITIES
 )
 
 top_selector = pn.widgets.Select(
-    name="Select metadata file:", options=docdb.ALL_FILES
+    name="Filter by core file:", options=docdb.ALL_FILES
 )
 
-field_selector = pn.widgets.Select(name="Sub-select for field:", options=[])
+field_selector = pn.widgets.Select(name="Filter download by field:", options=[])
 
 missing_selector = pn.widgets.Select(
-    name="Value state", options=["Not Valid/Present", "Valid/Present"]
+    name="Filter download by state", options=["Not Valid/Present", "Valid/Present"]
 )
 missing_selector.value = "Not Valid/Present"
 
 derived_selector = pn.widgets.Select(
-    name="Filter for:",
+    name="Filter by history:",
     options=["All assets", "Raw", "Derived"],
 )
 derived_selector.value = "All assets"
