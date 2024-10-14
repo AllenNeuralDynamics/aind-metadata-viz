@@ -10,6 +10,25 @@ pn.extension(design="material")
 pn.extension("vega")
 alt.themes.enable("ggplot2")
 
+AIND_COLORS = colors = {
+    "dark_blue": "#003057",
+    "light_blue": "#2A7DE1",
+    "green": "#1D8649",
+    "yellow": "#FFB71B",
+    "grey": "#7C7C7F"
+}
+
+# Define CSS to set the background color
+background_color = AIND_COLORS["dark_blue"]
+css = f"""
+body {{
+    background-color: {background_color} !important;
+}}
+"""
+
+# Add the custom CSS
+pn.config.raw_css.append(css)
+
 color_options = {
     "default": {
         "valid": "green",
@@ -19,17 +38,24 @@ color_options = {
         "excluded": "white",
     },
     "lemonade": {
-        "valid": "#9FF2F5",
-        "present": "#F49FD7",
+        "valid": "#F49FD7",
+        "present": "#FFD966",
         "optional": "grey",
-        "missing": "#F49FD7",
+        "missing": "#9FF2F5",
         "excluded": "white",
     },
+    "aind": {
+        "valid": AIND_COLORS["green"],
+        "present": AIND_COLORS["light_blue"],
+        "optional": "grey",
+        "missing": AIND_COLORS["yellow"],
+        "excluded": "white",
+    }
 }
 
 colors = (
-    color_options[pn.state.location.query_params["color"]]
-    if "color" in pn.state.location.query_params
+    color_options[pn.state.location.query_params["colors"]]
+    if "colors" in pn.state.location.query_params
     else color_options["default"]
 )
 color_list = list(colors.values())
@@ -37,22 +63,22 @@ color_list = list(colors.values())
 db = docdb.Database()
 
 modality_selector = pn.widgets.Select(
-    name="Select modality:", options=["all"] + docdb.MODALITIES
+    name="Filter by modality:", options=["all"] + docdb.MODALITIES
 )
 
 top_selector = pn.widgets.Select(
-    name="Select metadata file:", options=docdb.ALL_FILES
+    name="Filter by core file:", options=docdb.ALL_FILES
 )
 
-field_selector = pn.widgets.Select(name="Sub-select for field:", options=[])
+field_selector = pn.widgets.Select(name="Filter download by field:", options=[])
 
 missing_selector = pn.widgets.Select(
-    name="Value state", options=["Not Valid/Present", "Valid/Present"]
+    name="Filter download by state", options=["Not Valid/Present", "Valid/Present"]
 )
 missing_selector.value = "Not Valid/Present"
 
 derived_selector = pn.widgets.Select(
-    name="Filter for:",
+    name="Filter by history:",
     options=["All assets", "Raw", "Derived"],
 )
 derived_selector.value = "All assets"
@@ -204,12 +230,20 @@ download_md = """
 **Download options**
 """
 
-header_pane = pn.pane.Markdown(header)
+outer_style = {
+    'background': '#ffffff',
+    'border-radius': '5px',
+    'border': '2px solid black',
+    'padding': '10px',
+    'box-shadow': '5px 5px 5px #bcbcbc',
+    'margin': "5px",
+}
+
+
+header_pane = pn.pane.Markdown(header, styles=outer_style, width=420)
 download_pane = pn.pane.Markdown(download_md)
 
-# Left column (controls)
-left_col = pn.Column(
-    header_pane,
+control_col = pn.Column(
     modality_selector,
     top_selector,
     derived_selector,
@@ -217,7 +251,15 @@ left_col = pn.Column(
     field_selector,
     missing_selector,
     download_button,
-    width=400,
+    styles=outer_style,
+    width=420,
+)
+
+# Left column (controls)
+left_col = pn.Column(
+    header_pane,
+    control_col,
+    width=420,
 )
 
 
@@ -242,8 +284,8 @@ mid_plot = pn.bind(
 )
 
 # Put everything in a column and buffer it
-main_col = pn.Column(top_row, mid_plot, sizing_mode="stretch_width")
+main_col = pn.Column(top_row, mid_plot, styles=outer_style, width=400)
 
-pn.Row(left_col, main_col, pn.layout.HSpacer()).servable(
-    title="Metadata Portal"
+pn.Row(pn.HSpacer(), left_col, pn.Spacer(width=20), main_col, pn.HSpacer(), margin=20).servable(
+    title="Metadata Portal",
 )

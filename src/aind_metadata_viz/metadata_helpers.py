@@ -69,6 +69,7 @@ def check_metadata_state(field: str, object: dict, parent: str = None) -> str:
     """
     # if excluded, just return that
     # get the excluded fields from the class map
+
     if (
         "data_description" in object
         and object["data_description"]
@@ -80,14 +81,23 @@ def check_metadata_state(field: str, object: dict, parent: str = None) -> str:
 
         if field in modality_map:
             file_req = modality_map[field]
-            if modality_map[field] == FileRequirement.EXCLUDED:
-                return MetaState.EXCLUDED.value
         else:
             print(
                 f"Warning: field {field} had incorrect modalities, so no file requirement is defined"
             )
             file_req = FileRequirement.REQUIRED
+    else:
+        # default to required
+        print(
+            f"Warning: object had no data description modalities, so no file reuirement is defined"
+        )
+        file_req = FileRequirement.REQUIRED
 
+    # Excluded files we ignore, just return that it was excluded
+    if file_req == FileRequirement.EXCLUDED:
+        return MetaState.EXCLUDED.value
+
+    # File is required or optional, get the mappings from field -> class
     # if you're looking at a parent file's data then you need a different mapping
     if parent:
         print("not implemented")
@@ -99,20 +109,25 @@ def check_metadata_state(field: str, object: dict, parent: str = None) -> str:
     if field in object and object[field]:
         value = object[field]
     else:
-        return MetaState.MISSING.value
+        if file_req == FileRequirement.OPTIONAL:
+            return MetaState.OPTIONAL.value
+        else:
+            return MetaState.MISSING.value
 
     # attempt validation
     if _metadata_valid_helper(field, value, class_map):
         return MetaState.VALID.value
 
-    # check missing
+    # validation failed, check if the field is present or if it's empty
+
+    # check empty
     if _metadata_present_helper(value):
         return MetaState.PRESENT.value
-
-    if file_req == FileRequirement.OPTIONAL:
-        return MetaState.OPTIONAL.value
     else:
-        return MetaState.MISSING.value
+        if file_req == FileRequirement.OPTIONAL:
+            return MetaState.OPTIONAL.value
+        else:
+            return MetaState.MISSING.value
 
 
 def process_record_list(record_list: list, expected_fields: list):

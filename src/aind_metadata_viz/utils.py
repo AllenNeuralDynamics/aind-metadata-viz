@@ -31,6 +31,10 @@ REMAPS = {
     "HSFP": "FIB",
     "DISPIM": "SPIM",
     "MULTIPLANE_OPHYS": "POPHYS",
+    "SMARTSPIM": "SPIM",
+    "FIP": "FIB",
+    "SINGLE_PLANE_OPHYS": "POPHYS",
+    "EXASPIM": "SPIM",
 }
 
 

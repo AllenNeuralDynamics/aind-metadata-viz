@@ -62,9 +62,6 @@ class Database(param.Parameterized):
 
     def __init__(
         self,
-        api_host=API_GATEWAY_HOST,
-        database=DATABASE,
-        collection=COLLECTION,
         test_mode=False,
     ):
         """Initialize"""

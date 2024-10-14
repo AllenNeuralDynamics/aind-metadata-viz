@@ -2,7 +2,7 @@
 
 import unittest
 
-from aind_metadata_viz.docdb import get_subjects
+from aind_metadata_viz.docdb import _get_all
 
 
 class DocDBTest(unittest.TestCase):
@@ -12,7 +12,7 @@ class DocDBTest(unittest.TestCase):
 
     def test_get_all(self):
         """Test all sessions"""
-        data = get_all(test_mode=True)
+        data = _get_all(test_mode=True)
         first_ten_subjects = [
             "271246",
             "666612",
