@@ -20,7 +20,7 @@ from aind_metadata_viz.metadata_class_map import (
 )
 
 API_GATEWAY_HOST = os.getenv("API_GATEWAY_HOST", "api.allenneuraldynamics-test.org")
-DATABASE = os.getenv("DATABASE", "test")
+DATABASE = os.getenv("DATABASE", "metadata_index")
 COLLECTION = os.getenv("COLLECTION", "data_assets")
 
 docdb_api_client = MetadataDbClient(
