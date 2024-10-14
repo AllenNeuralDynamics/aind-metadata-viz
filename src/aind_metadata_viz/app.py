@@ -10,13 +10,24 @@ pn.extension(design="material")
 pn.extension("vega")
 alt.themes.enable("ggplot2")
 
-aind_colors = colors = {
+AIND_COLORS = colors = {
     "dark_blue": "#003057",
     "light_blue": "#2A7DE1",
     "green": "#1D8649",
     "yellow": "#FFB71B",
     "grey": "#7C7C7F"
 }
+
+# Define CSS to set the background color
+background_color = AIND_COLORS["dark_blue"]
+css = f"""
+body {{
+    background-color: {background_color} !important;
+}}
+"""
+
+# Add the custom CSS
+pn.config.raw_css.append(css)
 
 color_options = {
     "default": {
@@ -34,10 +45,10 @@ color_options = {
         "excluded": "white",
     },
     "aind": {
-        "valid": aind_colors["green"],
-        "present": aind_colors["light_blue"],
+        "valid": AIND_COLORS["green"],
+        "present": AIND_COLORS["light_blue"],
         "optional": "grey",
-        "missing": aind_colors["yellow"],
+        "missing": AIND_COLORS["yellow"],
         "excluded": "white",
     }
 }
