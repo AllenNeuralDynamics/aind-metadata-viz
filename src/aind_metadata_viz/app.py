@@ -1,5 +1,6 @@
 import panel as pn
 import altair as alt
+import pandas as pd
 from aind_metadata_viz import docdb
 from aind_metadata_viz.docdb import _get_all
 from aind_data_schema import __version__ as ads_version
@@ -127,10 +128,39 @@ def file_present_chart():
 
 def modality_present_chart():
     """Build a chart of presence split by modality"""
-    sum_longform_df = db.get_modality_presence(modality='behavior')
-    print(sum_longform_df)
 
-    pane = "todo"
+    df = pd.DataFrame()
+    for modality in docdb.MODALITIES:
+        sum_longform_df = db.get_modality_presence(modality=modality)
+        df = pd.concat([df, sum_longform_df])
+
+    chart = (
+        alt.Chart(df)
+        .mark_bar()
+        .encode(
+            x=alt.X("modality:N", title=None, axis=alt.Axis(grid=False)),
+            y = alt.Y(
+                "sum:Q",
+                title="State (%)",
+                axis=alt.Axis(
+                    grid=False,
+                    values=[0, 0.25, 0.5, 0.75, 1],
+                    labelExpr="datum.value * 100 + '%'",
+                ),
+            ),
+            color=alt.Color(
+                "state:N",
+                scale=alt.Scale(
+                    domain=list(colors.keys()),
+                    range=color_list,
+                ),
+                legend=None,
+            )
+        )
+        .properties(title="File state by modality")
+    )
+
+    pane = pn.pane.Vega(chart)
 
     return pane
 
@@ -296,7 +326,7 @@ mid_plot = pn.bind(
 )
 
 # Put everything in a column and buffer it
-main_col = pn.Column(top_row, mid_plot, styles=outer_style, width=400)
+main_col = pn.Column(top_row, mid_plot, styles=outer_style, width=515)
 
 pn.Row(pn.HSpacer(), left_col, pn.Spacer(width=20), main_col, pn.HSpacer(), margin=20).servable(
     title="Metadata Portal",

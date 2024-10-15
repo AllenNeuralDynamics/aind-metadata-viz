@@ -3,6 +3,7 @@ import panel as pn
 import pandas as pd
 import param
 import os
+import numpy as np
 
 from io import StringIO
 
@@ -92,10 +93,7 @@ class Database(param.Parameterized):
             ]
 
         if not (self.derived_filter == "All assets"):
-            if self.derived_filter == "Raw":
-                filtered_df = filtered_df[filtered_df["derived"]==False]
-            elif self.derived_filter == "Derived":
-                filtered_df = filtered_df[filtered_df["derived"]==True]
+            filtered_df = filtered_df[filtered_df["derived"] == (self.derived_filter == "Derived")]
 
         return filtered_df
 
@@ -111,7 +109,11 @@ class Database(param.Parameterized):
         """
         filtered_df = self._data.copy()
 
-        filtered_df = filtered_df[filtered_df["modalities"].str.contains(modality, na=False)]
+        # Apply derived filter
+        if not (self.derived_filter == "All assets"):
+            filtered_df = filtered_df[filtered_df["derived"] == (self.derived_filter == "Derived")]
+
+        filtered_df = filtered_df[filtered_df['modalities'].apply(lambda x: modality in x.split(','))]
 
         return filtered_df
 
@@ -156,8 +158,25 @@ class Database(param.Parameterized):
     def get_modality_presence(self, modality: str):
         """Get the presence for a specific modality
         """
-        print(modality)
-        return self.data_modality_filtered(modality=modality)
+
+        df_filtered = self.data_modality_filtered(modality)
+        df_filtered.drop(['derived', 'name', '_id', 'location', 'created', 'modalities'], axis=1, inplace=True)
+
+        # Collapse all columns
+        df_melted = df_filtered.melt(
+            id_vars=[],
+            var_name="file",
+            value_name="state"
+        )
+
+        # Get sum
+        df_summary = df_melted.groupby(["state"]).size().reset_index(name="sum")
+        print(df_summary)
+        df_summary["sum"] = df_summary["sum"] / np.sum(df_summary["sum"])
+
+        df_summary['modality'] = modality
+
+        return df_summary
 
     def set_file(self, file: str):
         """Set the active file
