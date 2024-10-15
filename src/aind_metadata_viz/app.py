@@ -99,6 +99,8 @@ def file_present_chart():
     local_states = sum_longform_df["state"].unique()
     local_color_list = [colors[state] for state in local_states]
 
+    file_selection = alt.selection_point(fields=['file'], empty='none', name='file', value=top_selector.value)
+
     chart = (
         alt.Chart(sum_longform_df)
         .mark_bar()
@@ -118,10 +120,17 @@ def file_present_chart():
                 legend=None,
             ),
         )
+        .add_params(file_selection)
         .properties(title="Metadata files")
     )
 
     pane = pn.pane.Vega(chart)
+
+
+    def update_selection(event):
+        if len(event.new) > 0:
+            top_selector.value = event.new[0]['file']
+    pane.selection.param.watch(update_selection, 'file')
 
     return pane
 
