@@ -20,7 +20,7 @@ from aind_metadata_viz.metadata_class_map import (
     second_layer_field_mappings,
 )
 
-API_GATEWAY_HOST = os.getenv("API_GATEWAY_HOST", "api.allenneuraldynamics-test.org")
+API_GATEWAY_HOST = os.getenv("API_GATEWAY_HOST", "api.allenneuraldynamics.org")
 DATABASE = os.getenv("DATABASE", "metadata_index")
 COLLECTION = os.getenv("COLLECTION", "data_assets")
 
@@ -191,28 +191,17 @@ class Database(param.Parameterized):
 
     def get_file_field_presence(self):
         """Get the presence of fields in a specific file
-
-        Parameters
-        ----------
-        file : str
-            _description_
-
-        Returns
-        -------
-        _type_
-            _description_
         """
-        return pd.DataFrame()
-        # expected_fields = (
-        #     self.field_list[0].keys() if len(self.field_list) > 0 else []
-        # )
-        # processed = process_record_list(self.field_list, expected_fields)
+        expected_fields = (
+            self.field_list[0].keys() if len(self.field_list) > 0 else []
+        )
+        processed = process_record_list(self.field_list, expected_fields)
 
-        # print(processed)
-        # df = pd.DataFrame()
-        # df = pd.DataFrame(processed, columns=expected_fields)
+        print(processed)
+        df = pd.DataFrame()
+        df = pd.DataFrame(processed, columns=expected_fields)
 
-        # return compute_count_true(df)
+        return compute_count_true(df)
 
     def get_csv(self, vp_state: str = "Not Valid/Present"):
         """Build a CSV file of export data based on the selected file and field
