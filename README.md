@@ -1,6 +1,6 @@
 # AIND Metadata Viz
 
-[metadata visualizations](http://10.128.141.92:5006/app)
+[metadata visualizations](http://10.128.141.92:5007/app)
 
 ## Usage
 

@@ -3,6 +3,7 @@ import panel as pn
 import pandas as pd
 import param
 import os
+import numpy as np
 
 from io import StringIO
 
@@ -74,6 +75,13 @@ class Database(param.Parameterized):
 
     @property
     def data_filtered(self):
+        """Return the data filtered by the active filters
+
+        Returns
+        -------
+        _type_
+            _description_
+        """
         mod_filter = not (self.modality_filter == "all")
 
         filtered_df = self._data.copy()
@@ -85,10 +93,27 @@ class Database(param.Parameterized):
             ]
 
         if not (self.derived_filter == "All assets"):
-            if self.derived_filter == "Raw":
-                filtered_df = filtered_df[filtered_df["derived"]==False]
-            elif self.derived_filter == "Derived":
-                filtered_df = filtered_df[filtered_df["derived"]==True]
+            filtered_df = filtered_df[filtered_df["derived"] == (self.derived_filter == "Derived")]
+
+        return filtered_df
+
+    def data_modality_filtered(self, modality: str):
+        """Pull out only data records which include a particular modality
+
+        Then collapse all files together for that modality, dropping excluded files
+
+        Parameters
+        ----------
+        modality : str
+            Modality.ONE_OF
+        """
+        filtered_df = self._data.copy()
+
+        # Apply derived filter
+        if not (self.derived_filter == "All assets"):
+            filtered_df = filtered_df[filtered_df["derived"] == (self.derived_filter == "Derived")]
+
+        filtered_df = filtered_df[filtered_df['modalities'].apply(lambda x: modality in x.split(','))]
 
         return filtered_df
 
@@ -127,6 +152,28 @@ class Database(param.Parameterized):
         df_melted = df.melt(var_name="file", value_name="state")
         # Get sum
         df_summary = df_melted.groupby(["file", "state"]).size().reset_index(name="sum")
+
+        return df_summary
+
+    def get_modality_presence(self, modality: str):
+        """Get the presence for a specific modality
+        """
+
+        df_filtered = self.data_modality_filtered(modality)
+        df_filtered.drop(['derived', 'name', '_id', 'location', 'created', 'modalities'], axis=1, inplace=True)
+
+        # Collapse all columns
+        df_melted = df_filtered.melt(
+            id_vars=[],
+            var_name="file",
+            value_name="state"
+        )
+
+        # Get sum
+        df_summary = df_melted.groupby(["state"]).size().reset_index(name="sum")
+        df_summary["sum"] = df_summary["sum"] / np.sum(df_summary["sum"])
+
+        df_summary['modality'] = modality
 
         return df_summary
 
@@ -186,8 +233,6 @@ class Database(param.Parameterized):
         df = self.data_filtered
 
         df = df[["name", "_id", "location", "created"]]
-
-        print(self.file)
 
         if vp_state == "Not Valid/Present":
             df = df[(self.data_filtered[self.file] == "missing") | (self.data_filtered[self.file] == "optional")]

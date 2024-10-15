@@ -1,5 +1,6 @@
 import panel as pn
 import altair as alt
+import pandas as pd
 from aind_metadata_viz import docdb
 from aind_metadata_viz.docdb import _get_all
 from aind_data_schema import __version__ as ads_version
@@ -15,14 +16,16 @@ AIND_COLORS = colors = {
     "light_blue": "#2A7DE1",
     "green": "#1D8649",
     "yellow": "#FFB71B",
-    "grey": "#7C7C7F"
+    "grey": "#7C7C7F",
+    "red": "#FF5733",
 }
 
 # Define CSS to set the background color
-background_color = AIND_COLORS["dark_blue"]
+background_color = AIND_COLORS[pn.state.location.query_params["background"] if "background" in pn.state.location.query_params else "dark_blue"]
 css = f"""
 body {{
     background-color: {background_color} !important;
+    background-image: url('/images/background.svg') !important;
 }}
 """
 
@@ -31,11 +34,11 @@ pn.config.raw_css.append(css)
 
 color_options = {
     "default": {
-        "valid": "green",
-        "present": "grey",
+        "valid": AIND_COLORS["green"],
+        "present": AIND_COLORS["light_blue"],
         "optional": "grey",
         "missing": "red",
-        "excluded": "white",
+        "excluded": "#F0F0F0",
     },
     "lemonade": {
         "valid": "#F49FD7",
@@ -47,8 +50,8 @@ color_options = {
     "aind": {
         "valid": AIND_COLORS["green"],
         "present": AIND_COLORS["light_blue"],
-        "optional": "grey",
-        "missing": AIND_COLORS["yellow"],
+        "optional": AIND_COLORS["grey"],
+        "missing": AIND_COLORS["red"],
         "excluded": "white",
     }
 }
@@ -91,10 +94,12 @@ pn.state.location.sync(derived_selector, {"value": "derived"})
 
 
 def file_present_chart():
+    """Build a chart of presence split by core metadata file type"""
     sum_longform_df = db.get_file_presence()
-    # print(sum_longform_df)
     local_states = sum_longform_df["state"].unique()
     local_color_list = [colors[state] for state in local_states]
+
+    file_selection = alt.selection_point(fields=['file'], empty='none', name='file', value=top_selector.value)
 
     chart = (
         alt.Chart(sum_longform_df)
@@ -115,10 +120,70 @@ def file_present_chart():
                 legend=None,
             ),
         )
+        .add_params(file_selection)
         .properties(title="Metadata files")
     )
 
     pane = pn.pane.Vega(chart)
+
+    def update_selection(event):
+        if len(event.new) > 0:
+            top_selector.value = event.new[0]['file']
+    pane.selection.param.watch(update_selection, 'file')
+
+    return pane
+
+
+def modality_present_chart():
+    """Build a chart of presence split by modality"""
+
+    df = pd.DataFrame()
+    for modality in docdb.MODALITIES:
+        sum_longform_df = db.get_modality_presence(modality=modality)
+        df = pd.concat([df, sum_longform_df])
+
+    modality_selection = alt.selection_point(fields=['modality'], empty='all', name='modality', value=(modality_selector.value if modality_selector.value != "all" else None))
+
+    chart = (
+        alt.Chart(df)
+        .mark_bar()
+        .encode(
+            x=alt.X("modality:N", title=None, axis=alt.Axis(grid=False)),
+            y=alt.Y(
+                "sum:Q",
+                title="State (%)",
+                axis=alt.Axis(
+                    grid=False,
+                    values=[0, 0.25, 0.5, 0.75, 1],
+                    labelExpr="datum.value * 100 + '%'",
+                ),
+            ),
+            color=alt.Color(
+                "state:N",
+                scale=alt.Scale(
+                    domain=list(colors.keys()),
+                    range=color_list,
+                ),
+                legend=None,
+            ),
+            opacity=alt.condition(
+                modality_selection,
+                alt.value(1),
+                alt.value(0.2),
+            ),
+        )
+        .add_params(modality_selection)
+        .properties(title="File state by modality")
+    )
+
+    pane = pn.pane.Vega(chart)
+
+    def update_selection(event):
+        if len(event.new) > 0:
+            modality_selector.value = event.new[0]['modality']
+        else:
+            modality_selector.value = "all"
+    pane.selection.param.watch(update_selection, 'modality')
 
     return pane
 
@@ -221,7 +286,7 @@ header = (
     "This app steps through all of the metadata stored in DocDB and determines whether every record's fields "
     "(and subfields) are "
     f"{hd_style('valid')} for aind-data-schema v{ads_version}, "
-    f"{hd_style('present')} but invalid or {hd_style('optional')}, "
+    f"{hd_style('present')} but invalid, {hd_style('optional')}, "
     f"{hd_style('missing')}, or "
     f"{hd_style('excluded')} for the record's modality."
 )
@@ -267,7 +332,7 @@ def build_row(selected_modality, derived_filter):
     db.modality_filter = selected_modality
     db.derived_filter = derived_filter
 
-    return file_present_chart
+    return pn.Row(file_present_chart, modality_present_chart) 
 
 
 top_row = pn.bind(
@@ -284,7 +349,7 @@ mid_plot = pn.bind(
 )
 
 # Put everything in a column and buffer it
-main_col = pn.Column(top_row, mid_plot, styles=outer_style, width=400)
+main_col = pn.Column(top_row, mid_plot, styles=outer_style, width=515)
 
 pn.Row(pn.HSpacer(), left_col, pn.Spacer(width=20), main_col, pn.HSpacer(), margin=20).servable(
     title="Metadata Portal",
