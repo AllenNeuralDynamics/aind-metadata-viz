@@ -89,7 +89,7 @@ def check_metadata_state(field: str, object: dict, parent: str = None) -> str:
     else:
         # default to required
         print(
-            f"Warning: object had no data description modalities, so no file reuirement is defined"
+            f"Warning: object had no data description modalities, so no file requirement is defined"
         )
         file_req = FileRequirement.REQUIRED
 

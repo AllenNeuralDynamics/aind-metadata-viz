@@ -15,7 +15,8 @@ AIND_COLORS = colors = {
     "light_blue": "#2A7DE1",
     "green": "#1D8649",
     "yellow": "#FFB71B",
-    "grey": "#7C7C7F"
+    "grey": "#7C7C7F",
+    "red": "#FF5733",
 }
 
 # Define CSS to set the background color
@@ -23,6 +24,7 @@ background_color = AIND_COLORS["dark_blue"]
 css = f"""
 body {{
     background-color: {background_color} !important;
+    background-image: url('/images/background.svg') !important;
 }}
 """
 
@@ -31,11 +33,11 @@ pn.config.raw_css.append(css)
 
 color_options = {
     "default": {
-        "valid": "green",
-        "present": "grey",
+        "valid": AIND_COLORS["green"],
+        "present": AIND_COLORS["light_blue"],
         "optional": "grey",
         "missing": "red",
-        "excluded": "white",
+        "excluded": "#F0F0F0",
     },
     "lemonade": {
         "valid": "#F49FD7",
@@ -47,8 +49,8 @@ color_options = {
     "aind": {
         "valid": AIND_COLORS["green"],
         "present": AIND_COLORS["light_blue"],
-        "optional": "grey",
-        "missing": AIND_COLORS["yellow"],
+        "optional": AIND_COLORS["grey"],
+        "missing": AIND_COLORS["red"],
         "excluded": "white",
     }
 }
@@ -91,8 +93,8 @@ pn.state.location.sync(derived_selector, {"value": "derived"})
 
 
 def file_present_chart():
+    """Build a chart of presence split by core metadata file type"""
     sum_longform_df = db.get_file_presence()
-    # print(sum_longform_df)
     local_states = sum_longform_df["state"].unique()
     local_color_list = [colors[state] for state in local_states]
 
@@ -121,6 +123,14 @@ def file_present_chart():
     pane = pn.pane.Vega(chart)
 
     return pane
+
+
+def modality_present_chart():
+    """Build a chart of presence split by modality"""
+    print('getting data')
+    print('wtf wtf wtf')
+    sum_longform_df = db.get_modality_presence('ECEPHYS')
+    # print(sum_longform_df)
 
 
 js_pane = pn.pane.HTML("", height=0, width=0).servable()
@@ -221,7 +231,7 @@ header = (
     "This app steps through all of the metadata stored in DocDB and determines whether every record's fields "
     "(and subfields) are "
     f"{hd_style('valid')} for aind-data-schema v{ads_version}, "
-    f"{hd_style('present')} but invalid or {hd_style('optional')}, "
+    f"{hd_style('present')} but invalid, {hd_style('optional')}, "
     f"{hd_style('missing')}, or "
     f"{hd_style('excluded')} for the record's modality."
 )

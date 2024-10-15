@@ -74,6 +74,13 @@ class Database(param.Parameterized):
 
     @property
     def data_filtered(self):
+        """Return the data filtered by the active filters
+
+        Returns
+        -------
+        _type_
+            _description_
+        """
         mod_filter = not (self.modality_filter == "all")
 
         filtered_df = self._data.copy()
@@ -89,6 +96,23 @@ class Database(param.Parameterized):
                 filtered_df = filtered_df[filtered_df["derived"]==False]
             elif self.derived_filter == "Derived":
                 filtered_df = filtered_df[filtered_df["derived"]==True]
+
+        return filtered_df
+
+    @property
+    def data_modality_filtered(self, modality):
+        """Pull out only data records which include a particular modality
+
+        Then collapse all files together for that modality, dropping excluded files
+
+        Parameters
+        ----------
+        modality : str
+            Modality.ONE_OF
+        """
+        filtered_df = self._data.copy()
+
+        filtered_df = filtered_df[filtered_df["modalities"].contains(modality)]
 
         return filtered_df
 
@@ -129,6 +153,11 @@ class Database(param.Parameterized):
         df_summary = df_melted.groupby(["file", "state"]).size().reset_index(name="sum")
 
         return df_summary
+
+    def get_modality_presence(self, modality: str):
+        """Get the presence for a specific modality
+        """
+        return self.data_modality_filtered(modality)
 
     def set_file(self, file: str):
         """Set the active file
@@ -186,8 +215,6 @@ class Database(param.Parameterized):
         df = self.data_filtered
 
         df = df[["name", "_id", "location", "created"]]
-
-        print(self.file)
 
         if vp_state == "Not Valid/Present":
             df = df[(self.data_filtered[self.file] == "missing") | (self.data_filtered[self.file] == "optional")]
