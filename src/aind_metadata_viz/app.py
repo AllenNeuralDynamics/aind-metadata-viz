@@ -134,12 +134,14 @@ def modality_present_chart():
         sum_longform_df = db.get_modality_presence(modality=modality)
         df = pd.concat([df, sum_longform_df])
 
+    modality_selection = alt.selection_point(fields=['modality'], empty='none', name='modality', value=modality_selector.value)
+
     chart = (
         alt.Chart(df)
         .mark_bar()
         .encode(
             x=alt.X("modality:N", title=None, axis=alt.Axis(grid=False)),
-            y = alt.Y(
+            y=alt.Y(
                 "sum:Q",
                 title="State (%)",
                 axis=alt.Axis(
@@ -155,12 +157,22 @@ def modality_present_chart():
                     range=color_list,
                 ),
                 legend=None,
-            )
+            ),
+            opacity=alt.condition(modality_selection, alt.value(1), alt.value(0.2)),
         )
+        .add_params(modality_selection)
         .properties(title="File state by modality")
     )
 
     pane = pn.pane.Vega(chart)
+
+    def update_selection(event):
+        if len(event.new) > 0:
+            modality_selector.value = event.new[0]['modality']
+        else:
+            modality_selector.value = "all"
+
+    pane.selection.param.watch(update_selection, 'modality')
 
     return pane
 

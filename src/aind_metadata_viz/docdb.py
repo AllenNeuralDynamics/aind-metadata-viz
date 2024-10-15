@@ -171,7 +171,6 @@ class Database(param.Parameterized):
 
         # Get sum
         df_summary = df_melted.groupby(["state"]).size().reset_index(name="sum")
-        print(df_summary)
         df_summary["sum"] = df_summary["sum"] / np.sum(df_summary["sum"])
 
         df_summary['modality'] = modality
