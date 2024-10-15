@@ -192,16 +192,17 @@ class Database(param.Parameterized):
     def get_file_field_presence(self):
         """Get the presence of fields in a specific file
         """
-        expected_fields = (
-            self.field_list[0].keys() if len(self.field_list) > 0 else []
-        )
-        processed = process_record_list(self.field_list, expected_fields)
+        # expected_fields = (
+        #     self.field_list[0].keys() if len(self.field_list) > 0 else []
+        # )
+        # processed = process_record_list(self.field_list, expected_fields)
 
-        print(processed)
-        df = pd.DataFrame()
-        df = pd.DataFrame(processed, columns=expected_fields)
+        # print(processed)
+        # df = pd.DataFrame()
+        # df = pd.DataFrame(processed, columns=expected_fields)
 
-        return compute_count_true(df)
+        # return compute_count_true(df)
+        return pd.DataFrame()
 
     def get_csv(self, vp_state: str = "Not Valid/Present"):
         """Build a CSV file of export data based on the selected file and field
