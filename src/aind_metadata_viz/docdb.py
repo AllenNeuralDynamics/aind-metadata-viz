@@ -99,8 +99,7 @@ class Database(param.Parameterized):
 
         return filtered_df
 
-    @property
-    def data_modality_filtered(self, modality):
+    def data_modality_filtered(self, modality: str):
         """Pull out only data records which include a particular modality
 
         Then collapse all files together for that modality, dropping excluded files
@@ -112,7 +111,7 @@ class Database(param.Parameterized):
         """
         filtered_df = self._data.copy()
 
-        filtered_df = filtered_df[filtered_df["modalities"].contains(modality)]
+        filtered_df = filtered_df[filtered_df["modalities"].str.contains(modality, na=False)]
 
         return filtered_df
 
@@ -157,7 +156,8 @@ class Database(param.Parameterized):
     def get_modality_presence(self, modality: str):
         """Get the presence for a specific modality
         """
-        return self.data_modality_filtered(modality)
+        print(modality)
+        return self.data_modality_filtered(modality=modality)
 
     def set_file(self, file: str):
         """Set the active file

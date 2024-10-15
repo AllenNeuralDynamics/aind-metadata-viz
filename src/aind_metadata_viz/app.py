@@ -20,7 +20,7 @@ AIND_COLORS = colors = {
 }
 
 # Define CSS to set the background color
-background_color = AIND_COLORS["dark_blue"]
+background_color = AIND_COLORS[pn.state.location.query_params["background"] if "background" in pn.state.location.query_params else "dark_blue"]
 css = f"""
 body {{
     background-color: {background_color} !important;
@@ -127,10 +127,12 @@ def file_present_chart():
 
 def modality_present_chart():
     """Build a chart of presence split by modality"""
-    print('getting data')
-    print('wtf wtf wtf')
-    sum_longform_df = db.get_modality_presence('ECEPHYS')
-    # print(sum_longform_df)
+    sum_longform_df = db.get_modality_presence(modality='behavior')
+    print(sum_longform_df)
+
+    pane = "todo"
+
+    return pane
 
 
 js_pane = pn.pane.HTML("", height=0, width=0).servable()
@@ -277,7 +279,7 @@ def build_row(selected_modality, derived_filter):
     db.modality_filter = selected_modality
     db.derived_filter = derived_filter
 
-    return file_present_chart
+    return pn.Row(file_present_chart, modality_present_chart) 
 
 
 top_row = pn.bind(
