@@ -67,7 +67,8 @@ class Database(param.Parameterized):
     ):
         """Initialize"""
         # get data
-        self._data = _get_file_presence(test_mode=test_mode)
+        self._file_data = _get_file_presence(test_mode=test_mode)
+        self._field_data = _get_field_presence(test_mode=test_mode)
 
         # setup
         (expected_files, _) = self.get_expected_files()
@@ -84,7 +85,7 @@ class Database(param.Parameterized):
         """
         mod_filter = not (self.modality_filter == "all")
 
-        filtered_df = self._data.copy()
+        filtered_df = self._file_data.copy()
 
         # Filter by modality
         if mod_filter:
@@ -107,7 +108,7 @@ class Database(param.Parameterized):
         modality : str
             Modality.ONE_OF
         """
-        filtered_df = self._data.copy()
+        filtered_df = self._file_data.copy()
 
         # Apply derived filter
         if not (self.derived_filter == "All assets"):
@@ -192,17 +193,23 @@ class Database(param.Parameterized):
     def get_file_field_presence(self):
         """Get the presence of fields in a specific file
         """
-        # expected_fields = (
-        #     self.field_list[0].keys() if len(self.field_list) > 0 else []
-        # )
-        # processed = process_record_list(self.field_list, expected_fields)
+        field_df = self._field_data[self.file]
 
-        # print(processed)
-        # df = pd.DataFrame()
-        # df = pd.DataFrame(processed, columns=expected_fields)
+        # we need to filter by the derived/modality filters here but they are in the other dataframe
+        if not (self.derived_filter == "All assets"):
+            field_df = field_df[self._file_data["derived"] == (self.derived_filter == "Derived")]
 
-        # return compute_count_true(df)
-        return pd.DataFrame()
+        if not self.modality_filter == "all":
+            field_df = field_df[self._file_data['modalities'].apply(lambda x: self.modality_filter in x.split(','))]
+
+        df_melted = field_df.melt(
+            id_vars=[],
+            var_name="field",
+            value_name="state"
+        )
+        df_summary = df_melted.groupby(["field", "state"]).size().reset_index(name="sum")
+
+        return df_summary
 
     def get_csv(self, vp_state: str = "Not Valid/Present"):
         """Build a CSV file of export data based on the selected file and field
@@ -246,9 +253,7 @@ def _get_file_presence(test_mode=False) -> pd.DataFrame:
         _description_, by default False
     """
     record_list = _get_all(test_mode=test_mode)
-    files = list(first_layer_field_mapping.keys())
-
-    processed = process_record_list(record_list, files)
+    processed = process_record_list(record_list, ALL_FILES)
 
     # Now add some information about the records, i.e. modality, derived state, etc.
     for i, record in enumerate(record_list):
@@ -279,26 +284,32 @@ def _get_file_presence(test_mode=False) -> pd.DataFrame:
 
     return pd.DataFrame(
         processed,
-        columns=files
+        columns=ALL_FILES
         + ["modalities", "derived", "name", "_id", "location", "created"],
     )
 
 
-# @pn.cache(ttl=CACHE_RESET_DAY)
-# def _get_field_presence(file: str):
-#     """Get all and convert to data frame format
+@pn.cache(ttl=CACHE_RESET_DAY)
+def _get_field_presence(test_mode=False) -> dict:
+    """Get all and convert to data frame format
 
-#     Parameters
-#     ----------
-#     test_mode : bool, optional
-#         _description_, by default False
-#     """
-#     record_list = _get_all()
+    returns a dictionary {file: field_df}
+    """
+    record_list = _get_all(test_mode=test_mode)
 
-#     # filter by file
+    file_dfs = {}
+    # filter by file
+    for file in ALL_FILES:
+        expected_fields = second_layer_field_mappings[file]
+        # get field presence
+        field_record_list = [record[file] if file in record else None for record in record_list]
+        processed = process_record_list(field_record_list, expected_fields, parent=file)
 
-#     # get field presence
+        file_df = pd.DataFrame(processed, columns=expected_fields)
 
+        file_dfs[file] = file_df
+
+    return file_dfs
 
 @pn.cache(ttl=CACHE_RESET_DAY)
 def _get_all(test_mode=False):

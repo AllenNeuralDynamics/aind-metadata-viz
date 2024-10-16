@@ -238,7 +238,7 @@ download_button = pn.widgets.Button(name="Download")
 download_button.on_click(build_csv_jscode)
 
 
-def build_mid(selected_file, derived_filter, **args):
+def field_present_chart(selected_file, derived_filter, **args):
     """ """
     db.set_file(selected_file)
     db.derived_filter = derived_filter
@@ -249,16 +249,16 @@ def build_mid(selected_file, derived_filter, **args):
         alt.Chart(sum_longform_df)
         .mark_bar()
         .encode(
-            x=alt.X("column:N", title=None, axis=alt.Axis(grid=False)),
+            x=alt.X("field:N", title=None, axis=alt.Axis(grid=False)),
             y=alt.Y(
-                "count:Q",
+                "sum:Q",
                 title="Metadata assets (n)",
                 axis=alt.Axis(grid=False),
             ),
             color=alt.Color(
-                "category:N",
+                "state:N",
                 scale=alt.Scale(
-                    domain=["valid", "present", "missing", "excluded"],
+                    domain=list(colors.keys()),
                     range=color_list,
                 ),
                 legend=None,
@@ -342,7 +342,7 @@ top_row = pn.bind(
 )
 
 mid_plot = pn.bind(
-    build_mid,
+    field_present_chart,
     selected_file=top_selector,
     selected_modality=modality_selector,
     derived_filter=derived_selector,
