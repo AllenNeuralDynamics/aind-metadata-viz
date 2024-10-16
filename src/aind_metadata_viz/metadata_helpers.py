@@ -6,7 +6,7 @@ from aind_metadata_viz.metadata_class_map import (
 from aind_metadata_viz.utils import MetaState, expected_files_from_modalities
 from aind_data_schema_models.modalities import FileRequirement
 from pydantic import ValidationError
-from typing import Literal
+from typing import Literal, Optional, Union
 
 
 def _metadata_present_helper(json: str, check_present: bool = True):
@@ -45,10 +45,32 @@ def _metadata_valid_helper(
         json["schema_version"] = first_layer_versions[field]
 
     if field in mapping:
+        expected_type = mapping[field]
         try:
-            return mapping[field](**json) is not None
+            origin_type = getattr(expected_type, "__origin__", None)
+
+            if origin_type is list:
+                item_type = expected_type.__args__[0]
+                return all([item_type(**item_json) for item_json in json])
+            elif origin_type is Optional:
+                # skip optional fields!
+                return True
+            elif origin_type is Union:
+                # Get all possible types in the Union
+                union_types = get_args(expected_type)
+                
+                for union_type in union_types:
+                    try:
+                        return union_type(**json)
+                    except ValidationError:
+                        continue
+                else:
+                    return False
+            else:
+                # validate as a pydantic model
+                return expected_type(**json) is not None
         except Exception as e:
-            # print(e)
+            print(e)
             return False
 
 
@@ -69,6 +91,9 @@ def check_metadata_state(field: str, object: dict, parent: str = None) -> str:
     """
     # if excluded, just return that
     # get the excluded fields from the class map
+
+    if not object:
+        return MetaState.MISSING.value
 
     if (
         "data_description" in object
@@ -100,7 +125,7 @@ def check_metadata_state(field: str, object: dict, parent: str = None) -> str:
     # File is required or optional, get the mappings from field -> class
     # if you're looking at a parent file's data then you need a different mapping
     if parent:
-        print("not implemented")
+        class_map = second_layer_field_mappings[parent]
     # we're at the top level, just check the first layer mappings
     else:
         class_map = first_layer_field_mapping
@@ -130,7 +155,7 @@ def check_metadata_state(field: str, object: dict, parent: str = None) -> str:
             return MetaState.MISSING.value
 
 
-def process_record_list(record_list: list, expected_fields: list):
+def process_record_list(record_list: list, expected_fields: list, parent=None):
     """Process a list of Metadata JSON records from DocDB
 
     For each record, check each of the expected fields and see if they are valid/present/missing/excluded
@@ -147,6 +172,6 @@ def process_record_list(record_list: list, expected_fields: list):
     list[{field: MetaState}]
     """
     return [
-        {field: check_metadata_state(field, data) for field in expected_fields}
+        {field: check_metadata_state(field, data, parent) for field in expected_fields}
         for data in record_list
     ]
