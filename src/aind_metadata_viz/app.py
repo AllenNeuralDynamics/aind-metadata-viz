@@ -245,6 +245,8 @@ def field_present_chart(selected_file, derived_filter, **args):
 
     sum_longform_df = db.get_file_field_presence()
 
+    field_selection = alt.selection_point(fields=['field'], empty='none', name='field', value=field_selector.value)
+
     chart = (
         alt.Chart(sum_longform_df)
         .mark_bar()
@@ -264,6 +266,7 @@ def field_present_chart(selected_file, derived_filter, **args):
                 legend=None,
             ),
         )
+        .add_params(field_selection)
         .properties(title=f"Fields in {db.file} file")
     )
 
@@ -271,8 +274,14 @@ def field_present_chart(selected_file, derived_filter, **args):
     option_list = [" "] + db.field_list
 
     field_selector.options = option_list
+    pane = pn.pane.Vega(chart)
 
-    return pn.pane.Vega(chart)
+    def update_selection(event):
+        if len(event.new) > 0:
+            field_selector.value = event.new[0]['field']
+    pane.selection.param.watch(update_selection, 'field')
+
+    return pane
 
 
 def hd_style(text):
