@@ -13,4 +13,4 @@ RUN pip install . --no-cache-dir
 EXPOSE 8000
 
 
-ENTRYPOINT ["panel", "serve", "/app/src/aind_metadata_viz/app.py", "--static-dirs", "images=src/aind_metadata_viz/images", "--port", "8000", "--allow-websocket-origin", "0.0.0.0", "--keep-alive", "10000"]
+ENTRYPOINT ["panel", "serve", "/app/src/aind_metadata_viz/app.py", "--static-dirs", "images=src/aind_metadata_viz/images", "--port", "8000", "--allow-websocket-origin", "0.0.0.0:8000", "--keep-alive", "10000"]
