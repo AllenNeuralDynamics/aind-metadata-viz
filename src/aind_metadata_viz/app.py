@@ -76,9 +76,9 @@ top_selector = pn.widgets.Select(
 field_selector = pn.widgets.Select(name="Filter download by field:", options=[])
 
 missing_selector = pn.widgets.Select(
-    name="Filter download by state", options=["Not Valid/Present", "Valid/Present"]
+    name="Filter download by state", options=["Missing", "Valid/Present"]
 )
-missing_selector.value = "Not Valid/Present"
+missing_selector.value = "Missing/Optional"
 
 derived_selector = pn.widgets.Select(
     name="Filter by history:",
@@ -200,8 +200,7 @@ def build_csv_jscode(event):
         '"', '\\"'
     )  # Escape newlines and double quotes
 
-    get_missing = missing_selector.value == "Not Valid/Present"
-    missing_text = "bad" if get_missing else "good"
+    missing_text = "bad" if missing_selector.value == "Missing" else "good"
 
     if not field_selector.value == " ":
         filename = (
@@ -245,6 +244,8 @@ def field_present_chart(selected_file, derived_filter, **args):
 
     sum_longform_df = db.get_file_field_presence()
 
+    field_selection = alt.selection_point(fields=['field'], empty='none', name='field', value=field_selector.value)
+
     chart = (
         alt.Chart(sum_longform_df)
         .mark_bar()
@@ -264,6 +265,7 @@ def field_present_chart(selected_file, derived_filter, **args):
                 legend=None,
             ),
         )
+        .add_params(field_selection)
         .properties(title=f"Fields in {db.file} file")
     )
 
@@ -271,8 +273,14 @@ def field_present_chart(selected_file, derived_filter, **args):
     option_list = [" "] + db.field_list
 
     field_selector.options = option_list
+    pane = pn.pane.Vega(chart)
 
-    return pn.pane.Vega(chart)
+    def update_selection(event):
+        if len(event.new) > 0:
+            field_selector.value = event.new[0]['field']
+    pane.selection.param.watch(update_selection, 'field')
+
+    return pane
 
 
 def hd_style(text):
@@ -293,6 +301,7 @@ header = (
 
 download_md = """
 **Download options**
+The download button creates a CSV file with information about the metadata records that match the filter settings.
 """
 
 outer_style = {
