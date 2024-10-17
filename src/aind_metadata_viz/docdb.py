@@ -254,7 +254,6 @@ class Database(param.Parameterized):
         else:
             filter = (self.data_filtered[self.file] == type0) | (self.data_filtered[self.file] == type1)
 
-        print(filter)
         df = df[filter]
 
         sio = StringIO()
