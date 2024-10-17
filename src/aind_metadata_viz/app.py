@@ -76,9 +76,9 @@ top_selector = pn.widgets.Select(
 field_selector = pn.widgets.Select(name="Filter download by field:", options=[])
 
 missing_selector = pn.widgets.Select(
-    name="Filter download by state", options=["Not Valid/Present", "Valid/Present"]
+    name="Filter download by state", options=["Missing", "Valid/Present"]
 )
-missing_selector.value = "Not Valid/Present"
+missing_selector.value = "Missing/Optional"
 
 derived_selector = pn.widgets.Select(
     name="Filter by history:",
@@ -200,8 +200,7 @@ def build_csv_jscode(event):
         '"', '\\"'
     )  # Escape newlines and double quotes
 
-    get_missing = missing_selector.value == "Not Valid/Present"
-    missing_text = "bad" if get_missing else "good"
+    missing_text = "bad" if missing_selector.value == "Missing" else "good"
 
     if not field_selector.value == " ":
         filename = (
@@ -302,6 +301,7 @@ header = (
 
 download_md = """
 **Download options**
+The download button creates a CSV file with information about the metadata records that match the filter settings.
 """
 
 outer_style = {

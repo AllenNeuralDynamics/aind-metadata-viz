@@ -73,6 +73,7 @@ class Database(param.Parameterized):
         # setup
         (expected_files, _) = self.get_expected_files()
         self.set_file(expected_files[0])
+        self.set_field("")
 
     @property
     def data_filtered(self):
@@ -190,6 +191,19 @@ class Database(param.Parameterized):
 
         self.field_list = list(second_layer_field_mappings[file].keys())
 
+    def set_field(self, field: str):
+        """Set the active field
+
+        Parameters
+        ----------
+        field : str
+            Active field name
+        """
+        if field != "" and field not in self.field_list:
+            raise ValueError(f"Field {field} not in field list")
+
+        self.field = field
+
     def get_file_field_presence(self):
         """Get the presence of fields in a specific file
         """
@@ -231,12 +245,17 @@ class Database(param.Parameterized):
 
         df = df[["name", "_id", "location", "created"]]
 
-        if vp_state == "Not Valid/Present":
-            df = df[(self.data_filtered[self.file] == "missing") | (self.data_filtered[self.file] == "optional")]
-        elif vp_state == "Valid/Present":
-            df = df[(self.data_filtered[self.file] == "present") | (self.data_filtered[self.file] == "valid")]
+        type0 = "missing" if vp_state == "Missing" else "present"
+        type1 = "optional" if vp_state == "Missing" else "valid"
 
-        # [TODO] add back in filtering by field and not just file
+        if self.field:
+            filter = ((self.data_filtered[self.file] == type0) | (self.data_filtered[self.file] == type1)) | \
+                      ((self._field_data[self.field] == type0) | (self._field_data[self.field] == type1))
+        else:
+            filter = (self.data_filtered[self.file] == type0) | (self.data_filtered[self.file] == type1)
+
+        print(filter)
+        df = df[filter]
 
         sio = StringIO()
         df.to_csv(sio, index=False)
