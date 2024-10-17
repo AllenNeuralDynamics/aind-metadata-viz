@@ -1,14 +1,16 @@
 FROM python:3.11-slim
 
-# Copy the Panel app code
 WORKDIR /app
-COPY . /app
 
-# Install dependencies
-RUN pip install -e /app/. --no-cache-dir
+# Copy the Panel app code
+ADD src ./src
+ADD pyproject.toml .
+ADD setup.py .
 
-# Expose the port that the Panel app will run on
-EXPOSE 5006
+RUN apt-get update
+RUN pip install . --no-cache-dir
 
-# Command to run the Panel app
-CMD ["panel", "serve", "/app/src/aind_metadata_viz/app.py", "--allow-websocket-origin=*", "--port=5006", "--address=0.0.0.0"]
+EXPOSE 8000
+
+
+ENTRYPOINT ["panel", "serve", "/app/src/aind_metadata_viz/app.py", "--static-dirs", "images=src/aind_metadata_viz/images", "--port", "8000", "--allow-websocket-origin", "0.0.0.0", "--keep-alive", "10000"]
