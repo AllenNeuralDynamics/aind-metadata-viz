@@ -1,82 +1,49 @@
 """Test the main app code"""
 
 import unittest
-from aind_metadata_viz.metadata_helpers import (
-    _metadata_present_helper,
-    process_present_dict,
-    process_record_list,
-)
+import json
+from pydantic import BaseModel
+from aind_metadata_viz.metadata_helpers import _metadata_present_helper, _metadata_valid_helper
 
 
 class TestApp(unittest.TestCase):
     """Test main app"""
 
-    def setUp(self) -> None:
-        self.dict = {
-            "test1": None,
-            "test2": "",
-            "test3": {},
-            "test4": [],
-            "test5": "actual data",
-            "test6": 1,
-            "test7": {"actual key": "actual value"},
-            "test8": object,
-        }
-        self.expected_fields = [
-            "test1",
-            "test2",
-            "test3",
-            "test4",
-            "test5",
-            "test6",
-            "test7",
-            "test8",
-            "meow",
-        ]
-        self.expected_out = {
-            "test1": False,
-            "test2": False,
-            "test3": False,
-            "test4": False,
-            "test5": True,
-            "test6": True,
-            "test7": True,
-            "test8": True,
-            "meow": False,
-        }
+    def test_metadata_present_helper(self):
+        """Test metadata present helper"""
+        present0 = _metadata_present_helper('abc')
+        present1 = _metadata_present_helper(['list'])
+        present2 = _metadata_present_helper({'key': 1})
+        missing0 = _metadata_present_helper(None)
+        missing1 = _metadata_present_helper('')
+        missing2 = _metadata_present_helper([])
+        missing3 = _metadata_present_helper({})
 
-        return super().setUp()
+        self.assertEqual(present0, 'present')
+        self.assertEqual(present1, 'present')
+        self.assertEqual(present2, 'present')
+        self.assertEqual(missing0, 'absent')
+        self.assertEqual(missing1, 'absent')
+        self.assertEqual(missing2, 'absent')
+        self.assertEqual(missing3, 'absent')
 
-    def test_check_present(self):
-        """Test the check_present function"""
-        self.assertFalse(_metadata_present_helper("test1", self.dict))
-        self.assertFalse(_metadata_present_helper("test2", self.dict))
-        self.assertFalse(_metadata_present_helper("test3", self.dict))
-        self.assertFalse(_metadata_present_helper("test4", self.dict))
+    def test_metadata_valid_helper(self):
+        """Test metadata valid helper"""
 
-        self.assertTrue(_metadata_present_helper("test5", self.dict))
-        self.assertTrue(_metadata_present_helper("test6", self.dict))
-        self.assertTrue(_metadata_present_helper("test7", self.dict))
-        self.assertTrue(_metadata_present_helper("test8", self.dict))
+        class TestClass(BaseModel):
+            schema_version: str = "0.0.0"
+            field: str
 
-        self.assertFalse(
-            _metadata_present_helper("test8", self.dict, check_present=False)
-        )
+        file = 'quality_control'
+        json_dict = {file: TestClass(field="value").model_dump()}
+        mapping = {file: TestClass}
 
-    def test_process_present_dict(self):
-        """Test the process_present_dict function"""
-        out_test = process_present_dict(self.dict, self.expected_fields)
+        result = _metadata_valid_helper(file, json_dict, mapping)
+        print(result)
+        self.assertEqual(result, True)
 
-        self.assertEqual(self.expected_out, out_test)
-
-    def test_process_present(self):
-        """Test that process runs properly on a list"""
-        data_list = [self.dict, self.dict]
-
-        processed_list = process_record_list(data_list, self.expected_fields)
-        out_list = [self.expected_out, self.expected_out]
-
-        self.assertEqual(processed_list, out_list)
+        result = _metadata_valid_helper(file, {file: "none"}, mapping)
+        self.assertEqual(result, False)
 
 
 if __name__ == "__main__":

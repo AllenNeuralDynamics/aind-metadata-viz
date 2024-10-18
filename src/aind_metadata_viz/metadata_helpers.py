@@ -9,9 +9,8 @@ from pydantic import ValidationError
 from typing import Literal, Optional, Union
 
 
-def _metadata_present_helper(json: str, check_present: bool = True):
-    """Return true if the value of a key exists and is not None, or any of
-    '' [] {} in a JSON object
+def _metadata_present_helper(value):
+    """Return true if the value is not None, or any of '' [] {}
 
     Parameters
     ----------
@@ -20,25 +19,22 @@ def _metadata_present_helper(json: str, check_present: bool = True):
     object : dict
         Dictionary
     """
-    present = json is not None and json != "" and json != [] and json != {}
+    present = value is not None and value != "" and value != [] and value != {}
 
-    if check_present:
-        return "present" if present else "absent"
-    else:
-        return "absent" if present else "present"
+    return "present" if present else "absent"
 
 
 def _metadata_valid_helper(
     field: str,
-    json: str,
+    json: dict,
     mapping: dict,
 ):
     """Return true if the json data is a valid object of the particular field class
 
     Parameters
     ----------
-    json : str
-        json string generated from a AindCoreModel dump
+    json : dict
+        json dict generated from a AindCoreModel dump
     """
     if "schema_version" in json:
         # force the schema version to match the current one
@@ -57,8 +53,8 @@ def _metadata_valid_helper(
                 return True
             elif origin_type is Union:
                 # Get all possible types in the Union
-                union_types = get_args(expected_type)
-                
+                union_types = expected_type.__args__
+
                 for union_type in union_types:
                     try:
                         return union_type(**json)
@@ -74,7 +70,7 @@ def _metadata_valid_helper(
             return False
 
 
-def check_metadata_state(field: str, object: dict, parent: str = None) -> str:
+def check_metadata_state(field: str, object: dict, mapping: dict) -> str:
     """Get the MetaState for a specific key in a dictinoary
 
     Parameters
@@ -122,14 +118,6 @@ def check_metadata_state(field: str, object: dict, parent: str = None) -> str:
     if file_req == FileRequirement.EXCLUDED:
         return MetaState.EXCLUDED.value
 
-    # File is required or optional, get the mappings from field -> class
-    # if you're looking at a parent file's data then you need a different mapping
-    if parent:
-        class_map = second_layer_field_mappings[parent]
-    # we're at the top level, just check the first layer mappings
-    else:
-        class_map = first_layer_field_mapping
-
     # First check that the key exists at all and is not None
     if field in object and object[field]:
         value = object[field]
@@ -140,7 +128,7 @@ def check_metadata_state(field: str, object: dict, parent: str = None) -> str:
             return MetaState.MISSING.value
 
     # attempt validation
-    if _metadata_valid_helper(field, value, class_map):
+    if _metadata_valid_helper(field, value, mapping):
         return MetaState.VALID.value
 
     # validation failed, check if the field is present or if it's empty
@@ -171,7 +159,15 @@ def process_record_list(record_list: list, expected_fields: list, parent=None):
     -------
     list[{field: MetaState}]
     """
+
+    # if you're looking at a parent file's data then you need a different mapping
+    if parent:
+        class_mapping = second_layer_field_mappings[parent]
+    # we're at the top level, just check the first layer mappings
+    else:
+        class_mapping = first_layer_field_mapping
+
     return [
-        {field: check_metadata_state(field, data, parent) for field in expected_fields}
+        {field: check_metadata_state(field, data, class_mapping) for field in expected_fields}
         for data in record_list
     ]
