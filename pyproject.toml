@@ -22,6 +22,7 @@ dependencies = [
     'altair',
     'aind-data-schema',
     'aind-data-access-api[docdb]',
+    'aind-data-access-api[rds]',
     'aind-data-schema-models',
     'flask',
 ]

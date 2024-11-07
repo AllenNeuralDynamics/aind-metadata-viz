@@ -7,6 +7,7 @@ ADD pyproject.toml .
 ADD setup.py .
 
 RUN apt-get update
+RUN apt install postgresql
 RUN pip install . --no-cache-dir
 
 EXPOSE 8000
