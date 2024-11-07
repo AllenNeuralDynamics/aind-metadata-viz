@@ -1,11 +1,8 @@
 import panel as pn
 import altair as alt
 import pandas as pd
-from aind_metadata_viz import docdb
-from aind_metadata_viz.docdb import _get_all
+from aind_metadata_viz import database
 from aind_data_schema import __version__ as ads_version
-
-_get_all(test_mode=True)
 
 pn.extension(design="material")
 pn.extension("vega")
@@ -64,14 +61,14 @@ colors = (
 )
 color_list = list(colors.values())
 
-db = docdb.Database()
+db = database.Database()
 
 modality_selector = pn.widgets.Select(
-    name="Filter by modality:", options=["all"] + docdb.MODALITIES
+    name="Filter by modality:", options=["all"] + database.MODALITIES
 )
 
 top_selector = pn.widgets.Select(
-    name="Filter by core file:", options=docdb.ALL_FILES
+    name="Filter by core file:", options=database.ALL_FILES
 )
 
 field_selector = pn.widgets.Select(name="Filter download by field:", options=[])
@@ -139,7 +136,7 @@ def modality_present_chart():
     """Build a chart of presence split by modality"""
 
     df = pd.DataFrame()
-    for modality in docdb.MODALITIES:
+    for modality in database.MODALITIES:
         sum_longform_df = db.get_modality_presence(modality=modality)
         df = pd.concat([df, sum_longform_df])
 
