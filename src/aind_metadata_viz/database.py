@@ -302,7 +302,18 @@ def _get_metadata(test_mode=False) -> pd.DataFrame:
     test_mode : bool, optional
         _description_, by default False
     """
-    record_list = _get_all(test_mode=test_mode)
+    record_list = docdb_api_client.retrieve_docdb_records(
+        filter_query={},
+        projection={
+            "data_description.modality": 1,
+            "name": 1,
+            "_id": 1,
+            "location": 1,
+            "created": 1,
+        },
+        limit=0 if not test_mode else 10,
+        paginate_batch_size=500,
+    )
 
     records = []
     # Now add some information about the records, i.e. modality, derived state, etc.
