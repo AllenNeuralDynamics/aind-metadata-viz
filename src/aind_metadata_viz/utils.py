@@ -16,12 +16,23 @@ CORE_FILES = [
 ]
 
 
-class MetaState(str, Enum):
-    VALID = "valid"
-    PRESENT = "present"
-    OPTIONAL = "optional"
-    MISSING = "missing"
-    EXCLUDED = "excluded"
+METASTATE_MAP = {
+    2: "valid",
+    1: "present",
+    0: "optional",
+    -1: "missing",
+    -2: "excluded",
+    -3: "corrupt",
+}
+
+
+class MetadataState(int, Enum):
+    VALID = 2  # validates as it's class
+    PRESENT = 1  # present
+    OPTIONAL = 0  # missing, but it's optional
+    MISSING = -1  # missing, and it's required
+    EXCLUDED = -2  # excluded for all modalities in the metadata
+    CORRUPT = -3  # corrupt, can't be loaded from json
 
 
 REMAPS = {

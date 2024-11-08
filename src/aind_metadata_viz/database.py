@@ -6,7 +6,7 @@ import pandas as pd
 import param
 import os
 import numpy as np
-
+import time
 from io import StringIO
 
 from aind_data_schema_models.modalities import (
@@ -14,13 +14,11 @@ from aind_data_schema_models.modalities import (
     ExpectedFiles,
     FileRequirement,
 )
-from aind_metadata_viz.metadata_helpers import (
-    process_record_list,
-)
 from aind_metadata_viz.metadata_class_map import (
     first_layer_field_mapping,
     second_layer_field_mappings,
 )
+from aind_metadata_viz.utils import METASTATE_MAP
 
 API_GATEWAY_HOST = os.getenv("API_GATEWAY_HOST", "api.allenneuraldynamics-test.org")
 DATABASE = os.getenv("DATABASE", "metadata_index")
@@ -81,8 +79,12 @@ class Database(param.Parameterized):
     ):
         """Initialize"""
         # get data
-        self._file_data = _get_file_presence(test_mode=test_mode)
+        start = time.time()
+        self._file_data = _get_metadata(test_mode=test_mode)
+        print(time.time() - start)
+        start = time.time()
         self._status_data = _get_status()
+        print(time.time() - start)
 
         # inner join only keeps records that are in both dataframes
         self.data = pd.merge(self._file_data, self._status_data, on="_id", how="inner")
@@ -278,36 +280,40 @@ class Database(param.Parameterized):
         sio = StringIO()
         df.to_csv(sio, index=False)
         return sio.getvalue()
-    
-
-@pn.cache(ttl=CACHE_RESET_DAY)
-def _get_metadata(test_mode=False) -> pd.DataFrame:
-    """Get the metadata fields, modality, derived, name, location, created
-
-    Parameters
-    ----------
-    test_mode : bool, optional
-        _description_, by default False
-    """
 
 
 def _get_status() -> pd.DataFrame:
     """Get the status of the metadata
     """
     response = rds_client.read_table(RDS_TABLE_NAME)
+
+    # replace values using the int -> string map
+    response.replace(METASTATE_MAP, inplace=True)
+
     return response
 
 
 @pn.cache(ttl=CACHE_RESET_DAY)
-def _get_file_presence(test_mode=False) -> pd.DataFrame:
-    """Get all and convert to data frame format
+def _get_metadata(test_mode=False) -> pd.DataFrame:
+    """Get metadata about records in DocDB
 
     Parameters
     ----------
     test_mode : bool, optional
         _description_, by default False
     """
-    record_list = _get_all(test_mode=test_mode)
+    record_list = docdb_api_client.retrieve_docdb_records(
+        filter_query={},
+        projection={
+            "data_description.modality": 1,
+            "name": 1,
+            "_id": 1,
+            "location": 1,
+            "created": 1,
+        },
+        limit=0 if not test_mode else 10,
+        paginate_batch_size=500,
+    )
 
     records = []
     # Now add some information about the records, i.e. modality, derived state, etc.
