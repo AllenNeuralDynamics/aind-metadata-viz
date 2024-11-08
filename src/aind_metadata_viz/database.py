@@ -282,6 +282,7 @@ class Database(param.Parameterized):
         return sio.getvalue()
 
 
+@pn.cache(ttl=CACHE_RESET_DAY)
 def _get_status() -> pd.DataFrame:
     """Get the status of the metadata
     """
