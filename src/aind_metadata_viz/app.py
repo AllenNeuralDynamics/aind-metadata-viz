@@ -2,6 +2,7 @@ import panel as pn
 import altair as alt
 import pandas as pd
 from aind_metadata_viz import database
+from aind_metadata_viz.hall_of_shame import HallOfShame
 from aind_data_schema import __version__ as ads_version
 
 pn.extension(design="material")
@@ -355,8 +356,11 @@ mid_plot = pn.bind(
     derived_filter=derived_selector,
 )
 
+# Build the hall of shame
+hall_of_shame = HallOfShame()
+
 # Put everything in a column and buffer it
-main_col = pn.Column(top_row, mid_plot, styles=outer_style, width=515)
+main_col = pn.Column(top_row, mid_plot, hall_of_shame.panel(), styles=outer_style, width=515)
 
 pn.Row(pn.HSpacer(), left_col, pn.Spacer(width=20), main_col, pn.HSpacer(), margin=20).servable(
     title="Metadata Portal",
