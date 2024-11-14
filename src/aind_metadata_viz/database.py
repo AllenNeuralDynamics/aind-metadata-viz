@@ -1,12 +1,14 @@
 from aind_data_access_api.document_db import MetadataDbClient
 from aind_data_access_api.rds_tables import RDSCredentials
 from aind_data_access_api.rds_tables import Client
+from aind_metadata_validator.metadata_validator import validate_metadata
 import panel as pn
 import pandas as pd
 import param
 import os
 import numpy as np
-import time
+import io
+import logging
 from io import StringIO
 
 from aind_data_schema_models.modalities import (
@@ -79,12 +81,8 @@ class Database(param.Parameterized):
     ):
         """Initialize"""
         # get data
-        start = time.time()
         self._file_data = _get_metadata(test_mode=test_mode)
-        print(time.time() - start)
-        start = time.time()
         self._status_data = _get_status()
-        print(time.time() - start)
 
         # inner join only keeps records that are in both dataframes
         self.data = pd.merge(self._file_data, self._status_data, on="_id", how="inner")
@@ -158,6 +156,10 @@ class Database(param.Parameterized):
                 excluded_files_by_modality.append(file)
 
         return (expected_files_by_modality, excluded_files_by_modality)
+
+    def get_overall_valid(self):
+        """Get the percentage of valid records"""
+        return np.sum(self.data['metadata'].values=='valid') / len(self.data) * 100
 
     def get_file_presence(self):
         """Get the presence of a list of files
@@ -350,15 +352,63 @@ def _get_metadata(test_mode=False) -> pd.DataFrame:
     )
 
 
-@pn.cache(ttl=CACHE_RESET_DAY)
-def _get_all(test_mode=False):
-    filter = {}
-    limit = 0 if not test_mode else 10
-    paginate_batch_size = 500
-    response = docdb_api_client.retrieve_docdb_records(
-        filter_query=filter,
-        limit=limit,
-        paginate_batch_size=paginate_batch_size,
-    )
+class RecordValidator():
 
-    return response
+    def __init__(self, id):
+        """Populate the validator with a record and run validation
+
+        Parameters
+        ----------
+        id : _type_
+            _description_
+        """
+        self.update(id)
+        self.state = None
+        self.log = None
+
+    def update(self, name):
+
+        records = docdb_api_client.retrieve_docdb_records(filter_query={"name": name})
+        print(records)
+
+        if len(records) > 0:
+            self.record = records[0]
+        else:
+            self.state = None
+            self.log = None
+            return
+
+        # Create an in-memory buffer to capture log output
+        log_capture_string = io.StringIO()
+
+        # Set up a custom handler that writes to the buffer
+        ch = logging.StreamHandler(log_capture_string)
+        ch.setLevel(logging.INFO)  # Adjust level as needed
+
+        # Get the logger used in `validate_metadata`
+        logger = logging.getLogger()
+        logger.addHandler(ch)
+
+        # run the validator, capturing any errors
+        self.state = validate_metadata(self.record)
+
+        ch.flush()
+        self.log = log_capture_string.getvalue()
+        logger.removeHandler(ch)
+        log_capture_string.close()
+
+        print(self.state)
+        print(self.log)
+
+    def panel(self):
+        """Return a panel object with the validation results"""
+        if self.state is None:
+            return pn.pane.Markdown("No record was found.")
+        else:
+            state = pn.pane.Markdown(f"Validation state: {self.state}")
+
+            log = pn.widgets.TextAreaInput(value=self.log, height=400, width=515)
+            log.disabled = True
+
+            return pn.Column(state, log, width=515)
+        # return (self.state, self.log)

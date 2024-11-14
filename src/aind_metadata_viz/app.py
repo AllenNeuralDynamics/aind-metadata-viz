@@ -2,7 +2,6 @@ import panel as pn
 import altair as alt
 import pandas as pd
 from aind_metadata_viz import database
-from aind_metadata_viz.hall_of_shame import HallOfShame
 from aind_data_schema import __version__ as ads_version
 
 pn.extension(design="material")
@@ -314,6 +313,11 @@ outer_style = {
 
 
 header_pane = pn.pane.Markdown(header, styles=outer_style, width=420)
+
+total_md = f"<p style=\"text-align:center\"><b>{db.get_overall_valid():1.2f}%</b> of all metadata records are fully {hd_style('valid')}</p>"
+
+percent_total = pn.pane.Markdown(total_md, styles=outer_style, width=420)
+
 download_pane = pn.pane.Markdown(download_md)
 
 control_col = pn.Column(
@@ -331,6 +335,7 @@ control_col = pn.Column(
 # Left column (controls)
 left_col = pn.Column(
     header_pane,
+    percent_total,
     control_col,
     width=420,
 )
@@ -356,12 +361,29 @@ mid_plot = pn.bind(
     derived_filter=derived_selector,
 )
 
-# Build the hall of shame
-hall_of_shame = HallOfShame()
-
 # Put everything in a column and buffer it
-main_col = pn.Column(top_row, mid_plot, hall_of_shame.panel(), styles=outer_style, width=515)
+main_col = pn.Column(top_row, mid_plot, styles=outer_style, width=515)
 
-pn.Row(pn.HSpacer(), left_col, pn.Spacer(width=20), main_col, pn.HSpacer(), margin=20).servable(
+main_row = pn.Row(pn.HSpacer(), left_col, pn.Spacer(width=20), main_col, pn.HSpacer(), margin=20)
+
+# Add the validator section
+
+validator_name_selector = pn.widgets.TextInput(name="Enter asset name to validate:", value="single-plane-ophys_655019_2023-04-03_18-17-55", width=800)
+pn.state.location.sync(validator_name_selector, {"value": "validator_name"})
+
+validator = database.RecordValidator(validator_name_selector.value)
+
+
+def build_validator(validator_name):
+    validator.update(validator_name)
+    col = pn.Column(validator_name_selector, validator.panel(), width=(515+20+420), styles=outer_style)
+    row = pn.Row(pn.HSpacer(), col, pn.HSpacer())
+    return row
+
+
+validator_row = pn.bind(build_validator,
+                        validator_name=validator_name_selector)
+
+pn.Column(main_row, validator_row).servable(
     title="Metadata Portal",
 )
