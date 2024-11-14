@@ -2,20 +2,12 @@ import panel as pn
 import altair as alt
 import pandas as pd
 from aind_metadata_viz import database
+from aind_metadata_viz.utils import hd_style, AIND_COLORS
 from aind_data_schema import __version__ as ads_version
 
 pn.extension(design="material")
 pn.extension("vega")
 alt.themes.enable("ggplot2")
-
-AIND_COLORS = colors = {
-    "dark_blue": "#003057",
-    "light_blue": "#2A7DE1",
-    "green": "#1D8649",
-    "yellow": "#FFB71B",
-    "grey": "#7C7C7F",
-    "red": "#FF5733",
-}
 
 # Define CSS to set the background color
 background_color = AIND_COLORS[pn.state.location.query_params["background"] if "background" in pn.state.location.query_params else "dark_blue"]
@@ -281,20 +273,16 @@ def field_present_chart(selected_file, derived_filter, **args):
     return pane
 
 
-def hd_style(text):
-    return (
-        f"<span style='font-weight: bold; color:{colors[text]}'>{text}</span>"
-    )
 
 
 header = (
     f"# Metadata Portal\n\n"
     "This app steps through all of the metadata stored in DocDB and determines whether every record's fields "
     "(and subfields) are "
-    f"{hd_style('valid')} for aind-data-schema v{ads_version}, "
-    f"{hd_style('present')} but invalid, {hd_style('optional')}, "
-    f"{hd_style('missing')}, or "
-    f"{hd_style('excluded')} for the record's modality."
+    f"{hd_style('valid', colors)} for aind-data-schema v{ads_version}, "
+    f"{hd_style('present', colors)} but invalid, {hd_style('optional', colors)}, "
+    f"{hd_style('missing', colors)}, or "
+    f"{hd_style('excluded', colors)} for the record's modality."
 )
 
 download_md = """
@@ -314,7 +302,7 @@ outer_style = {
 
 header_pane = pn.pane.Markdown(header, styles=outer_style, width=420)
 
-total_md = f"<p style=\"text-align:center\"><b>{db.get_overall_valid():1.2f}%</b> of all metadata records are fully {hd_style('valid')}</p>"
+total_md = f"<p style=\"text-align:center\"><b>{db.get_overall_valid():1.2f}%</b> of all metadata records are fully {hd_style('valid', colors)}</p>"
 
 percent_total = pn.pane.Markdown(total_md, styles=outer_style, width=420)
 
@@ -371,7 +359,7 @@ main_row = pn.Row(pn.HSpacer(), left_col, pn.Spacer(width=20), main_col, pn.HSpa
 validator_name_selector = pn.widgets.TextInput(name="Enter asset name to validate:", value="single-plane-ophys_655019_2023-04-03_18-17-55", width=800)
 pn.state.location.sync(validator_name_selector, {"value": "validator_name"})
 
-validator = database.RecordValidator(validator_name_selector.value)
+validator = database.RecordValidator(validator_name_selector.value, colors)
 
 
 def build_validator(validator_name):

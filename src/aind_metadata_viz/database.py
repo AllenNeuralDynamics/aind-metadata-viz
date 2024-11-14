@@ -20,7 +20,7 @@ from aind_metadata_viz.metadata_class_map import (
     first_layer_field_mapping,
     second_layer_field_mappings,
 )
-from aind_metadata_viz.utils import METASTATE_MAP
+from aind_metadata_viz.utils import METASTATE_MAP, hd_style
 
 API_GATEWAY_HOST = os.getenv("API_GATEWAY_HOST", "api.allenneuraldynamics-test.org")
 DATABASE = os.getenv("DATABASE", "metadata_index")
@@ -354,7 +354,7 @@ def _get_metadata(test_mode=False) -> pd.DataFrame:
 
 class RecordValidator():
 
-    def __init__(self, id):
+    def __init__(self, id, colors):
         """Populate the validator with a record and run validation
 
         Parameters
@@ -365,6 +365,7 @@ class RecordValidator():
         self.update(id)
         self.state = None
         self.log = None
+        self.colors = colors
 
     def update(self, name):
 
@@ -397,18 +398,23 @@ class RecordValidator():
         logger.removeHandler(ch)
         log_capture_string.close()
 
-        print(self.state)
-        print(self.log)
-
     def panel(self):
         """Return a panel object with the validation results"""
         if self.state is None:
             return pn.pane.Markdown("No record was found.")
         else:
-            state = pn.pane.Markdown(f"Validation state: {self.state}")
+            print(self.state["metadata"].value)
+            state = pn.pane.Markdown(f"""
+Overall metadata: {hd_style(METASTATE_MAP[self.state["metadata"].value], self.colors)}
+""")
+            file_state = {}
+            for file in ALL_FILES:
+                file_state[file] = hd_style(METASTATE_MAP[self.state[file].value], self.colors)
+            print(file_state)
+            df = pd.DataFrame(file_state, index=[0])
+            file_state = pn.pane.DataFrame(df, width=920, escape=False)
 
-            log = pn.widgets.TextAreaInput(value=self.log, height=400, width=515)
-            log.disabled = True
+            log = pn.pane.Markdown(self.log, width=920)
 
-            return pn.Column(state, log, width=515)
+            return pn.Column(state, file_state, log, width=515)
         # return (self.state, self.log)

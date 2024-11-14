@@ -48,6 +48,21 @@ REMAPS = {
     "EXASPIM": "SPIM",
 }
 
+AIND_COLORS = {
+    "dark_blue": "#003057",
+    "light_blue": "#2A7DE1",
+    "green": "#1D8649",
+    "yellow": "#FFB71B",
+    "grey": "#7C7C7F",
+    "red": "#FF5733",
+}
+
+
+def hd_style(text, colors):
+    return (
+        f"<span style='font-weight: bold; color:{colors[text]}'>{text}</span>"
+    )
+
 
 def expected_files_from_modalities(
     modalities: list[str],
