@@ -356,7 +356,7 @@ main_row = pn.Row(pn.HSpacer(), left_col, pn.Spacer(width=20), main_col, pn.HSpa
 
 # Add the validator section
 
-validator_name_selector = pn.widgets.TextInput(name="Enter asset name to validate:", value="", width=800)
+validator_name_selector = pn.widgets.TextInput(name="Enter asset name to validate:", value="", placeholder="Asset name" width=800)
 pn.state.location.sync(validator_name_selector, {"value": "validator_name"})
 
 validator = database.RecordValidator(validator_name_selector.value, colors)
