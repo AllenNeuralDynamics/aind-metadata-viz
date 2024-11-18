@@ -57,6 +57,30 @@ AIND_COLORS = {
     "red": "#FF5733",
 }
 
+COLOR_OPTIONS = {
+    "default": {
+        "valid": AIND_COLORS["green"],
+        "present": AIND_COLORS["light_blue"],
+        "optional": "grey",
+        "missing": "red",
+        "excluded": "#F0F0F0",
+    },
+    "lemonade": {
+        "valid": "#F49FD7",
+        "present": "#FFD966",
+        "optional": "grey",
+        "missing": "#9FF2F5",
+        "excluded": "white",
+    },
+    "aind": {
+        "valid": AIND_COLORS["green"],
+        "present": AIND_COLORS["light_blue"],
+        "optional": AIND_COLORS["grey"],
+        "missing": AIND_COLORS["red"],
+        "excluded": "white",
+    }
+}
+
 
 def hd_style(text, colors):
     return (

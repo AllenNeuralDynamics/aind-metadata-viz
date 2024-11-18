@@ -1,16 +1,17 @@
-import panel as pn
 import altair as alt
-import pandas as pd
-from aind_metadata_viz import database
-from aind_metadata_viz.utils import hd_style, AIND_COLORS
+import panel as pn
 from aind_data_schema import __version__ as ads_version
+from aind_metadata_viz import database
+from aind_metadata_viz.utils import AIND_COLORS, COLOR_OPTIONS, hd_style
+from aind_metadata_viz.charts import file_present_chart, modality_present_chart
 
-pn.extension(design="material")
-pn.extension("vega")
+pn.extension("vega", design="material")
 alt.themes.enable("ggplot2")
 
-# Define CSS to set the background color
-background_color = AIND_COLORS[pn.state.location.query_params["background"] if "background" in pn.state.location.query_params else "dark_blue"]
+# Define CSS to set the background color and add to panel
+background_param = pn.state.location.query_params.get("background", "dark_blue")
+background_color = AIND_COLORS.get(background_param, AIND_COLORS["dark_blue"])
+
 css = f"""
 body {{
     background-color: {background_color} !important;
@@ -18,43 +19,18 @@ body {{
     background-size: 60%;
 }}
 """
-
-# Add the custom CSS
 pn.config.raw_css.append(css)
 
-color_options = {
-    "default": {
-        "valid": AIND_COLORS["green"],
-        "present": AIND_COLORS["light_blue"],
-        "optional": "grey",
-        "missing": "red",
-        "excluded": "#F0F0F0",
-    },
-    "lemonade": {
-        "valid": "#F49FD7",
-        "present": "#FFD966",
-        "optional": "grey",
-        "missing": "#9FF2F5",
-        "excluded": "white",
-    },
-    "aind": {
-        "valid": AIND_COLORS["green"],
-        "present": AIND_COLORS["light_blue"],
-        "optional": AIND_COLORS["grey"],
-        "missing": AIND_COLORS["red"],
-        "excluded": "white",
-    }
-}
-
+# Get the active color list
 colors = (
-    color_options[pn.state.location.query_params["colors"]]
-    if "colors" in pn.state.location.query_params
-    else color_options["default"]
+    COLOR_OPTIONS.get(pn.state.location.query_params.get("colors"), COLOR_OPTIONS["default"])
 )
 color_list = list(colors.values())
 
+# Load the database
 db = database.Database()
 
+# Set up selectors and sync with URL
 modality_selector = pn.widgets.Select(
     name="Filter by modality:", options=["all"] + database.MODALITIES
 )
@@ -68,7 +44,7 @@ field_selector = pn.widgets.Select(name="Filter download by field:", options=[])
 missing_selector = pn.widgets.Select(
     name="Filter download by state", options=["Missing", "Valid/Present"]
 )
-missing_selector.value = "Missing/Optional"
+missing_selector.value = "Missing"
 
 derived_selector = pn.widgets.Select(
     name="Filter by history:",
@@ -83,99 +59,7 @@ pn.state.location.sync(missing_selector, {"value": "missing"})
 pn.state.location.sync(derived_selector, {"value": "derived"})
 
 
-def file_present_chart():
-    """Build a chart of presence split by core metadata file type"""
-    sum_longform_df = db.get_file_presence()
-    local_states = sum_longform_df["state"].unique()
-    local_color_list = [colors[state] for state in local_states]
-
-    file_selection = alt.selection_point(fields=['file'], empty='none', name='file', value=top_selector.value)
-
-    chart = (
-        alt.Chart(sum_longform_df)
-        .mark_bar()
-        .encode(
-            x=alt.X("file:N", title=None, axis=alt.Axis(grid=False)),
-            y=alt.Y(
-                "sum:Q",
-                title="Metadata assets (n)",
-                axis=alt.Axis(grid=False),
-            ),
-            color=alt.Color(
-                "state:N",
-                scale=alt.Scale(
-                    domain=local_states,
-                    range=local_color_list,
-                ),
-                legend=None,
-            ),
-        )
-        .add_params(file_selection)
-        .properties(title="Metadata files")
-    )
-
-    pane = pn.pane.Vega(chart)
-
-    def update_selection(event):
-        if len(event.new) > 0:
-            top_selector.value = event.new[0]['file']
-    pane.selection.param.watch(update_selection, 'file')
-
-    return pane
-
-
-def modality_present_chart():
-    """Build a chart of presence split by modality"""
-
-    df = pd.DataFrame()
-    for modality in database.MODALITIES:
-        sum_longform_df = db.get_modality_presence(modality=modality)
-        df = pd.concat([df, sum_longform_df])
-
-    modality_selection = alt.selection_point(fields=['modality'], empty='all', name='modality', value=(modality_selector.value if modality_selector.value != "all" else None))
-
-    chart = (
-        alt.Chart(df)
-        .mark_bar()
-        .encode(
-            x=alt.X("modality:N", title=None, axis=alt.Axis(grid=False)),
-            y=alt.Y(
-                "sum:Q",
-                title="State (%)",
-                axis=alt.Axis(
-                    grid=False,
-                    values=[0, 0.25, 0.5, 0.75, 1],
-                    labelExpr="datum.value * 100 + '%'",
-                ),
-            ),
-            color=alt.Color(
-                "state:N",
-                scale=alt.Scale(
-                    domain=list(colors.keys()),
-                    range=color_list,
-                ),
-                legend=None,
-            ),
-            opacity=alt.condition(
-                modality_selection,
-                alt.value(1),
-                alt.value(0.2),
-            ),
-        )
-        .add_params(modality_selection)
-        .properties(title="File state by modality")
-    )
-
-    pane = pn.pane.Vega(chart)
-
-    def update_selection(event):
-        if len(event.new) > 0:
-            modality_selector.value = event.new[0]['modality']
-        else:
-            modality_selector.value = "all"
-    pane.selection.param.watch(update_selection, 'modality')
-
-    return pane
+# Chart definitions
 
 
 js_pane = pn.pane.HTML("", height=0, width=0).servable()
@@ -223,8 +107,8 @@ window.URL.revokeObjectURL(url);
     js_pane.object = f"<script>{js_code}</script>"
 
 
-download_button = pn.widgets.Button(name="Download")
-download_button.on_click(build_csv_jscode)
+csv_download_button = pn.widgets.Button(name="Download")
+csv_download_button.on_click(build_csv_jscode)
 
 
 def field_present_chart(selected_file, derived_filter, **args):
@@ -315,7 +199,7 @@ control_col = pn.Column(
     download_pane,
     field_selector,
     missing_selector,
-    download_button,
+    csv_download_button,
     styles=outer_style,
     width=420,
 )
@@ -333,7 +217,7 @@ def build_row(selected_modality, derived_filter):
     db.modality_filter = selected_modality
     db.derived_filter = derived_filter
 
-    return pn.Row(file_present_chart, modality_present_chart) 
+    return pn.Row(file_present_chart(db, colors, top_selector), modality_present_chart(db, colors, color_list, modality_selector))
 
 
 top_row = pn.bind(
@@ -354,9 +238,8 @@ main_col = pn.Column(top_row, mid_plot, styles=outer_style, width=515)
 
 main_row = pn.Row(pn.HSpacer(), left_col, pn.Spacer(width=20), main_col, pn.HSpacer(), margin=20)
 
-# Add the validator section
-
-validator_name_selector = pn.widgets.TextInput(name="Enter asset name to validate:", value="", placeholder="Asset name" width=800)
+# Add the validator search section
+validator_name_selector = pn.widgets.TextInput(name="Enter asset name to validate:", value="", placeholder="Asset name", width=800)
 pn.state.location.sync(validator_name_selector, {"value": "validator_name"})
 
 validator = database.RecordValidator(validator_name_selector.value, colors)
