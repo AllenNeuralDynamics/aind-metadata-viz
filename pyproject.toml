@@ -23,8 +23,7 @@ dependencies = [
     'aind-data-schema',
     'aind-data-access-api[docdb]',
     'aind-data-access-api[rds]',
-    'aind-data-schema-models',
-    'aind-metadata-validator>=0.7.8',
+    'aind-metadata-validator>=0.7.9',
     'flask',
 ]
 
