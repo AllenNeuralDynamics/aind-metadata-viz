@@ -352,6 +352,17 @@ def _get_metadata(test_mode=False) -> pd.DataFrame:
     )
 
 
+@pn.cache(ttl=CACHE_RESET_HOUR)
+def _get_record_by_name(name: str) -> list:
+    """Get a single record by name"""
+
+    if not name:
+        return []
+
+    records = docdb_api_client.retrieve_docdb_records(filter_query={"name": name})
+    return records
+
+
 class RecordValidator():
 
     def __init__(self, id, colors):
@@ -369,8 +380,7 @@ class RecordValidator():
 
     def update(self, name):
 
-        records = docdb_api_client.retrieve_docdb_records(filter_query={"name": name})
-        print(records)
+        records = _get_record_by_name(name)
 
         if len(records) > 0:
             self.record = records[0]
