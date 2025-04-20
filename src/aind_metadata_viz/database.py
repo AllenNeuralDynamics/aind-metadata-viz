@@ -17,7 +17,6 @@ from aind_data_schema_models.modalities import (
     FileRequirement,
 )
 from aind_metadata_validator.mappings import (
-    FIRST_LAYER_MAPPING,
     SECOND_LAYER_MAPPING,
 )
 from aind_metadata_viz.utils import METASTATE_MAP, hd_style
