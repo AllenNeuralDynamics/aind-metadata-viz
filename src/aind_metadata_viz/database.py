@@ -16,9 +16,9 @@ from aind_data_schema_models.modalities import (
     ExpectedFiles,
     FileRequirement,
 )
-from aind_metadata_viz.metadata_class_map import (
-    first_layer_field_mapping,
-    second_layer_field_mappings,
+from aind_metadata_validator.mappings import (
+    FIRST_LAYER_MAPPING,
+    SECOND_LAYER_MAPPING,
 )
 from aind_metadata_viz.utils import METASTATE_MAP, hd_style
 
@@ -212,7 +212,7 @@ class Database(param.Parameterized):
         """
         self.file = file
 
-        self.field_list = list(second_layer_field_mappings[file].keys())
+        self.field_list = list(SECOND_LAYER_MAPPING[file].keys())
 
     def set_field(self, field: str):
         """Set the active field
