@@ -64,6 +64,9 @@ class MetadataView(param.Parameterized):
 
     record = param.Dict(default=None)
     files_present = param.List(default=[])
+    describedBys = param.Dict(default={})
+    buttons = param.Dict(default={})
+    visible = param.Dict(default={})
 
     def __init__(self, **params):
         super().__init__(**params)
@@ -77,15 +80,35 @@ class MetadataView(param.Parameterized):
             return
 
         for file in ALL_FILES:
+
             if file in self.record and self.record[file]:
+                # Track that this file is present
                 self.files_present.append(file)
+
+                # Remove the unneecssary describedBy field
+                if "describedBy" in self.record[file]:
+                    self.describedBys[file] = self.record[file]["describedBy"]
+                    del self.record[file]["describedBy"]
+
+                # Validate the file and store errors, if any
+                # [todo]
+
+            self.buttons[file] = pn.widgets.Button(name=f"{file}", button_type="primary" if file in self.files_present else "default", disabled=True)
+            self.visible[file] = True
+
+            pn.bind(self._toggle_visibility, self.buttons[file], file=file, watch=True)
+
+    def _toggle_visibility(self, event, file):
+        """Toggle the visibility of a file"""
+        self.visible[file] = not self.visible[file]
+        print(f"Visibility of {file} set to {self.visible[file]}")
 
     def header_panel(self):
         """Return a header panel with simple metadata information"""
 
         md = f"## {self.record["name"]}"
 
-        return pn.pane.Markdown(md, styles=outer_style, width=FIXED_WIDTH)
+        return pn.pane.Markdown(md)
 
     def button_panel(self):
         """Return a header panel with buttons for viewing each file
@@ -95,30 +118,43 @@ class MetadataView(param.Parameterized):
         objects = []
 
         for file in ALL_FILES:
-            objects.append(
-                pn.widgets.Button(
-                    name=f"{file}",
-                    button_type="primary",
-                    disabled=file not in self.files_present,
+            if file in self.buttons.keys():
+                self.buttons[file].disabled = file not in self.files_present
+                objects.append(
+                    self.buttons[file]
                 )
-            )
 
-        return pn.Row(*objects, styles=outer_style, width=FIXED_WIDTH)
+        return pn.Row(*objects)
 
+    def header(self):
+        """Compile the full header"""
+
+        return pn.Column(
+            self.header_panel(),
+            self.button_panel(),
+            styles=outer_style,
+            width=FIXED_WIDTH,
+        )
+
+    @param.depends("visible", watch=True)
     def file_panel(self, file: str):
         """Create a panel for viewing a single file's contents"""
 
         if file not in self.record:
             return f"File {file} not found in record"
 
-        md_header = pn.pane.Markdown(f"## {file} ")
-        data = pn.pane.JSON(self.record[file])
+        md_header = pn.pane.Markdown(
+            f"## {file} \n"
+            f"aind-data-schema link: [{file}.py]({self.describedBys[file]})"
+        )
+        data = pn.pane.JSON(self.record[file], width=FIXED_WIDTH-50)
 
         return pn.Column(
             md_header,
             data,
             styles=outer_style,
             width=FIXED_WIDTH,
+            visible=self.visible[file],
         )
 
     @param.depends("record", watch=True)
@@ -128,8 +164,7 @@ class MetadataView(param.Parameterized):
             return pn.pane.Markdown("No record selected. Set the record by adding to the end of the URL by ?name={your-asset-name}")
 
         main_col = pn.Column(
-            self.header_panel(),
-            self.button_panel(),
+            self.header(),
         )
 
         for file in self.files_present:
