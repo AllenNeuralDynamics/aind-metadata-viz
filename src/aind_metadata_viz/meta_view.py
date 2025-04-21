@@ -10,6 +10,9 @@ from aind_data_access_api.document_db import MetadataDbClient
 from aind_metadata_viz.utils import outer_style, AIND_COLORS
 from aind_metadata_viz.database import ALL_FILES
 
+from aind_metadata_validator.core_validator import validate_core_metadata
+from aind_metadata_validator.utils import MetadataState
+
 FIXED_WIDTH = 1200
 
 background_param = pn.state.location.query_params.get("background", "dark_blue")
@@ -66,7 +69,7 @@ class MetadataView(param.Parameterized):
     files_present = param.List(default=[])
     describedBys = param.Dict(default={})
     buttons = param.Dict(default={})
-    visible = param.Dict(default={})
+    file_panels = param.Dict(default={})
 
     def __init__(self, **params):
         super().__init__(**params)
@@ -81,6 +84,11 @@ class MetadataView(param.Parameterized):
 
         for file in ALL_FILES:
 
+            self.file_panels[file] = pn.Column(
+                styles=outer_style,
+                width=FIXED_WIDTH,
+            )
+
             if file in self.record and self.record[file]:
                 # Track that this file is present
                 self.files_present.append(file)
@@ -93,15 +101,14 @@ class MetadataView(param.Parameterized):
                 # Validate the file and store errors, if any
                 # [todo]
 
-            self.buttons[file] = pn.widgets.Button(name=f"{file}", button_type="primary" if file in self.files_present else "default", disabled=True)
-            self.visible[file] = True
+                self.file_panel(file)
 
+            self.buttons[file] = pn.widgets.Button(name=f"{file}", button_type="primary" if file in self.files_present else "default", disabled=True)
             pn.bind(self._toggle_visibility, self.buttons[file], file=file, watch=True)
 
     def _toggle_visibility(self, event, file):
         """Toggle the visibility of a file"""
-        self.visible[file] = not self.visible[file]
-        print(f"Visibility of {file} set to {self.visible[file]}")
+        self.file_panels[file].visible = not self.file_panels[file].visible
 
     def header_panel(self):
         """Return a header panel with simple metadata information"""
@@ -136,7 +143,6 @@ class MetadataView(param.Parameterized):
             width=FIXED_WIDTH,
         )
 
-    @param.depends("visible", watch=True)
     def file_panel(self, file: str):
         """Create a panel for viewing a single file's contents"""
 
@@ -149,15 +155,11 @@ class MetadataView(param.Parameterized):
         )
         data = pn.pane.JSON(self.record[file], width=FIXED_WIDTH-50)
 
-        return pn.Column(
+        self.file_panels[file].objects = [
             md_header,
             data,
-            styles=outer_style,
-            width=FIXED_WIDTH,
-            visible=self.visible[file],
-        )
+        ]
 
-    @param.depends("record", watch=True)
     def panel(self):
         """Create a panel for viewing the metadata record"""
         if self.record is None:
@@ -168,8 +170,7 @@ class MetadataView(param.Parameterized):
         )
 
         for file in self.files_present:
-            file_pane = self.file_panel(file)
-            main_col.append(file_pane)
+            main_col.append(self.file_panels[file])
 
         return main_col
 
