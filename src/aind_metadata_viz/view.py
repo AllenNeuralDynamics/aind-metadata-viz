@@ -113,7 +113,7 @@ class MetadataView(param.Parameterized):
     def header_panel(self):
         """Return a header panel with simple metadata information"""
 
-        md = f"## {self.record["name"]}"
+        md = f"## {self.record['name']}"
 
         return pn.pane.Markdown(md)
 
@@ -163,7 +163,7 @@ class MetadataView(param.Parameterized):
     def panel(self):
         """Create a panel for viewing the metadata record"""
         if self.record is None:
-            return pn.pane.Markdown("No record selected. Set the record by adding to the end of the URL by ?name={your-asset-name}")
+            return pn.pane.Markdown("<span style='color:white;'>No record selected. Set a record by adding ?name={your-asset-name} to the URL</span>")
 
         main_col = pn.Column(
             self.header(),
