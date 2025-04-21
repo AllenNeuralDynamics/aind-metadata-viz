@@ -82,6 +82,10 @@ class QueryPanel(param.Parameterized):
             width=FIXED_WIDTH-50,
         )
 
+    def sync_url(self):
+        """Sync the URL with the current state"""
+        print(self.project_name)
+
     @pn.depends("project_name", watch=True)
     def update_query_panel(self):
         """Update the query panel content dynamically"""
@@ -91,6 +95,7 @@ class QueryPanel(param.Parameterized):
             query_dict["data_description.project_name"] = self.project_name
 
         self.query_pane.value = query_dict
+        print(f"Query updated: {self.query_pane.value}")
 
     def query_panel(self):
         """Return the query panel containing the JSONEditor"""
@@ -151,7 +156,12 @@ class QueryResult(param.Parameterized):
 
 
 query_panel = QueryPanel()
+pn.state.location.sync(query_panel, {
+    "project_name": "project_name"}
+)
+
 query_result = QueryResult()
+query_result.update_query(query_panel.query_pane.value)
 
 
 # Link the query_panel parameters to the query_result update_query function
