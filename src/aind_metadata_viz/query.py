@@ -155,7 +155,7 @@ query_result = QueryResult()
 
 
 # Link the query_panel parameters to the query_result update_query function
-def sync_query_result(*events):
+def sync_query_result(events):
     query_result.update_query(query_panel.query_pane.value)
 
 
