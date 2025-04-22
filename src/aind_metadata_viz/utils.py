@@ -148,3 +148,16 @@ def expected_files_from_modalities(
                 requirement_dict[file] = file_requirement
 
     return requirement_dict
+
+
+def sort_with_none(strings):
+    """
+    Sort a list of strings, placing None values at the beginning.
+
+    Parameters:
+        strings (list): A list that may contain strings and None values.
+
+    Returns:
+        list: Sorted list with None values first.
+    """
+    return sorted(strings, key=lambda x: (x is not None, x))
