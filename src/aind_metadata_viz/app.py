@@ -2,7 +2,7 @@ import altair as alt
 import panel as pn
 from aind_data_schema import __version__ as ads_version
 from aind_metadata_viz import database
-from aind_metadata_viz.utils import AIND_COLORS, COLOR_OPTIONS, hd_style
+from aind_metadata_viz.utils import AIND_COLORS, COLOR_OPTIONS, hd_style, outer_style
 from aind_metadata_viz.charts import file_present_chart, modality_present_chart
 
 pn.extension("vega", design="material")
@@ -174,14 +174,6 @@ download_md = """
 The download button creates a CSV file with information about the metadata records that match the filter settings.
 """
 
-outer_style = {
-    'background': '#ffffff',
-    'border-radius': '5px',
-    'border': '2px solid black',
-    'padding': '10px',
-    'box-shadow': '5px 5px 5px #bcbcbc',
-    'margin': "5px",
-}
 
 
 header_pane = pn.pane.Markdown(header, styles=outer_style, width=420)
