@@ -53,6 +53,7 @@ def get_project_names():
         ]
     )
     project_options = [project["_id"] for project in project_options]
+
     if project_options:
         project_options = sort_with_none(project_options)
     return project_options
@@ -89,7 +90,6 @@ def get_subject_ids(project_name: Optional[str]):
 def get_modalities(project_name: Optional[str]):
     """Get modality abbreviations"""
 
-    print(project_name)
     if not project_name:
         return []
 
@@ -122,11 +122,12 @@ class QueryPanel(param.Parameterized):
     project_name = param.String(default="", allow_None=True)
     subject_ids = param.List(default=[], allow_None=True)
     modalities = param.List(default=[], allow_None=True)
+    query = param.Dict(default={})
 
     def __init__(self, **params):
         super().__init__(**params)
-        self.query_pane = pn.widgets.JSONEditor(
-            value={},
+        self.query_pane = pn.pane.JSON(
+            object={},
             name="Query",
             width=FIXED_WIDTH-50,
         )
@@ -214,7 +215,8 @@ class QueryPanel(param.Parameterized):
                 "$in": self.modalities
             }
 
-        self.query_pane.value = query_dict
+        self.query = query_dict
+        self.query_pane.object = query_dict
 
     def query_panel(self):
         """Return the query panel containing the JSONEditor"""
@@ -296,7 +298,7 @@ pn.state.location.sync(query_panel, {
 
 # Link the query_panel parameters to the query_result update_query function
 def sync_query_result(events):
-    query_result.update_query(query_panel.query_pane.value)
+    query_result.update_query(query_panel.query)
 
 
 # Watch for changes in the query_panel parameters
@@ -308,7 +310,7 @@ query_panel.project_name_selector.value = query_panel.project_name
 query_panel.update_query_panel()
 query_panel.update_subject_id_options()
 query_panel.update_modality_options()
-query_result.update_query(query_panel.query_pane.value)
+query_result.update_query(query_panel.query)
 query_panel.subject_id_selector.value = saved_subject_ids
 query_panel.modality_selector.value = saved_modalities
 
@@ -319,6 +321,8 @@ header = pn.pane.Markdown(
     """
     # Metadata Query Builder
     Build simple metadata queries from dropdown options and then view associated metadata.
+
+    Note that the Subject ID and Modality options are dependent on the selected Project Name.
     """,
 )
 
