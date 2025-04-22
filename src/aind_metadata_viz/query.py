@@ -265,7 +265,7 @@ class QueryResult(param.Parameterized):
 
             # Add a column that generates a link to the view app
             df["View Record"] = [
-                f'<a href="http://localhost:5006/view?name={record["name"]}" target="_blank">View</a>'
+                f'<a href="/view?name={record["name"]}" target="_blank">View</a>'
                 for record in self.query_result
             ]
             # Remove _id column
