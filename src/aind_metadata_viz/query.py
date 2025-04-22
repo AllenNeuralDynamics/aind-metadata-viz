@@ -1,5 +1,6 @@
 """App for generating metadata queries"""
 import os
+from typing import Optional
 
 import pandas as pd
 import panel as pn
@@ -34,6 +35,7 @@ docdb_api_client = MetadataDbClient(
     collection=COLLECTION,
 )
 
+
 # Helpers to get option lists
 @pn.cache(ttl=86400)  # Cache for 24 hours
 def get_project_names():
@@ -54,11 +56,41 @@ def get_project_names():
     project_options = [project["_id"] for project in project_options]
     return project_options
 
+@pn.cache(ttl=86400)  # Cache for 24 hours
+def get_subject_ids(project_name: Optional[str]):
+    """Get subject IDs"""
+
+    if not project_name:
+        return []
+
+    subject_options = docdb_api_client.aggregate_docdb_records(
+        pipeline=[
+            {  # filter by project name
+                "$match": {
+                    "data_description.project_name": project_name
+                }
+            },
+            {
+                "$group": {
+                    "_id": "$data_description.subject_id"
+                }
+            },
+            {
+                "$sort": {
+                    "_id": 1  # Optional: sorts alphabetically
+                }
+            }
+        ]
+    )
+    subject_options = [subject["_id"] for subject in subject_options]
+    return subject_options
+
 
 class QueryPanel(param.Parameterized):
     """Class for generating simple metadata queries"""
 
     project_name = param.String(default="", allow_None=True)
+    subject_ids = param.List(default=[], allow_None=True)
 
     def __init__(self, **params):
         super().__init__(**params)
@@ -77,22 +109,50 @@ class QueryPanel(param.Parameterized):
         )
         project_name_selector.link(self, value="project_name")
 
+        self.subject_id_selector = pn.widgets.MultiChoice(
+            name="Subject IDs",
+            options=[""] + get_subject_ids(None),  # Add empty string option
+            value=self.subject_ids,
+            disabled=True,
+        )
+        self.subject_id_selector.link(self, value="subject_ids")
+
         return pn.Column(
-            project_name_selector,
+            pn.Row(
+                project_name_selector,
+                self.subject_id_selector,
+            ),
             width=FIXED_WIDTH-50,
         )
 
-    def sync_url(self):
-        """Sync the URL with the current state"""
-        print(self.project_name)
-
     @pn.depends("project_name", watch=True)
+    def update_subject_id_options(self):
+        """Clear the subject ID value and change options"""
+
+        if self.project_name != "":
+            # update subject ID options
+            self.subject_id_selector.options = get_subject_ids(self.project_name)
+            self.subject_id_selector.disabled = False
+        else:
+            # reset subject ID options
+            self.subject_id_selector.options = []
+            self.subject_id_selector.disabled = True
+
+        self.subject_id_selector.value = []
+        self.subject_ids = []
+
+    @pn.depends("project_name", "subject_ids", watch=True)
     def update_query_panel(self):
         """Update the query panel content dynamically"""
         query_dict = {}
 
         if self.project_name != "":
             query_dict["data_description.project_name"] = self.project_name
+
+        if self.subject_ids != []:
+            query_dict["data_description.subject_id"] = {
+                "$in": self.subject_ids
+            }
 
         self.query_pane.value = query_dict
         print(f"Query updated: {self.query_pane.value}")
@@ -119,7 +179,6 @@ class QueryResult(param.Parameterized):
     def __init__(self, **params):
         super().__init__(**params)
 
-        self.query = {}
         self.query_pane = pn.pane.DataFrame(
             escape=False,
             index=False,
@@ -127,11 +186,10 @@ class QueryResult(param.Parameterized):
 
     def update_query(self, query: dict):
         """Update the query and fetch results"""
-        self.query = query
 
-        if self.query:
+        if query:
             self.query_result = docdb_api_client.retrieve_docdb_records(
-                filter_query=self.query,
+                filter_query=query,
                 projection={
                     "name": 1,
                 }
@@ -157,7 +215,9 @@ class QueryResult(param.Parameterized):
 
 query_panel = QueryPanel()
 pn.state.location.sync(query_panel, {
-    "project_name": "project_name"}
+        "project_name": "project_name",
+        "subject_ids": "subject_ids",
+    }
 )
 
 query_result = QueryResult()
