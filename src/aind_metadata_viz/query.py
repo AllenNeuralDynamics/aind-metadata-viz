@@ -134,8 +134,9 @@ class QueryViewer(param.Parameterized):
 
     def __init__(self, query, **params):
         super().__init__(**params)
+        self.query = query
         self.query_pane = pn.pane.JSON(
-            object=query,
+            object=self.query,
             width=FIXED_WIDTH-50,
         )
 
@@ -161,7 +162,7 @@ class QueryViewer(param.Parameterized):
     def copy_to_clipboard(self, event):
         """Copy the query to clipboard"""
         import json
-        query_data = self.query_pane.object.copy()
+        query_data = self.query.copy()
         if "_name" in query_data:
             del query_data["_name"]
 
@@ -287,9 +288,18 @@ class QueryBuilder(param.Parameterized):
 
         self.query_viewer.update(query_dict)
 
+        if len(query_dict.keys()) <= 1:
+            self.query_button.disabled = True
+            self.query_button.name = "Cannot submit empty query"
+            self.query_button.button_type = "danger"
+        else:
+            self.query_button.name = "Submit query"
+            self.query_button.disabled = False
+            self.query_button.button_type = "primary"
+
     def save_query(self, event):
         """Store the current query in the queries list"""
-        self.queries = self.queries + [self.query_viewer.query]
+        self.queries = self.queries + [self.query_viewer.query_pane.object]
         self.query_button.disabled = True
 
     def panel(self):
