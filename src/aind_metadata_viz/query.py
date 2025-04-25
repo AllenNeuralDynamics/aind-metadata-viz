@@ -317,6 +317,8 @@ class QueryResult(param.Parameterized):
             index=False,
         )
 
+        self.query_name = "Empty"
+
         self.update_query(query)
 
     def update_query(self, query: dict):
