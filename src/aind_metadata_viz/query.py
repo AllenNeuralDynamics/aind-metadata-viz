@@ -289,7 +289,7 @@ class QueryBuilder(param.Parameterized):
 
     def save_query(self, event):
         """Store the current query in the queries list"""
-        self.queries = self.queries + [self.query_pane.object]
+        self.queries = self.queries + [self.query_viewer.query]
         self.query_button.disabled = True
 
     def panel(self):
@@ -358,11 +358,11 @@ class QueryResult(param.Parameterized):
         )
 
 
-query_panel = QueryBuilder()
+query_builder = QueryBuilder()
 
 saved_subject_ids = pn.state.location.query_params.get("subject_ids", [])
 saved_modalities = pn.state.location.query_params.get("modalities", [])
-pn.state.location.sync(query_panel, {
+pn.state.location.sync(query_builder, {
         "project_name": "project_name",
         "subject_ids": "subject_ids",
         "modalities": "modalities",
@@ -379,17 +379,17 @@ def sync_query_result(event):
 
 
 # Watch for changes in the query_panel.queries list
-query_panel.param.watch(sync_query_result, 'queries')
+query_builder.param.watch(sync_query_result, 'queries')
 
 # RUN INITIAL UPDATES
 
-query_panel.project_name_selector.value = query_panel.project_name
-query_panel.update_query_panel()
-query_panel.update_subject_id_options()
-query_panel.update_modality_options()
-query_panel.subject_id_selector.value = saved_subject_ids
-query_panel.modality_selector.value = saved_modalities
-query_tabs.objects = [QueryResult(query).panel() for query in query_panel.queries]
+query_builder.project_name_selector.value = query_builder.project_name
+query_builder.update_query_panel()
+query_builder.update_subject_id_options()
+query_builder.update_modality_options()
+query_builder.subject_id_selector.value = saved_subject_ids
+query_builder.modality_selector.value = saved_modalities
+query_tabs.objects = [QueryResult(query).panel() for query in query_builder.queries]
 
 # SET UP LAYOUT
 
@@ -404,7 +404,7 @@ header = pn.pane.Markdown(
 
 builder_col = pn.Column(
     header,
-    query_panel.panel(),
+    query_builder.panel(),
     styles=outer_style,
     width=FIXED_WIDTH,
 )
