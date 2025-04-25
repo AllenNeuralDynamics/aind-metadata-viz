@@ -34,6 +34,8 @@ docdb_api_client = MetadataDbClient(
     collection=COLLECTION,
 )
 
+DF_KEYS = ["name"]
+
 
 # Helpers to get option lists
 @pn.cache(ttl=86400)  # Cache for 24 hours
@@ -116,21 +118,81 @@ def get_modalities(project_name: Optional[str]):
     return modality_options
 
 
-class QueryPanel(param.Parameterized):
+@pn.cache(ttl=60*60)  # Cache for 1 hour
+def get_docdb_records(filter_query: dict):
+    """Get a set of records"""
+    return docdb_api_client.retrieve_docdb_records(
+        filter_query=filter_query,
+        projection={key: 1 for key in DF_KEYS},
+    )
+
+
+class QueryViewer(param.Parameterized):
+    """Class for displaying the result of a query"""
+
+    query = param.Dict(default={}, allow_None=True)
+
+    def __init__(self, query, **params):
+        super().__init__(**params)
+        self.query_pane = pn.pane.JSON(
+            object=query,
+            width=FIXED_WIDTH-50,
+        )
+
+        self.hidden_html = pn.pane.HTML(
+            object="",
+            width=0,
+            height=0,
+        )
+
+        self.copy_button = pn.widgets.Button(
+            name="",
+            icon="copy",
+            button_type="primary",
+            width=40,
+            height=30,
+        )
+        self.copy_button.on_click(self.copy_to_clipboard)
+
+    def update(self, query: dict):
+        """Update the query pane with a new query"""
+        self.query_pane.object = query
+
+    def copy_to_clipboard(self, event):
+        """Copy the query to clipboard"""
+        import json
+        query_data = self.query_pane.object.copy()
+        if "_name" in query_data:
+            del query_data["_name"]
+
+        clipboard_js = f"""
+        <script>
+        navigator.clipboard.writeText('{json.dumps(query_data)}');
+        </script>
+        """
+        self.hidden_html.object = clipboard_js
+
+    def panel(self):
+        """Return the query viewer panel"""
+        return pn.Row(
+            self.hidden_html,
+            pn.Column(self.query_pane, width=FIXED_WIDTH-150),
+            pn.Column(self.copy_button, align='end'),
+            width=FIXED_WIDTH-50
+        )
+
+
+class QueryBuilder(param.Parameterized):
     """Class for generating simple metadata queries"""
 
     project_name = param.String(default="", allow_None=True)
     subject_ids = param.List(default=[], allow_None=True)
     modalities = param.List(default=[], allow_None=True)
-    query = param.Dict(default={})
+    queries = param.List(default=[])
 
     def __init__(self, **params):
         super().__init__(**params)
-        self.query_pane = pn.pane.JSON(
-            object={},
-            name="Query",
-            width=FIXED_WIDTH-50,
-        )
+        self.query_viewer = QueryViewer({})
         self.project_name_selector = pn.widgets.Select(
             name="Project Name",
             options=[""] + get_project_names(),  # Add empty string option
@@ -153,6 +215,12 @@ class QueryPanel(param.Parameterized):
         self.subject_id_selector.link(self, value="subject_ids")
         self.modality_selector.link(self, value="modalities")
 
+        self.query_button = pn.widgets.Button(
+            name="Submit query",
+            button_type="primary",
+        )
+        pn.bind(self.save_query, self.query_button, watch=True)
+
     def options_panel(self):
         """Create the options panel for the query"""
 
@@ -161,6 +229,7 @@ class QueryPanel(param.Parameterized):
                 self.project_name_selector,
                 self.subject_id_selector,
                 self.modality_selector,
+                self.query_button,
             ),
             width=FIXED_WIDTH-50,
         )
@@ -200,7 +269,8 @@ class QueryPanel(param.Parameterized):
     @pn.depends("project_name", "subject_ids", "modalities", watch=True)
     def update_query_panel(self):
         """Update the query panel content dynamically"""
-        query_dict = {}
+        self.query_button.disabled = False
+        query_dict = {"_name": f"Query {len(self.queries) + 1}"}
 
         if self.project_name != "":
             query_dict["data_description.project_name"] = self.project_name
@@ -215,19 +285,19 @@ class QueryPanel(param.Parameterized):
                 "$in": self.modalities
             }
 
-        self.query = query_dict
-        self.query_pane.object = query_dict
+        self.query_viewer.update(query_dict)
 
-    def query_panel(self):
-        """Return the query panel containing the JSONEditor"""
-        return self.query_pane
+    def save_query(self, event):
+        """Store the current query in the queries list"""
+        self.queries = self.queries + [self.query_pane.object]
+        self.query_button.disabled = True
 
     def panel(self):
         """Return the full panel"""
         return pn.Column(
             self.options_panel(),
             pn.pane.Markdown("## Query"),
-            self.query_panel(),
+            self.query_viewer.panel(),
             width=FIXED_WIDTH,
         )
 
@@ -236,26 +306,30 @@ class QueryResult(param.Parameterized):
     """Class for displaying query results"""
 
     query = param.Dict(default={})
+    result = param.DataFrame(default=pd.DataFrame())
 
-    def __init__(self, **params):
+    def __init__(self, query, **params):
         super().__init__(**params)
 
-        self.query_pane = pn.pane.DataFrame(
+        self.query_viewer = QueryViewer(query)
+        self.result_pane = pn.pane.DataFrame(
             escape=False,
             index=False,
         )
+
+        self.update_query(query)
 
     def update_query(self, query: dict):
         """Update the query and fetch results"""
 
         if query:
-            self.query_pane.object = None
-            self.query_result = docdb_api_client.retrieve_docdb_records(
-                filter_query=query,
-                projection={
-                    "name": 1,
-                }
-            )
+            local_query = query.copy()
+            self.query_name = local_query["_name"]
+            del local_query["_name"]
+
+            self.query_viewer.update(local_query)
+            self.result_pane.object = None
+            self.query_result = get_docdb_records(local_query)
 
             df = pd.DataFrame(self.query_result)
 
@@ -272,19 +346,19 @@ class QueryResult(param.Parameterized):
             if "_id" in df.columns:
                 df.drop(columns=["_id"], inplace=True)
 
-            self.query_pane.object = df
+            self.result_pane.object = df
 
     def panel(self):
         """Return the query result panel"""
         return pn.Column(
-            self.query_pane,
+            self.query_viewer.panel(),
+            self.result_pane,
             width=FIXED_WIDTH-50,
-            styles=outer_style,
+            name=self.query_name,
         )
 
 
-query_panel = QueryPanel()
-query_result = QueryResult()
+query_panel = QueryBuilder()
 
 saved_subject_ids = pn.state.location.query_params.get("subject_ids", [])
 saved_modalities = pn.state.location.query_params.get("modalities", [])
@@ -292,17 +366,20 @@ pn.state.location.sync(query_panel, {
         "project_name": "project_name",
         "subject_ids": "subject_ids",
         "modalities": "modalities",
+        "queries": "queries",
     }
 )
 
+query_tabs = pn.Tabs(width=FIXED_WIDTH-50)
+
 
 # Link the query_panel parameters to the query_result update_query function
-def sync_query_result(events):
-    query_result.update_query(query_panel.query)
+def sync_query_result(event):
+    query_tabs.objects = [QueryResult(query).panel() for query in event.new]
 
 
-# Watch for changes in the query_panel parameters
-query_panel.param.watch(sync_query_result, ['project_name', 'subject_ids', 'modalities'])
+# Watch for changes in the query_panel.queries list
+query_panel.param.watch(sync_query_result, 'queries')
 
 # RUN INITIAL UPDATES
 
@@ -310,10 +387,9 @@ query_panel.project_name_selector.value = query_panel.project_name
 query_panel.update_query_panel()
 query_panel.update_subject_id_options()
 query_panel.update_modality_options()
-query_result.update_query(query_panel.query)
 query_panel.subject_id_selector.value = saved_subject_ids
 query_panel.modality_selector.value = saved_modalities
-
+query_tabs.objects = [QueryResult(query).panel() for query in query_panel.queries]
 
 # SET UP LAYOUT
 
@@ -326,13 +402,22 @@ header = pn.pane.Markdown(
     """,
 )
 
-main_col = pn.Column(
+builder_col = pn.Column(
     header,
-    query_panel.options_panel(),
-    query_panel.query_panel(),
-    query_result.panel(),
+    query_panel.panel(),
     styles=outer_style,
     width=FIXED_WIDTH,
+)
+
+tab_col = pn.Column(
+    query_tabs,
+    styles=outer_style,
+    width=FIXED_WIDTH,
+)
+
+main_col = pn.Column(
+    builder_col,
+    tab_col,
 )
 
 main_row = pn.Row(
