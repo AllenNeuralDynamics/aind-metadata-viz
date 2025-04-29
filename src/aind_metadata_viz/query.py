@@ -118,6 +118,33 @@ def get_modalities(project_name: Optional[str]):
     return modality_options
 
 
+@pn.cache(ttl=86400)  # Cache for 24 hours
+def get_session_types(project_name: Optional[str]):
+    """Get session types"""
+
+    if not project_name:
+        return []
+
+    session_type_options = docdb_api_client.aggregate_docdb_records(
+        pipeline=[
+            {  # filter by project name
+                "$match": {
+                    "data_description.project_name": project_name
+                }
+            },
+            {
+                "$group": {
+                    "_id": "$session.session_type"
+                }
+            },
+        ]
+    )
+    session_type_options = [session["_id"] for session in session_type_options]
+    if session_type_options:
+        session_type_options = sort_with_none(session_type_options)
+    return session_type_options
+
+
 @pn.cache(ttl=60*60)  # Cache for 1 hour
 def get_docdb_records(filter_query: dict):
     """Get a set of records"""
@@ -189,6 +216,7 @@ class QueryBuilder(param.Parameterized):
     project_name = param.String(default="", allow_None=True)
     subject_ids = param.List(default=[], allow_None=True)
     modalities = param.List(default=[], allow_None=True)
+    session_types = param.List(default=[], allow_None=True)
     queries = param.List(default=[])
 
     def __init__(self, **params):
@@ -211,10 +239,18 @@ class QueryBuilder(param.Parameterized):
             value=self.modalities,
             disabled=True,
         )
+        self.session_type_selector = pn.widgets.MultiChoice(
+            name="Session Types",
+            options=[""] + get_session_types(None),  # Add empty string option
+            value=[],
+            width=500,
+            disabled=True,
+        )
 
         self.project_name_selector.link(self, value="project_name")
         self.subject_id_selector.link(self, value="subject_ids")
         self.modality_selector.link(self, value="modalities")
+        self.session_type_selector.link(self, value="session_types")
 
         self.query_button = pn.widgets.Button(
             name="Submit query",
@@ -225,15 +261,24 @@ class QueryBuilder(param.Parameterized):
     def options_panel(self):
         """Create the options panel for the query"""
 
-        return pn.Column(
+        selector_col = pn.Column(
             pn.Row(
                 self.project_name_selector,
                 self.subject_id_selector,
                 self.modality_selector,
-                self.query_button,
             ),
-            width=FIXED_WIDTH-50,
+            pn.Row(
+                self.session_type_selector,
+            ),
+            width=FIXED_WIDTH-150,
         )
+
+        submit_col = pn.Column(
+            self.query_button,
+            width=100,
+        )
+
+        return pn.Row(selector_col, submit_col)
 
     @pn.depends("project_name", watch=True)
     def update_subject_id_options(self):
@@ -267,7 +312,23 @@ class QueryBuilder(param.Parameterized):
         self.modality_selector.value = []
         self.modalities = []
 
-    @pn.depends("project_name", "subject_ids", "modalities", watch=True)
+    @pn.depends("project_name", watch=True)
+    def update_session_type_options(self):
+        """Clear the session type value and change options"""
+
+        if self.project_name != "":
+            # update session type options
+            self.session_type_selector.options = get_session_types(self.project_name)
+            self.session_type_selector.disabled = False
+        else:
+            # reset session type options
+            self.session_type_selector.options = []
+            self.session_type_selector.disabled = True
+
+        self.session_type_selector.value = []
+        self.session_types = []
+
+    @pn.depends("project_name", "subject_ids", "modalities", "session_types", watch=True)
     def update_query_panel(self):
         """Update the query panel content dynamically"""
         self.query_button.disabled = False
@@ -284,6 +345,11 @@ class QueryBuilder(param.Parameterized):
         if self.modalities != []:
             query_dict["data_description.modality.abbreviation"] = {
                 "$in": self.modalities
+            }
+
+        if self.session_types != []:
+            query_dict["session.session_type"] = {
+                "$in": self.session_types
             }
 
         self.query_viewer.update(query_dict)
@@ -374,10 +440,12 @@ query_builder = QueryBuilder()
 
 saved_subject_ids = pn.state.location.query_params.get("subject_ids", [])
 saved_modalities = pn.state.location.query_params.get("modalities", [])
+saved_session_types = pn.state.location.query_params.get("session_types", [])
 pn.state.location.sync(query_builder, {
         "project_name": "project_name",
         "subject_ids": "subject_ids",
         "modalities": "modalities",
+        "session_types": "session_types",
         "queries": "queries",
     }
 )
@@ -399,8 +467,10 @@ query_builder.project_name_selector.value = query_builder.project_name
 query_builder.update_query_panel()
 query_builder.update_subject_id_options()
 query_builder.update_modality_options()
+query_builder.update_session_type_options()
 query_builder.subject_id_selector.value = saved_subject_ids
 query_builder.modality_selector.value = saved_modalities
+query_builder.session_type_selector.value = saved_session_types
 query_tabs.objects = [QueryResult(query).panel() for query in query_builder.queries]
 
 # SET UP LAYOUT
