@@ -243,6 +243,7 @@ class QueryBuilder(param.Parameterized):
             name="Session Types",
             options=[""] + get_session_types(None),  # Add empty string option
             value=[],
+            width=500,
             disabled=True,
         )
 
@@ -260,15 +261,24 @@ class QueryBuilder(param.Parameterized):
     def options_panel(self):
         """Create the options panel for the query"""
 
-        return pn.Column(
+        selector_col = pn.Column(
             pn.Row(
                 self.project_name_selector,
                 self.subject_id_selector,
                 self.modality_selector,
-                self.query_button,
             ),
-            width=FIXED_WIDTH-50,
+            pn.Row(
+                self.session_type_selector,
+            ),
+            width=FIXED_WIDTH-150,
         )
+
+        submit_col = pn.Column(
+            self.query_button,
+            width=100,
+        )
+
+        return pn.Row(selector_col, submit_col)
 
     @pn.depends("project_name", watch=True)
     def update_subject_id_options(self):
@@ -318,7 +328,7 @@ class QueryBuilder(param.Parameterized):
         self.session_type_selector.value = []
         self.session_types = []
 
-    @pn.depends("project_name", "subject_ids", "modalities", "session_type", watch=True)
+    @pn.depends("project_name", "subject_ids", "modalities", "session_types", watch=True)
     def update_query_panel(self):
         """Update the query panel content dynamically"""
         self.query_button.disabled = False
