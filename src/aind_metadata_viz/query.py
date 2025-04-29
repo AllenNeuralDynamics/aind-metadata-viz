@@ -185,6 +185,7 @@ class QueryViewer(param.Parameterized):
 
     def update(self, query: dict):
         """Update the query pane with a new query"""
+        self.query = query
         self.query_pane.object = query
 
     def copy_to_clipboard(self, event):
