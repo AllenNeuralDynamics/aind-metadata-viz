@@ -1,6 +1,7 @@
 """App for generating metadata queries"""
 import os
 from typing import Optional
+import json
 
 import pandas as pd
 import panel as pn
@@ -184,11 +185,11 @@ class QueryViewer(param.Parameterized):
 
     def update(self, query: dict):
         """Update the query pane with a new query"""
+        self.query = query
         self.query_pane.object = query
 
     def copy_to_clipboard(self, event):
         """Copy the query to clipboard"""
-        import json
         query_data = self.query.copy()
         if "_name" in query_data:
             del query_data["_name"]
@@ -199,6 +200,7 @@ class QueryViewer(param.Parameterized):
         </script>
         """
         self.hidden_html.object = clipboard_js
+        self.hidden_html.object = ""
 
     def panel(self):
         """Return the query viewer panel"""
