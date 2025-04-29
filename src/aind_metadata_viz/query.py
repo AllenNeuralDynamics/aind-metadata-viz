@@ -225,24 +225,24 @@ class QueryBuilder(param.Parameterized):
         super().__init__(**params)
         self.query_viewer = QueryViewer({})
         self.project_name_selector = pn.widgets.Select(
-            name="Project Name",
+            name="DataDescription.project_name",
             options=[""] + get_project_names(),  # Add empty string option
             value=self.project_name,
         )
         self.subject_id_selector = pn.widgets.MultiChoice(
-            name="Subject IDs",
+            name="Subject.subject_id",
             options=[""] + get_subject_ids(None),  # Add empty string option
             value=self.subject_ids,
             disabled=True,
         )
         self.modality_selector = pn.widgets.MultiChoice(
-            name="Modalities",
+            name="DataDescription.modality",
             options=[""] + get_modalities(None),  # Add empty string option
             value=self.modalities,
             disabled=True,
         )
         self.session_type_selector = pn.widgets.MultiChoice(
-            name="Session Types",
+            name="Session.session_type",
             options=[""] + get_session_types(None),  # Add empty string option
             value=[],
             width=500,
