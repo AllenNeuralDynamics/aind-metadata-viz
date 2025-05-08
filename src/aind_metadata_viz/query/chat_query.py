@@ -1,20 +1,15 @@
 """Complex query generation via chatbot"""
 import param
 
-import json
-
 import panel as pn
 from aind_data_access_api.document_db import MetadataDbClient
 from langchain import hub
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.prompts import ChatPromptTemplate
 import panel as pn
 import param
 from aind_metadata_viz.query.viewer import QueryViewer
-#from metadata_chatbot.prompts.prompt_to_langchain import mongodb_prompt
-from metadata_chatbot.utils import SONNET_3_7_LLM, SONNET_PROMPT_CACHING
+from metadata_chatbot.utils import SONNET_3_7_LLM
 from langchain_anthropic import convert_to_anthropic_tool
-from aind_metadata_viz.utils import outer_style, AIND_COLORS, FIXED_WIDTH
+from aind_metadata_viz.utils import outer_style, FIXED_WIDTH
 from tornado.ioloop import IOLoop
 
 API_GATEWAY_HOST = "api.allenneuraldynamics.org"
@@ -63,9 +58,6 @@ def get_records(filter: dict = {}) -> dict:
     )
 
     return records
-
-# get_records_tool = convert_to_anthropic_tool(get_records)
-# get_records_tool["cache_control"] = {"type": "ephemeral"}
 
 tools = [get_records]
 
