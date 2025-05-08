@@ -1,15 +1,16 @@
 """DocDB functionality"""
 
 import os
-import panel as pn
 from typing import Optional
 
+import panel as pn
 from aind_data_access_api.document_db import MetadataDbClient
 
 from aind_metadata_viz.utils import sort_with_none
 
-
-API_GATEWAY_HOST = os.getenv("API_GATEWAY_HOST", "api.allenneuraldynamics-test.org")
+API_GATEWAY_HOST = os.getenv(
+    "API_GATEWAY_HOST", "api.allenneuraldynamics-test.org"
+)
 DATABASE = os.getenv("DATABASE", "metadata_index")
 COLLECTION = os.getenv("COLLECTION", "data_assets")
 
@@ -27,16 +28,8 @@ DF_KEYS = ["name"]
 def get_project_names():
     project_options = docdb_api_client.aggregate_docdb_records(
         pipeline=[
-            {
-                "$group": {
-                    "_id": "$data_description.project_name"
-                }
-            },
-            {
-                "$sort": {
-                    "_id": 1  # Optional: sorts alphabetically
-                }
-            }
+            {"$group": {"_id": "$data_description.project_name"}},
+            {"$sort": {"_id": 1}},  # Optional: sorts alphabetically
         ]
     )
     project_options = [project["_id"] for project in project_options]
@@ -56,15 +49,9 @@ def get_subject_ids(project_name: Optional[str]):
     subject_options = docdb_api_client.aggregate_docdb_records(
         pipeline=[
             {  # filter by project name
-                "$match": {
-                    "data_description.project_name": project_name
-                }
+                "$match": {"data_description.project_name": project_name}
             },
-            {
-                "$group": {
-                    "_id": "$subject.subject_id"
-                }
-            },
+            {"$group": {"_id": "$subject.subject_id"}},
         ]
     )
     subject_options = [subject["_id"] for subject in subject_options]
@@ -83,18 +70,10 @@ def get_modalities(project_name: Optional[str]):
     modality_options = docdb_api_client.aggregate_docdb_records(
         pipeline=[
             {  # filter by project name
-                "$match": {
-                    "data_description.project_name": project_name
-                }
+                "$match": {"data_description.project_name": project_name}
             },
-            {
-                "$unwind": "$data_description.modality"
-            },
-            {
-                "$group": {
-                    "_id": "$data_description.modality.abbreviation"
-                }
-            },
+            {"$unwind": "$data_description.modality"},
+            {"$group": {"_id": "$data_description.modality.abbreviation"}},
         ]
     )
     modality_options = [modality["_id"] for modality in modality_options]
@@ -113,15 +92,9 @@ def get_session_types(project_name: Optional[str]):
     session_type_options = docdb_api_client.aggregate_docdb_records(
         pipeline=[
             {  # filter by project name
-                "$match": {
-                    "data_description.project_name": project_name
-                }
+                "$match": {"data_description.project_name": project_name}
             },
-            {
-                "$group": {
-                    "_id": "$session.session_type"
-                }
-            },
+            {"$group": {"_id": "$session.session_type"}},
         ]
     )
     session_type_options = [session["_id"] for session in session_type_options]
@@ -130,7 +103,7 @@ def get_session_types(project_name: Optional[str]):
     return session_type_options
 
 
-@pn.cache(ttl=60*60)  # Cache for 1 hour
+@pn.cache(ttl=60 * 60)  # Cache for 1 hour
 def get_docdb_records(filter_query: dict):
     """Get a set of records"""
     return docdb_api_client.retrieve_docdb_records(

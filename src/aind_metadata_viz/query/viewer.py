@@ -1,7 +1,9 @@
 """Displaying queries"""
-import param
+
 import panel as pn
-from aind_metadata_viz.query import FIXED_WIDTH
+import param
+
+from aind_metadata_viz.utils import FIXED_WIDTH
 
 
 class QueryViewer(param.Parameterized):
@@ -14,7 +16,7 @@ class QueryViewer(param.Parameterized):
         self.query = query
         self.query_pane = pn.pane.JSON(
             object=self.query,
-            width=FIXED_WIDTH-50,
+            width=FIXED_WIDTH - 50,
         )
 
         self.hidden_html = pn.pane.HTML(
@@ -55,7 +57,7 @@ class QueryViewer(param.Parameterized):
         """Return the query viewer panel"""
         return pn.Row(
             self.hidden_html,
-            pn.Column(self.query_pane, width=FIXED_WIDTH-150),
-            pn.Column(self.copy_button, align='end'),
-            width=FIXED_WIDTH-50
+            pn.Column(self.query_pane, width=FIXED_WIDTH - 150),
+            pn.Column(self.copy_button, align="end"),
+            width=FIXED_WIDTH - 50,
         )

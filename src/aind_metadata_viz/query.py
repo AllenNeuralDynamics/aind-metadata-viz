@@ -5,6 +5,7 @@ import param
 
 from aind_metadata_viz.utils import outer_style, AIND_COLORS, FIXED_WIDTH
 from aind_metadata_viz.query.simple_query import QueryBuilder
+from aind_metadata_viz.query.chat_query import ComplexQueryBuilder
 from aind_metadata_viz.query.viewer import QueryViewer
 from aind_metadata_viz.query.database import get_docdb_records
 
@@ -82,6 +83,8 @@ class QueryResult(param.Parameterized):
 
 query_builder = QueryBuilder()
 
+complex_query_builder = ComplexQueryBuilder()
+
 saved_subject_ids = pn.state.location.query_params.get("subject_ids", [])
 saved_modalities = pn.state.location.query_params.get("modalities", [])
 saved_session_types = pn.state.location.query_params.get("session_types", [])
@@ -127,6 +130,7 @@ header = pn.pane.Markdown(
     Note that the Subject ID and Modality options are dependent on the selected Project Name.
     """,
 )
+
 
 builder_col = pn.Column(
     header,

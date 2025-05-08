@@ -11,67 +11,10 @@ from langchain_core.prompts import ChatPromptTemplate
 import panel as pn
 import param
 from aind_metadata_viz.query.viewer import QueryViewer
-#from metadata_chatbot.prompts.prompt_to_langchain import mongodb_prompt
 from metadata_chatbot.utils import SONNET_3_7_LLM, SONNET_PROMPT_CACHING
 from langchain_anthropic import convert_to_anthropic_tool
 from aind_metadata_viz.utils import outer_style, AIND_COLORS, FIXED_WIDTH
 from tornado.ioloop import IOLoop
-
-API_GATEWAY_HOST = "api.allenneuraldynamics.org"
-DATABASE = "metadata_index"
-COLLECTION = "data_assets"
-
-docdb_api_client = MetadataDbClient(
-    host=API_GATEWAY_HOST,
-    database=DATABASE,
-    collection=COLLECTION,
-)
-
-def get_records(filter: dict = {}) -> dict:
-    """
-    Retrieves documents from MongoDB database using simple filters
-    and projections.
-
-    WHEN TO USE THIS FUNCTION:
-    - For straightforward document retrieval based on specific criteria
-    - When you need only a subset of fields from documents
-    - When the query logic doesn't require multi-stage processing
-    - For better performance with simpler queries
-
-    NOT RECOMMENDED FOR:
-    - Complex data transformations (use aggregation_retrieval instead)
-    - Grouping operations or calculations across documents
-    - Joining or relating data across collections
-
-    Parameters
-    ----------
-    filter : dict
-        MongoDB query filter to narrow down the documents to retrieve.
-        Example: {"subject.sex": "Male"}
-        If empty dict object, returns all documents.
-
-    Returns
-    -------
-    list
-        List of dictionary objects representing the matching documents.
-        Each dictionary contains the requested fields based on the projection.
-
-    """
-
-    records = docdb_api_client.retrieve_docdb_records(
-        filter_query=filter
-    )
-
-    return records
-
-# get_records_tool = convert_to_anthropic_tool(get_records)
-# get_records_tool["cache_control"] = {"type": "ephemeral"}
-
-tools = [get_records]
-
-prompt = hub.pull("eden19/entire_db_retrieval")
-query_generator = SONNET_3_7_LLM.bind_tools(tools)
-query_generator_agent = prompt | query_generator 
 
 
 class ComplexQueryBuilder(param.Parameterized):
@@ -107,8 +50,8 @@ class ComplexQueryBuilder(param.Parameterized):
         self.spinner = pn.indicators.LoadingSpinner(
             value=False,  # Initially not spinning
             color='primary',
-            size=50, 
-            name="Generating MongoDB query..."
+            size=100, 
+            name="Processing query..."
         )
         
         # Query button
@@ -121,10 +64,10 @@ class ComplexQueryBuilder(param.Parameterized):
         # Content area that will display either spinner or results
         # Initially empty until a query is submitted
         self.content_area = pn.Column(
-            pn.pane.Markdown("")
+            pn.pane.Markdown("Submit a query to see results")
         )
         
-        # Watcher invokes update_display function when query in progress value is changed
+        # Watch the param for changes
         self.param.watch(self.update_display, "query_in_progress")
 
     def options_panel(self):
@@ -157,7 +100,7 @@ class ComplexQueryBuilder(param.Parameterized):
         if not self.user_query:
             return
         
-        # Query in progress updated, unable to submit another query while current answer is being generated
+        # Update UI state to show we're processing
         self.query_in_progress = True
         self.query_button.loading = True
         self.query_button.disabled = True
@@ -169,7 +112,7 @@ class ComplexQueryBuilder(param.Parameterized):
         """Process the query asynchronously"""
         try:
             mongodb_query = await self.get_mongodb_query(self.user_query)
-            # Update class object
+            # Update with the results
             self.current_mongodb_query = mongodb_query
             self.update_query_panel()
             self.queries = self.queries + [self.query_viewer.query_pane.object]
@@ -216,6 +159,9 @@ class ComplexQueryBuilder(param.Parameterized):
                 self.query_button.button_type = "danger"
                 self.query_button.disabled = True
 
+    def save_query(self, event):
+        """Store the current query in the queries list"""
+        self.queries = self.queries + [self.query_viewer.query_pane.object]
 
     def panel(self):
         """Return the full panel"""
@@ -257,8 +203,8 @@ main_col = pn.Column(
     tab_col,
 )
 
-# main_row = pn.Row(
-#     pn.HSpacer(),
-#     main_col,
-#     pn.HSpacer(),
-# ).servable(title="Query Builder")
+main_row = pn.Row(
+    pn.HSpacer(),
+    main_col,
+    pn.HSpacer(),
+).servable(title="Query Builder")
