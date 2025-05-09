@@ -3,6 +3,8 @@ from aind_data_schema_models.modalities import ExpectedFiles, FileRequirement
 
 # from aind_data_schema.core.metadata import CORE_FILES  # todo: import instead of declaring
 
+FIXED_WIDTH = 1200
+
 outer_style = {
     'background': '#ffffff',
     'border-radius': '5px',
