@@ -7,10 +7,17 @@ from langchain import hub
 import panel as pn
 import param
 from aind_metadata_viz.query.viewer import QueryViewer
-from metadata_chatbot.utils import SONNET_3_7_LLM
-from langchain_anthropic import convert_to_anthropic_tool
-from aind_metadata_viz.utils import outer_style, FIXED_WIDTH
+from aind_metadata_viz.utils import FIXED_WIDTH
 from tornado.ioloop import IOLoop
+
+from langchain_aws.chat_models.bedrock import ChatBedrock
+
+BEDROCK_SONNET_3_7 = "us.anthropic.claude-3-7-sonnet-20250219-v1:0"
+SONNET_3_7_LLM = ChatBedrock(
+    model=BEDROCK_SONNET_3_7,
+    model_kwargs={"temperature": 0},
+    streaming=True,
+)
 
 API_GATEWAY_HOST = "api.allenneuraldynamics.org"
 DATABASE = "metadata_index"
@@ -218,39 +225,3 @@ class ComplexQueryBuilder(param.Parameterized):
             width=FIXED_WIDTH,
         )
 
-# Initialize the builder
-complex_query_builder = ComplexQueryBuilder()
-
-# Build the rest of the app
-query_tabs = pn.Tabs(width=FIXED_WIDTH-50)
-
-header = pn.pane.Markdown(
-    """
-    # Metadata Query Builder
-    Build complex metadata queries with Claude Sonnet 3-7.
-    """,
-)
-
-builder_col = pn.Column(
-    header,
-    complex_query_builder.panel(),
-    styles=outer_style,
-    width=FIXED_WIDTH,
-)
-
-tab_col = pn.Column(
-    query_tabs,
-    styles=outer_style,
-    width=FIXED_WIDTH,
-)
-
-main_col = pn.Column(
-    builder_col,
-    tab_col,
-)
-
-# main_row = pn.Row(
-#     pn.HSpacer(),
-#     main_col,
-#     pn.HSpacer(),
-# ).servable(title="Query Builder")
