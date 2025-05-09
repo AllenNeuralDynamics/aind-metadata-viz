@@ -83,8 +83,6 @@ class QueryResult(param.Parameterized):
 
 query_builder = QueryBuilder()
 
-complex_query_builder = ComplexQueryBuilder()
-
 saved_subject_ids = pn.state.location.query_params.get("subject_ids", [])
 saved_modalities = pn.state.location.query_params.get("modalities", [])
 saved_session_types = pn.state.location.query_params.get("session_types", [])
