@@ -5,8 +5,6 @@ import param
 import panel as pn
 from aind_data_access_api.document_db import MetadataDbClient
 from langchain import hub
-import panel as pn
-import param
 from aind_metadata_viz.query.viewer import QueryViewer
 from aind_metadata_viz.utils import FIXED_WIDTH
 from tornado.ioloop import IOLoop
@@ -193,10 +191,10 @@ class ComplexQueryBuilder(param.Parameterized):
     def update_query_panel(self):
         """Update the query panel content dynamically"""
         self.query_button.disabled = self.query_in_progress
-        query_dict = {"_name": f"Query {len(self.queries) + 1}"}
+        query_dict = {"_name": f"Chat query {len(self.queries) + 1}"}
 
         if self.current_mongodb_query:
-            query_dict["mongodb_query"] = self.current_mongodb_query
+            query_dict = {**query_dict, **self.current_mongodb_query}
             self.query_viewer.update(query_dict)
             self.query_button.name = "Submit query"
             self.query_button.button_type = "primary"
