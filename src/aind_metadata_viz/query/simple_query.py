@@ -73,12 +73,12 @@ class QueryBuilder(param.Parameterized):
             pn.Row(
                 self.session_type_selector,
             ),
-            width=FIXED_WIDTH - 150,
+            width=FIXED_WIDTH - 220,
         )
 
         submit_col = pn.Column(
             self.query_button,
-            width=100,
+            width=150,
         )
 
         return pn.Row(selector_col, submit_col)
