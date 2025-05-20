@@ -1,4 +1,5 @@
 """Complex query generation via chatbot"""
+
 import param
 
 import panel as pn
@@ -28,6 +29,7 @@ docdb_api_client = MetadataDbClient(
     database=DATABASE,
     collection=COLLECTION,
 )
+
 
 def get_records(filter: dict = {}) -> dict:
     """
@@ -60,17 +62,16 @@ def get_records(filter: dict = {}) -> dict:
 
     """
 
-    records = docdb_api_client.retrieve_docdb_records(
-        filter_query=filter
-    )
+    records = docdb_api_client.retrieve_docdb_records(filter_query=filter)
 
     return records
+
 
 tools = [get_records]
 
 prompt = hub.pull("eden19/entire_db_retrieval")
 query_generator = SONNET_3_7_LLM.bind_tools(tools)
-query_generator_agent = prompt | query_generator 
+query_generator_agent = prompt | query_generator
 
 
 class ComplexQueryBuilder(param.Parameterized):
@@ -88,41 +89,39 @@ class ComplexQueryBuilder(param.Parameterized):
     # Initialize variable for generated MongoDB query
     current_mongodb_query = param.Dict(default={})
 
-
     def __init__(self, **params):
         super().__init__(**params)
-        
+
         # Initialize query viewer
         self.query_viewer = QueryViewer({})
 
         # Text input for query
         self.typed_query = pn.widgets.TextInput(
-            name='Text Input', 
-            placeholder='Enter your query here...'
+            name="Text Input",
+            placeholder="Enter your query here...",
+            width=FIXED_WIDTH - 200,
         )
         self.typed_query.link(self, value="user_query")
 
         # Loading spinner
         self.spinner = pn.indicators.LoadingSpinner(
             value=False,  # Initially not spinning
-            color='primary',
-            size=50, 
-            name="Generating MongoDB query..."
+            color="primary",
+            size=50,
+            name="Generating MongoDB query...",
         )
-        
+
         # Query button
         self.query_button = pn.widgets.Button(
-            name="Submit query",
+            name="Generate query",
             button_type="primary",
         )
         self.query_button.on_click(self.handle_query_click)
-        
+
         # Content area that will display either spinner or results
         # Initially empty until a query is submitted
-        self.content_area = pn.Column(
-            pn.pane.Markdown("")
-        )
-        
+        self.content_area = pn.Column(pn.pane.Markdown(""))
+
         # Watcher invokes update_display function when query in progress value is changed
         self.param.watch(self.update_display, "query_in_progress")
 
@@ -130,10 +129,8 @@ class ComplexQueryBuilder(param.Parameterized):
         """Create the options panel for the query"""
 
         user_query_col = pn.Column(
-            pn.Row(
-                self.typed_query
-            ),
-            width=FIXED_WIDTH-150,
+            pn.Row(self.typed_query),
+            width=FIXED_WIDTH - 150,
         )
 
         submit_col = pn.Column(
@@ -142,25 +139,25 @@ class ComplexQueryBuilder(param.Parameterized):
         )
 
         return pn.Row(user_query_col, submit_col)
-    
+
     @staticmethod
     async def get_mongodb_query(user_query: str):
-        """Get mongodb query asynchronously from LLM """
+        """Get mongodb query asynchronously from LLM"""
 
         llm_response = await query_generator_agent.ainvoke(user_query)
-        mongodb_query = llm_response.tool_calls[0]['args']['filter']
+        mongodb_query = llm_response.tool_calls[0]["args"]["filter"]
         return mongodb_query
-    
+
     def handle_query_click(self, event):
-        '''Steps to take after submit button is clicked'''
+        """Steps to take after submit button is clicked"""
         if not self.user_query:
             return
-        
+
         # Query in progress updated, unable to submit another query while current answer is being generated
         self.query_in_progress = True
         self.query_button.loading = True
         self.query_button.disabled = True
-        
+
         # Schedule the async function to run
         IOLoop.current().add_callback(self.async_process_query)
 
@@ -215,7 +212,6 @@ class ComplexQueryBuilder(param.Parameterized):
                 self.query_button.button_type = "danger"
                 self.query_button.disabled = True
 
-
     def panel(self):
         """Return the full panel"""
         return pn.Column(
@@ -224,4 +220,3 @@ class ComplexQueryBuilder(param.Parameterized):
             self.content_area,  # This will show either spinner or results
             width=FIXED_WIDTH,
         )
-

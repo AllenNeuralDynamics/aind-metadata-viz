@@ -6,12 +6,12 @@ from aind_data_schema_models.modalities import ExpectedFiles, FileRequirement
 FIXED_WIDTH = 1200
 
 outer_style = {
-    'background': '#ffffff',
-    'border-radius': '5px',
-    'border': '2px solid black',
-    'padding': '10px',
-    'box-shadow': '5px 5px 5px #bcbcbc',
-    'margin': "5px",
+    "background": "#ffffff",
+    "border-radius": "5px",
+    "border": "2px solid black",
+    "padding": "10px",
+    "box-shadow": "5px 5px 5px #bcbcbc",
+    "margin": "5px",
 }
 
 CORE_FILES = [
@@ -89,7 +89,7 @@ COLOR_OPTIONS = {
         "optional": AIND_COLORS["grey"],
         "missing": AIND_COLORS["red"],
         "excluded": "white",
-    }
+    },
 }
 
 
@@ -127,8 +127,10 @@ def expected_files_from_modalities(
         for file in CORE_FILES:
             #  For each field, check if this is a required/excluded file
 
-            # remap 
-            abbreviation = str(modality["abbreviation"]).replace("-", "_").upper()
+            # remap
+            abbreviation = (
+                str(modality["abbreviation"]).replace("-", "_").upper()
+            )
             if abbreviation in REMAPS:
                 abbreviation = REMAPS[abbreviation]
 

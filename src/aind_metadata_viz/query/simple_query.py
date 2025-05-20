@@ -172,7 +172,7 @@ class QueryBuilder(param.Parameterized):
             self.query_button.disabled = False
             self.query_button.button_type = "primary"
 
-    def save_query(self, event):
+    def save_query(self, _):
         """Store the current query in the queries list"""
         self.queries = self.queries + [self.query_viewer.query_pane.object]
         self.query_button.disabled = True
