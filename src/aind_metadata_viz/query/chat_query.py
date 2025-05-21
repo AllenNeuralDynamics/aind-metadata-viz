@@ -8,14 +8,14 @@ from langchain import hub
 from aind_metadata_viz.query.viewer import QueryViewer
 from aind_metadata_viz.utils import FIXED_WIDTH
 from tornado.ioloop import IOLoop
+from aind_metadata_viz.query.prompt.cached_prompt import get_initial_messages
 
-from langchain_aws.chat_models.bedrock import ChatBedrock
+from langchain_aws.chat_models.bedrock import ChatBedrockConverse
 
 BEDROCK_SONNET_3_7 = "us.anthropic.claude-3-7-sonnet-20250219-v1:0"
-SONNET_3_7_LLM = ChatBedrock(
+SONNET_3_7_LLM = ChatBedrockConverse(
     model=BEDROCK_SONNET_3_7,
-    model_kwargs={"temperature": 0},
-    streaming=True,
+    temperature=0,
 )
 
 API_GATEWAY_HOST = "api.allenneuraldynamics.org"
@@ -69,7 +69,7 @@ tools = [get_records]
 
 prompt = hub.pull("eden19/entire_db_retrieval")
 query_generator = SONNET_3_7_LLM.bind_tools(tools)
-query_generator_agent = prompt | query_generator
+#query_generator_agent = prompt | query_generator
 
 
 class ComplexQueryBuilder(param.Parameterized):
@@ -141,8 +141,19 @@ class ComplexQueryBuilder(param.Parameterized):
     @staticmethod
     async def get_mongodb_query(user_query: str):
         """Get mongodb query asynchronously from LLM"""
-
-        llm_response = await query_generator_agent.ainvoke(user_query)
+        messages = get_initial_messages()
+        messages.append(
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": user_query,
+                    }
+                ]                       
+            }
+        )
+        llm_response = await query_generator.ainvoke(messages)
         mongodb_query = llm_response.tool_calls[0]["args"]["filter"]
         return mongodb_query
 
