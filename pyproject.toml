@@ -25,6 +25,8 @@ dependencies = [
     'aind-data-access-api[rds]',
     'aind-metadata-validator>=0.8.3',
     'flask',
+    'langchain',
+    'langchain_aws',
 ]
 
 [project.optional-dependencies]

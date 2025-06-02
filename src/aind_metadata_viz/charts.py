@@ -11,7 +11,9 @@ def file_present_chart(db, colors, selector):
     local_states = sum_longform_df["state"].unique()
     local_color_list = [colors[state] for state in local_states]
 
-    file_selection = alt.selection_point(fields=['file'], empty='none', name='file', value=selector.value)
+    file_selection = alt.selection_point(
+        fields=["file"], empty="none", name="file", value=selector.value
+    )
 
     chart = (
         alt.Chart(sum_longform_df)
@@ -40,8 +42,9 @@ def file_present_chart(db, colors, selector):
 
     def update_selection(event):
         if len(event.new) > 0:
-            selector.value = event.new[0]['file']
-    pane.selection.param.watch(update_selection, 'file')
+            selector.value = event.new[0]["file"]
+
+    pane.selection.param.watch(update_selection, "file")
 
     return pane
 
@@ -55,7 +58,12 @@ def modality_present_chart(db, colors, color_list, selector):
         df_list.append(sum_longform_df)
     df = pd.concat(df_list)
 
-    modality_selection = alt.selection_point(fields=['modality'], empty='all', name='modality', value=(selector.value if selector.value != "all" else None))
+    modality_selection = alt.selection_point(
+        fields=["modality"],
+        empty="all",
+        name="modality",
+        value=(selector.value if selector.value != "all" else None),
+    )
 
     chart = (
         alt.Chart(df)
@@ -93,9 +101,10 @@ def modality_present_chart(db, colors, color_list, selector):
 
     def update_selection(event):
         if len(event.new) > 0:
-            selector.value = event.new[0]['modality']
+            selector.value = event.new[0]["modality"]
         else:
             selector.value = "all"
-    pane.selection.param.watch(update_selection, 'modality')
+
+    pane.selection.param.watch(update_selection, "modality")
 
     return pane

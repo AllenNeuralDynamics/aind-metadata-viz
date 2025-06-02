@@ -2,14 +2,21 @@ import altair as alt
 import panel as pn
 from aind_data_schema import __version__ as ads_version
 from aind_metadata_viz import database
-from aind_metadata_viz.utils import AIND_COLORS, COLOR_OPTIONS, hd_style, outer_style
+from aind_metadata_viz.utils import (
+    AIND_COLORS,
+    COLOR_OPTIONS,
+    hd_style,
+    outer_style,
+)
 from aind_metadata_viz.charts import file_present_chart, modality_present_chart
 
 pn.extension("vega", design="material")
 alt.themes.enable("ggplot2")
 
 # Define CSS to set the background color and add to panel
-background_param = pn.state.location.query_params.get("background", "dark_blue")
+background_param = pn.state.location.query_params.get(
+    "background", "dark_blue"
+)
 background_color = AIND_COLORS.get(background_param, AIND_COLORS["dark_blue"])
 
 css = f"""
@@ -22,8 +29,8 @@ body {{
 pn.config.raw_css.append(css)
 
 # Get the active color list
-colors = (
-    COLOR_OPTIONS.get(pn.state.location.query_params.get("colors"), COLOR_OPTIONS["default"])
+colors = COLOR_OPTIONS.get(
+    pn.state.location.query_params.get("colors"), COLOR_OPTIONS["default"]
 )
 color_list = list(colors.values())
 
@@ -39,7 +46,9 @@ top_selector = pn.widgets.Select(
     name="Filter by core file:", options=database.ALL_FILES
 )
 
-field_selector = pn.widgets.Select(name="Filter download by field:", options=[])
+field_selector = pn.widgets.Select(
+    name="Filter download by field:", options=[]
+)
 
 missing_selector = pn.widgets.Select(
     name="Filter download by state", options=["Missing", "Valid/Present"]
@@ -118,7 +127,12 @@ def field_present_chart(selected_file, derived_filter, **args):
 
     sum_longform_df = db.get_file_field_presence()
 
-    field_selection = alt.selection_point(fields=['field'], empty='none', name='field', value=field_selector.value)
+    field_selection = alt.selection_point(
+        fields=["field"],
+        empty="none",
+        name="field",
+        value=field_selector.value,
+    )
 
     chart = (
         alt.Chart(sum_longform_df)
@@ -151,12 +165,11 @@ def field_present_chart(selected_file, derived_filter, **args):
 
     def update_selection(event):
         if len(event.new) > 0:
-            field_selector.value = event.new[0]['field']
-    pane.selection.param.watch(update_selection, 'field')
+            field_selector.value = event.new[0]["field"]
+
+    pane.selection.param.watch(update_selection, "field")
 
     return pane
-
-
 
 
 header = (
@@ -173,7 +186,6 @@ download_md = """
 **Download options**
 The download button creates a CSV file with information about the metadata records that match the filter settings.
 """
-
 
 
 header_pane = pn.pane.Markdown(header, styles=outer_style, width=420)
@@ -209,7 +221,10 @@ def build_row(selected_modality, derived_filter):
     db.modality_filter = selected_modality
     db.derived_filter = derived_filter
 
-    return pn.Row(file_present_chart(db, colors, top_selector), modality_present_chart(db, colors, color_list, modality_selector))
+    return pn.Row(
+        file_present_chart(db, colors, top_selector),
+        modality_present_chart(db, colors, color_list, modality_selector),
+    )
 
 
 top_row = pn.bind(
@@ -228,10 +243,22 @@ mid_plot = pn.bind(
 # Put everything in a column and buffer it
 main_col = pn.Column(top_row, mid_plot, styles=outer_style, width=515)
 
-main_row = pn.Row(pn.HSpacer(), left_col, pn.Spacer(width=20), main_col, pn.HSpacer(), margin=20)
+main_row = pn.Row(
+    pn.HSpacer(),
+    left_col,
+    pn.Spacer(width=20),
+    main_col,
+    pn.HSpacer(),
+    margin=20,
+)
 
 # Add the validator search section
-validator_name_selector = pn.widgets.TextInput(name="Enter asset name to validate:", value="", placeholder="Asset name", width=800)
+validator_name_selector = pn.widgets.TextInput(
+    name="Enter asset name to validate:",
+    value="",
+    placeholder="Asset name",
+    width=800,
+)
 pn.state.location.sync(validator_name_selector, {"value": "validator_name"})
 
 validator = database.RecordValidator(validator_name_selector.value, colors)
@@ -239,13 +266,19 @@ validator = database.RecordValidator(validator_name_selector.value, colors)
 
 def build_validator(validator_name):
     validator.update(validator_name)
-    col = pn.Column(validator_name_selector, validator.panel(), width=(515+20+420), styles=outer_style)
+    col = pn.Column(
+        validator_name_selector,
+        validator.panel(),
+        width=(515 + 20 + 420),
+        styles=outer_style,
+    )
     row = pn.Row(pn.HSpacer(), col, pn.HSpacer())
     return row
 
 
-validator_row = pn.bind(build_validator,
-                        validator_name=validator_name_selector)
+validator_row = pn.bind(
+    build_validator, validator_name=validator_name_selector
+)
 
 pn.Column(main_row, validator_row).servable(
     title="Metadata Portal",

@@ -137,3 +137,6 @@ dmypy.json
 
 # MacOs
 **/.DS_Store
+
+# Local UI testing
+panel_chat_query.py
