@@ -12,11 +12,13 @@ from aind_metadata_viz.query.prompt.cached_prompt import get_initial_messages
 
 from langchain_aws.chat_models.bedrock import ChatBedrockConverse
 
+
 BEDROCK_SONNET_3_7 = "us.anthropic.claude-sonnet-4-20250514-v1:0"
 SONNET_3_7_LLM = ChatBedrockConverse(
     model=BEDROCK_SONNET_3_7,
     temperature=0,
     credentials_profile_name="bedrock-access"
+
 )
 
 API_GATEWAY_HOST = "api.allenneuraldynamics.org"
