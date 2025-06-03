@@ -8,7 +8,7 @@ from langchain import hub
 from aind_metadata_viz.query.viewer import QueryViewer
 from aind_metadata_viz.utils import FIXED_WIDTH
 from tornado.ioloop import IOLoop
-from aind_metadata_viz.query.cached_prompt import get_initial_messages
+from aind_metadata_viz.query.prompt.cached_prompt import get_initial_messages
 
 from langchain_aws.chat_models.bedrock import ChatBedrockConverse
 
