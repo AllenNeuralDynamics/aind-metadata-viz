@@ -20,7 +20,7 @@ dependencies = [
     'pydantic',
     'panel>=1.6.1',
     'altair',
-    'aind-data-schema<2.0.0',
+    'aind-data-schema>=2.0.0',
     'aind-data-access-api[docdb]',
     'aind-data-access-api[rds]',
     'aind-metadata-validator>=0.8.3',
