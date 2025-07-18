@@ -43,7 +43,7 @@ modality_selector = pn.widgets.Select(
 )
 
 top_selector = pn.widgets.Select(
-    name="Filter by core file:", options=database.ALL_FILES
+    name="Filter by core file:", options=database.CORE_FILES
 )
 
 field_selector = pn.widgets.Select(

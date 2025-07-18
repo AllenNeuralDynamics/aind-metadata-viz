@@ -9,15 +9,14 @@ from aind_data_access_api.document_db import MetadataDbClient
 from aind_metadata_viz.utils import sort_with_none
 
 API_GATEWAY_HOST = os.getenv(
-    "API_GATEWAY_HOST", "api.allenneuraldynamics-test.org"
+    "API_GATEWAY_HOST", "api.allenneuraldynamics.org"
 )
 DATABASE = os.getenv("DATABASE", "metadata_index")
 COLLECTION = os.getenv("COLLECTION", "data_assets")
 
 docdb_api_client = MetadataDbClient(
-    host=API_GATEWAY_HOST,
-    database=DATABASE,
-    collection=COLLECTION,
+    host="api.allenneuraldynamics.org",
+    version="v2",
 )
 
 DF_KEYS = ["name"]

@@ -9,10 +9,7 @@ import param
 from aind_data_access_api.document_db import MetadataDbClient
 
 from aind_metadata_viz.utils import outer_style, AIND_COLORS
-from aind_metadata_viz.database import ALL_FILES
-
-from aind_metadata_validator.core_validator import validate_core_metadata
-from aind_metadata_validator.utils import MetadataState
+from aind_data_schema.core.metadata import CORE_FILES
 
 FIXED_WIDTH = 1200
 
@@ -31,16 +28,9 @@ body {{
 pn.config.raw_css.append(css)
 
 
-API_GATEWAY_HOST = os.getenv(
-    "API_GATEWAY_HOST", "api.allenneuraldynamics-test.org"
-)
-DATABASE = os.getenv("DATABASE", "metadata_index")
-COLLECTION = os.getenv("COLLECTION", "data_assets")
-
 docdb_api_client = MetadataDbClient(
-    host=API_GATEWAY_HOST,
-    database=DATABASE,
-    collection=COLLECTION,
+    host="api.allenneuraldynamics.org",
+    version="v2",
 )
 
 
@@ -87,7 +77,7 @@ class MetadataView(param.Parameterized):
         if not self.record:
             return
 
-        for file in ALL_FILES:
+        for file in CORE_FILES:
 
             self.file_panels[file] = pn.Column(
                 styles=outer_style,
@@ -140,7 +130,7 @@ class MetadataView(param.Parameterized):
         """
         objects = []
 
-        for file in ALL_FILES:
+        for file in CORE_FILES:
             if file in self.buttons.keys():
                 self.buttons[file].disabled = file not in self.files_present
                 objects.append(self.buttons[file])

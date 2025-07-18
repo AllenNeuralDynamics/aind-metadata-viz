@@ -5,29 +5,21 @@ from aind_metadata_validator.metadata_validator import validate_metadata
 import panel as pn
 import pandas as pd
 import param
-import os
 import numpy as np
 import io
 import logging
 from io import StringIO
 
+from aind_data_schema.core.metadata import CORE_FILES
 from aind_data_schema_models.modalities import (
     Modality,
-    ExpectedFiles,
-    FileRequirement,
 )
 from aind_metadata_validator.mappings import (
     SECOND_LAYER_MAPPING,
 )
 from aind_metadata_viz.utils import METASTATE_MAP, hd_style
 
-API_GATEWAY_HOST = os.getenv(
-    "API_GATEWAY_HOST", "api.allenneuraldynamics-test.org"
-)
-DATABASE = os.getenv("DATABASE", "metadata_index")
-COLLECTION = os.getenv("COLLECTION", "data_assets")
-
-DEV_OR_PROD = "dev" if "test" in API_GATEWAY_HOST else "prod"
+DEV_OR_PROD = "prod"
 REDSHIFT_SECRETS = f"/aind/{DEV_OR_PROD}/redshift/credentials/readwrite"
 RDS_TABLE_NAME = f"metadata_status_{DEV_OR_PROD}"
 
@@ -38,26 +30,13 @@ rds_client = Client(
 )
 
 docdb_api_client = MetadataDbClient(
-    host=API_GATEWAY_HOST,
-    database=DATABASE,
-    collection=COLLECTION,
+    host="api.allenneuraldynamics.org",
+    version="v2",
 )
 
-ALL_FILES = sorted(
-    [
-        "data_description",
-        "acquisition",
-        "procedures",
-        "subject",
-        "instrument",
-        "processing",
-        "rig",
-        "session",
-        "quality_control",
-    ]
-)
+
 # These are the fields that need to be dropped from that data frame when building charts
-EXTRA_FIELDS = ["modalities", "derived", "name", "_id", "location", "created"]
+EXTRA_FIELDS = ["modalities", "derived", "name", "_id", "location"]
 
 # reset cache every 24 hours
 CACHE_RESET_DAY = 24 * 60 * 60
@@ -89,8 +68,7 @@ class Database(param.Parameterized):
         )
 
         # setup
-        (expected_files, _) = self.get_expected_files()
-        self.set_file(expected_files[0])
+        self.set_file(CORE_FILES[0])
         self.set_field("")
 
     @property
@@ -137,32 +115,12 @@ class Database(param.Parameterized):
                 filtered_df["derived"] == (self.derived_filter == "Derived")
             ]
 
-        filtered_df = filtered_df[ALL_FILES + EXTRA_FIELDS]
+        filtered_df = filtered_df[CORE_FILES + EXTRA_FIELDS]
         filtered_df = filtered_df[
             filtered_df["modalities"].apply(lambda x: modality in x.split(","))
         ]
 
         return filtered_df
-
-    def get_expected_files(self) -> tuple[list[str], list[str]]:
-        if self.modality_filter == "all":
-            return (ALL_FILES, [])
-
-        expected_files_by_modality = ALL_FILES.copy()
-        excluded_files_by_modality = []
-
-        # get the ExpectedFiles object for this modality
-        expected_files = getattr(
-            ExpectedFiles, str(self.modality_filter).upper()
-        )
-
-        # loop through the actual files and remove any that are not expected
-        for file in expected_files_by_modality:
-            if getattr(expected_files, file) == FileRequirement.EXCLUDED:
-                expected_files_by_modality.remove(file)
-                excluded_files_by_modality.append(file)
-
-        return (expected_files_by_modality, excluded_files_by_modality)
 
     def get_overall_valid(self):
         """Get the percentage of valid records"""
@@ -183,7 +141,7 @@ class Database(param.Parameterized):
         # Melt to long form
         df = self.data_filtered.copy()
         df.drop(EXTRA_FIELDS, axis=1, inplace=True)
-        df = df[ALL_FILES]
+        df = df[CORE_FILES]
 
         df_melted = df.melt(var_name="file", value_name="state")
         # Get sum
@@ -198,7 +156,7 @@ class Database(param.Parameterized):
 
         df_filtered = self.data_modality_filtered(modality)
         df_filtered.drop(
-            ["derived", "name", "_id", "location", "created", "modalities"],
+            ["derived", "name", "_id", "location", "modalities"],
             axis=1,
             inplace=True,
         )
@@ -287,12 +245,12 @@ class Database(param.Parameterized):
         Returns
         -------
         csv
-            CSV file with name, _id, location, created date, and subject_id (if available)
+            CSV file with name, _id, location, and subject_id (if available)
         """
         # For everybody who is missing the currently active file/field
         df = self.data_filtered
 
-        df = df[["name", "_id", "location", "created"]]
+        df = df[["name", "_id", "location"]]
 
         type0 = "missing" if vp_state == "Missing" else "present"
         type1 = "optional" if vp_state == "Missing" else "valid"
@@ -344,7 +302,6 @@ def _get_metadata(test_mode=False) -> pd.DataFrame:
             "name": 1,
             "_id": 1,
             "location": 1,
-            "created": 1,
         },
         limit=0 if not test_mode else 10,
         paginate_batch_size=500,
@@ -353,6 +310,8 @@ def _get_metadata(test_mode=False) -> pd.DataFrame:
     records = []
     # Now add some information about the records, i.e. modality, derived state, etc.
     for i, record in enumerate(record_list):
+        print(f"Processing record {i + 1} of {len(record_list)}")
+        print(f"Record ID: {record['_id']}")
         if (
             "data_description" in record
             and record["data_description"]
@@ -373,10 +332,11 @@ def _get_metadata(test_mode=False) -> pd.DataFrame:
             "name": record["name"],
             "_id": record["_id"],
             "location": record["location"],
-            "created": record["created"],
         }
 
         records.append(info_data)
+
+    print(records)
 
     return pd.DataFrame(
         records,
@@ -386,7 +346,6 @@ def _get_metadata(test_mode=False) -> pd.DataFrame:
             "name",
             "_id",
             "location",
-            "created",
         ],
     )
 
@@ -461,7 +420,7 @@ Overall metadata: {hd_style(METASTATE_MAP[self.state["metadata"].value], self.co
 """
             )
             file_state = {}
-            for file in ALL_FILES:
+            for file in CORE_FILES:
                 file_state[file] = hd_style(
                     METASTATE_MAP[self.state[file].value], self.colors
                 )

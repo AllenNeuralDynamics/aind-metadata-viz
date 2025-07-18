@@ -18,7 +18,7 @@ Use \$unwind for any array fields
 For modality queries, access data_description.modality.name
 Use \$regex instead of \$elemmatch (e.g., {"field": {"\$regex": "term", "\$options": "i"}})
 Be careful with duration queries; don't use \$subtract as durations are stored as strings
-Ignore created and last_modified fields as they're only metadata
+Ignore last_modified fields as they're only metadata
 
 Start with a simple query and refine only if necessary
 If a query becomes complex, break it down into smaller sub-queries
@@ -2958,7 +2958,6 @@ Sample metadata: [[{
       }
     ]
   },
-  "created": "2024-06-20T21:02:37.011333",
   "data_description": {
     "describedBy": "https://raw.githubusercontent.com/AllenNeuralDynamics/aind-data-schema/main/src/aind_data_schema/core/data_description.py",
     "schema_version": "1.0.0",
