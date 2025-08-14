@@ -1,18 +1,11 @@
 """DocDB functionality"""
 
-import os
 from typing import Optional
 
 import panel as pn
 from aind_data_access_api.document_db import MetadataDbClient
 
 from aind_metadata_viz.utils import sort_with_none
-
-API_GATEWAY_HOST = os.getenv(
-    "API_GATEWAY_HOST", "api.allenneuraldynamics.org"
-)
-DATABASE = os.getenv("DATABASE", "metadata_index")
-COLLECTION = os.getenv("COLLECTION", "data_assets")
 
 docdb_api_client = MetadataDbClient(
     host="api.allenneuraldynamics.org",

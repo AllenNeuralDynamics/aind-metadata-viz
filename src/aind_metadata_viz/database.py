@@ -21,7 +21,7 @@ from aind_metadata_viz.utils import METASTATE_MAP, hd_style
 
 DEV_OR_PROD = "prod"
 REDSHIFT_SECRETS = f"/aind/{DEV_OR_PROD}/redshift/credentials/readwrite"
-RDS_TABLE_NAME = f"metadata_status_{DEV_OR_PROD}"
+RDS_TABLE_NAME = f"metadata_status_{DEV_OR_PROD}_v2"
 
 CHUNK_SIZE = 1000
 
