@@ -312,10 +312,14 @@ def _get_metadata(test_mode=False) -> pd.DataFrame:
             "_id": 1,
             "location": 1,
             "created": 1,
+            "schema_version": 1,
         },
         limit=0 if not test_mode else 10,
         paginate_batch_size=500,
     )
+    
+    # Remove all records where the schema major version is 2
+    record_list = [record for record in record_list if not record["schema_version"].startswith("2.")]
 
     records = []
     # Now add some information about the records, i.e. modality, derived state, etc.
