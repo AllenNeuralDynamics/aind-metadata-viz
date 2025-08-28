@@ -184,7 +184,7 @@ header = (
 
 download_md = """
 **Download options**
-The download button creates a CSV file with information about the metadata records that match the filter settings.
+The download button creates a CSV file with information about the metadata records matching the filter settings.
 """
 
 
