@@ -21,7 +21,7 @@ from aind_metadata_validator.mappings import (
 )
 from aind_metadata_viz.utils import METASTATE_MAP, hd_style
 
-API_GATEWAY_HOST = os.getenv("API_GATEWAY_HOST", "api.allenneuraldynamics-test.org")
+API_GATEWAY_HOST = os.getenv("API_GATEWAY_HOST", "api.allenneuraldynamics.org")
 DATABASE = os.getenv("DATABASE", "metadata_index")
 COLLECTION = os.getenv("COLLECTION", "data_assets")
 
