@@ -5,7 +5,6 @@ from aind_metadata_validator.metadata_validator import validate_metadata
 import panel as pn
 import pandas as pd
 import param
-import os
 import numpy as np
 import io
 import logging
@@ -21,11 +20,7 @@ from aind_metadata_validator.mappings import (
 )
 from aind_metadata_viz.utils import METASTATE_MAP, hd_style
 
-API_GATEWAY_HOST = os.getenv("API_GATEWAY_HOST", "api.allenneuraldynamics.org")
-DATABASE = os.getenv("DATABASE", "metadata_index")
-COLLECTION = os.getenv("COLLECTION", "data_assets")
-
-DEV_OR_PROD = "dev" if "test" in API_GATEWAY_HOST else "prod"
+DEV_OR_PROD = "prod"
 REDSHIFT_SECRETS = f"/aind/{DEV_OR_PROD}/redshift/credentials/readwrite"
 RDS_TABLE_NAME = f"metadata_status_{DEV_OR_PROD}"
 
@@ -38,9 +33,8 @@ rds_client = Client(
     )
 
 docdb_api_client = MetadataDbClient(
-    host=API_GATEWAY_HOST,
-    database=DATABASE,
-    collection=COLLECTION,
+    host="api.allenneuraldynamics.org",
+    version="v1",
 )
 
 ALL_FILES = sorted(
@@ -79,6 +73,7 @@ class Database(param.Parameterized):
         test_mode=False,
     ):
         """Initialize"""
+
         # get data
         self._file_data = _get_metadata(test_mode=test_mode)
         self._status_data = _get_status()
@@ -317,9 +312,11 @@ def _get_metadata(test_mode=False) -> pd.DataFrame:
         limit=0 if not test_mode else 10,
         paginate_batch_size=500,
     )
-    
+
     # Remove all records where the schema major version is 2
     record_list = [record for record in record_list if not record["schema_version"].startswith("2.")]
+
+    print(f"Retrieved {len(record_list)} records")
 
     records = []
     # Now add some information about the records, i.e. modality, derived state, etc.
@@ -331,7 +328,7 @@ def _get_metadata(test_mode=False) -> pd.DataFrame:
         ):
             if isinstance(record["data_description"]["modality"], list):
                 modalities = [
-                    mod["abbreviation"]
+                    mod["abbreviation"] if isinstance(mod, dict) else mod
                     for mod in record["data_description"]["modality"]
                 ]
         else:
