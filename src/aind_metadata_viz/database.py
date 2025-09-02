@@ -21,7 +21,7 @@ from aind_metadata_validator.mappings import (
 from aind_metadata_viz.utils import METASTATE_MAP, hd_style
 
 DEV_OR_PROD = "prod"
-REDSHIFT_SECRETS = f"/aind/{DEV_OR_PROD}/redshift/credentials/readwrite"
+REDSHIFT_SECRETS = f"/aind/{DEV_OR_PROD}/redshift/credentials/readonly"
 RDS_TABLE_NAME = f"metadata_status_{DEV_OR_PROD}"
 
 CHUNK_SIZE = 1000
