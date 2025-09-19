@@ -126,7 +126,9 @@ class Database(param.Parameterized):
         if not (self.derived_filter == "All assets"):
             filtered_df = filtered_df[filtered_df["derived"] == (self.derived_filter == "Derived")]
 
-        filtered_df = filtered_df[ALL_FILES + EXTRA_FIELDS]
+        KEEP_FIELDS = ALL_FILES + EXTRA_FIELDS
+        KEEP_FIELDS = [f for f in KEEP_FIELDS if f in filtered_df.columns]
+        filtered_df = filtered_df[KEEP_FIELDS]
         filtered_df = filtered_df[filtered_df['modalities'].apply(lambda x: modality in x.split(','))]
 
         return filtered_df
@@ -165,7 +167,10 @@ class Database(param.Parameterized):
         """
         # Melt to long form
         df = self.data_filtered.copy()
-        df.drop(EXTRA_FIELDS, axis=1, inplace=True)
+
+        # Drop extra fields
+        DROP_FIELDS = [f for f in EXTRA_FIELDS if f in df.columns]
+        df.drop(DROP_FIELDS, axis=1, inplace=True)
         df = df[ALL_FILES]
 
         df_melted = df.melt(var_name="file", value_name="state")
