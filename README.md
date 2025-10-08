@@ -16,7 +16,7 @@ with open("metadata.json", "r") as f:
     metadata = json.load(f)
 
 response = requests.post(
-    "https://metadata-portal.allenneuraldynamics.org/validate/metadata", 
+    "https://metadata-portal.allenneuraldynamics-test.org/validate/metadata", 
     json=metadata
 )
 
@@ -37,7 +37,7 @@ else:
 - `/validate/quality_control` - Quality control metadata
 - `/validate/model` - Model metadata
 
-Example usage: `requests.post("https://metadata-portal.allenneuraldynamics.org/validate/subject", json=subject_data)`
+Example usage: `requests.post("https://metadata-portal.allenneuraldynamics-test.org/validate/subject", json=subject_data)`
 
 ## Usage
 
