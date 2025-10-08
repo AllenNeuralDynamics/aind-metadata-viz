@@ -1,6 +1,47 @@
-# AIND Metadata Viz
+# AIND Metadata Portal
 
-[metadata visualizations](http://10.128.141.92:5007/app)
+[metadata visualizations](https://metadata-portal.allenneuraldynamics.org/)
+
+## Validation endpoints
+
+The metadata portal hosts validation endpoints for the latest [`aind-data-schema`](https://github.com/AllenNeuralDynamics/aind-data-schema) release. You can hit these endpoints with:
+
+### Example: Validate complete metadata with object_type
+
+```python
+import requests
+import json
+
+# Load your metadata
+with open("metadata.json", "r") as f:
+    metadata = json.load(f)
+
+# Validate complete metadata (requires object_type field)
+response = requests.post(
+    "https://metadata-portal.allenneuraldynamics.org/validate/metadata", 
+    json=metadata
+)
+
+if response.status_code == 200:
+    print("✅ Validation passed!")
+else:
+    print(f"❌ Validation failed: {response.json()}")
+```
+
+### Individual validation endpoints
+
+Individual metadata components can also be validated using type-specific endpoints (no `object_type` field required):
+
+- `/validate/subject` - Subject metadata
+- `/validate/data_description` - Data description metadata  
+- `/validate/acquisition` - Acquisition metadata
+- `/validate/instrument` - Instrument metadata
+- `/validate/procedures` - Procedures metadata
+- `/validate/processing` - Processing metadata
+- `/validate/quality_control` - Quality control metadata
+- `/validate/model` - Model metadata
+
+Example usage: `requests.post("https://metadata-portal.allenneuraldynamics.org/validate/subject", json=subject_data)`
 
 ## Usage
 
