@@ -26,6 +26,32 @@ else:
     print(f"❌ Validation failed: {response.json()}")
 ```
 
+### Files endpoint
+
+You can also post a dictionary containing only the core files (i.e. not generated from a `Metadata` object). This can be useful when testing whether your metadata are valid prior to triggering the aind-data-transfer-service on a data asset.
+
+```python
+import requests
+import json
+
+core_files = ["data_description", "acquisition", "instrument", "procedures", "subject"]
+
+metadata = {}
+for core_file in core_files:
+    with open(f"{core_file}.json", "r") as f:
+        metadata[core_file] = json.load(f)
+
+response = requests.post(
+    "https://metadata-portal.allenneuraldynamics-test.org/validate/metadata", 
+    json=metadata
+)
+
+if response.status_code == 200:
+    print("✅ Validation passed!")
+else:
+    print(f"❌ Validation failed: {response.json()}")
+```
+
 ### Individual validation endpoints
 
 - `/validate/subject` - Subject metadata

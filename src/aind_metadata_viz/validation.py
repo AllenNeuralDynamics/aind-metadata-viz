@@ -65,6 +65,62 @@ class UploadMetadataHandler(RequestHandler):
             )
 
 
+class ValidateFilesHandler(RequestHandler):
+
+    def post(self):
+        self.set_header("Content-Type", "application/json")
+
+        try:
+            data = json.loads(self.request.body)
+        except json.JSONDecodeError:
+            self.set_status(400)
+            self.write({"error": "Invalid JSON format."})
+            return
+
+        if not data:
+            self.set_status(400)
+            self.write({"error": "No metadata provided."})
+            return
+
+        try:
+            # Modify the data to add required fields
+            # Set location to blank string
+            data["location"] = ""
+            data["object_type"] = "Metadata"
+            
+            # Fill name from data_description.name if available
+            if "data_description" in data and isinstance(data["data_description"], dict):
+                if "name" in data["data_description"]:
+                    data["name"] = data["data_description"]["name"]
+                else:
+                    self.set_status(400)
+                    self.write({"error": "data_description.name field is required."})
+                    return
+            else:
+                self.set_status(400)
+                self.write({"error": "data_description field is required."})
+                return
+
+            # Validate the modified data as Metadata
+            Metadata.model_validate(data)
+            self.write(
+                {
+                    "status": "valid",
+                    "message": "Files metadata validation passed",
+                }
+            )
+        except Exception as e:
+            # Validation failed - return the error details
+            self.set_status(400)
+            self.write(
+                {
+                    "status": "invalid",
+                    "error": "Files metadata validation failed",
+                    "details": str(e),
+                }
+            )
+
+
 def create_individual_handler(schema_class, type_name):
     """Factory function to create individual validation handlers"""
     class IndividualHandler(RequestHandler):
@@ -97,6 +153,7 @@ INDIVIDUAL_ROUTES = [
 
 ROUTES = [
     (r"/validate/metadata", UploadMetadataHandler),
+    (r"/validate/files", ValidateFilesHandler),
 ] + INDIVIDUAL_ROUTES
 
 # Export ROUTES for Panel server to discover
