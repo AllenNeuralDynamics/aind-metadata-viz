@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools", "setuptools-scm"]
+requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -18,7 +18,7 @@ dynamic = ["version"]
 
 dependencies = [
     'pydantic',
-    'panel>=1.6.1',
+    'panel>=1.8.2',
     'altair',
     'aind-data-schema>=2.0.0',
     'aind-data-access-api[docdb]',
