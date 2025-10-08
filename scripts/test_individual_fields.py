@@ -1,6 +1,14 @@
 import requests
 import json
 import os
+from test_config import parse_test_args
+
+# Parse command line arguments
+args = parse_test_args()
+base_url = 'https://metadata-portal.allenneuraldynamics-test.org' if args.env == 'prod' else 'http://localhost:5006'
+
+print(f"Testing against: {base_url}")
+print("=" * 60)
 
 # Get the directory where this script is located
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -59,7 +67,7 @@ for field_name, individual_endpoint in fields_to_test:
         general_result = test_endpoint(
             field_name,
             field_data,
-            "http://localhost:5006/validate/metadata",
+            f"{base_url}/validate/metadata",
             "General endpoint"
         )
 
@@ -67,7 +75,7 @@ for field_name, individual_endpoint in fields_to_test:
         individual_result = test_endpoint(
             field_name,
             field_data,
-            f"http://localhost:5006{individual_endpoint}",
+            f"{base_url}{individual_endpoint}",
             "Individual endpoint"
         )
 
@@ -78,7 +86,7 @@ for field_name, individual_endpoint in fields_to_test:
         wrong_type_result = test_endpoint(
             field_name,
             field_data_wrong_type,
-            "http://localhost:5006/validate/metadata",
+            f"{base_url}/validate/metadata",
             "General endpoint (wrong object_type)"
         )
 
@@ -90,7 +98,7 @@ for field_name, individual_endpoint in fields_to_test:
         no_type_result = test_endpoint(
             field_name,
             field_data_no_type,
-            "http://localhost:5006/validate/metadata",
+            f"{base_url}/validate/metadata",
             "General endpoint (no object_type)"
         )
 
