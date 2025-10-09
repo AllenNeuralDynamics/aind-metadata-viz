@@ -5,7 +5,11 @@ from test_config import parse_test_args
 
 # Parse command line arguments
 args = parse_test_args()
-base_url = 'https://metadata-portal.allenneuraldynamics-test.org' if args.env == 'prod' else 'http://localhost:5006'
+base_url = (
+    "https://metadata-portal.allenneuraldynamics-test.org"
+    if args.env == "prod"
+    else "http://localhost:5006"
+)
 
 print(f"Testing against: {base_url}")
 print("=" * 60)
@@ -45,7 +49,9 @@ def test_endpoint(field_name, field_data, endpoint_url, test_type):
         else:
             print("❌ INVALID")
             print(f"    Status: {response.status_code}")
-            print(f"    Error: {response_json.get('details', response_json.get('error', 'No details'))}")
+            print(
+                f"    Error: {response_json.get('details', response_json.get('error', 'No details'))}"
+            )
             return False
     except json.JSONDecodeError:
         print("❌ Invalid JSON response")
@@ -68,7 +74,7 @@ for field_name, individual_endpoint in fields_to_test:
             field_name,
             field_data,
             f"{base_url}/validate/metadata",
-            "General endpoint"
+            "General endpoint",
         )
 
         # Test 2: Individual endpoint (should pass - doesn't need object_type)
@@ -76,7 +82,7 @@ for field_name, individual_endpoint in fields_to_test:
             field_name,
             field_data,
             f"{base_url}{individual_endpoint}",
-            "Individual endpoint"
+            "Individual endpoint",
         )
 
         # Test 3: General metadata endpoint with wrong object_type (should fail)
@@ -87,7 +93,7 @@ for field_name, individual_endpoint in fields_to_test:
             field_name,
             field_data_wrong_type,
             f"{base_url}/validate/metadata",
-            "General endpoint (wrong object_type)"
+            "General endpoint (wrong object_type)",
         )
 
         # Test 4: General metadata endpoint without object_type (should fail)
@@ -99,21 +105,30 @@ for field_name, individual_endpoint in fields_to_test:
             field_name,
             field_data_no_type,
             f"{base_url}/validate/metadata",
-            "General endpoint (no object_type)"
+            "General endpoint (no object_type)",
         )
 
         # Summary
-        if general_result and individual_result and not wrong_type_result and not no_type_result:
+        if (
+            general_result
+            and individual_result
+            and not wrong_type_result
+            and not no_type_result
+        ):
             print(f"  📋 Summary: {field_name} validation working correctly")
         else:
             print(f"  ⚠️  Summary: {field_name} has validation issues")
-            print("    Expected: general=✅, individual=✅, wrong_type=❌, no_type=❌")
-            general_icon = '✅' if general_result else '❌'
-            individual_icon = '✅' if individual_result else '❌'
-            wrong_type_icon = '✅' if wrong_type_result else '❌'
-            no_type_icon = '✅' if no_type_result else '❌'
-            print(f"    Actual: general={general_icon}, individual={individual_icon}, "
-                  f"wrong_type={wrong_type_icon}, no_type={no_type_icon}")
+            print(
+                "    Expected: general=✅, individual=✅, wrong_type=❌, no_type=❌"
+            )
+            general_icon = "✅" if general_result else "❌"
+            individual_icon = "✅" if individual_result else "❌"
+            wrong_type_icon = "✅" if wrong_type_result else "❌"
+            no_type_icon = "✅" if no_type_result else "❌"
+            print(
+                f"    Actual: general={general_icon}, individual={individual_icon}, "
+                f"wrong_type={wrong_type_icon}, no_type={no_type_icon}"
+            )
     else:
         print(f"\n--- {field_name} NOT FOUND in metadata ---")
 

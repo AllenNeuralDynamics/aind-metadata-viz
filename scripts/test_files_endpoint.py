@@ -13,7 +13,11 @@ from test_config import parse_test_args
 
 # Parse command line arguments
 args = parse_test_args()
-base_url = 'https://metadata-portal.allenneuraldynamics-test.org' if args.env == 'prod' else 'http://localhost:5006'
+base_url = (
+    "https://metadata-portal.allenneuraldynamics-test.org"
+    if args.env == "prod"
+    else "http://localhost:5006"
+)
 
 print(f"Testing /validate/files endpoint against: {base_url}")
 print("=" * 50)
@@ -30,14 +34,14 @@ print(f"Original metadata has {len(metadata)} top-level fields")
 
 # Define the core fields that should be kept
 core_fields = [
-    'subject',
-    'data_description',
-    'instrument',
-    'quality_control',
-    'processing',
-    'procedures',
-    'acquisition',
-    'model'
+    "subject",
+    "data_description",
+    "instrument",
+    "quality_control",
+    "processing",
+    "procedures",
+    "acquisition",
+    "model",
 ]
 
 # Create a new metadata object with only core fields
@@ -46,11 +50,16 @@ for field in core_fields:
     if field in metadata:
         files_metadata[field] = metadata[field]
 
-print(f"Files metadata has {len(files_metadata)} top-level fields: {list(files_metadata.keys())}")
+print(
+    f"Files metadata has {len(files_metadata)} top-level fields: {list(files_metadata.keys())}"
+)
 
 # Verify that data_description.name exists
-if 'data_description' in files_metadata and 'name' in files_metadata['data_description']:
-    expected_name = files_metadata['data_description']['name']
+if (
+    "data_description" in files_metadata
+    and "name" in files_metadata["data_description"]
+):
+    expected_name = files_metadata["data_description"]["name"]
     print(f"Expected name from data_description.name: {expected_name}")
 else:
     print("ERROR: data_description.name field is missing!")
@@ -59,9 +68,7 @@ else:
 # Send the files metadata to the validation endpoint
 try:
     response = requests.post(
-        f"{base_url}/validate/files",
-        json=files_metadata,
-        timeout=30
+        f"{base_url}/validate/files", json=files_metadata, timeout=30
     )
 
     print(f"\nStatus: {response.status_code}")
@@ -79,7 +86,9 @@ try:
         print("\n✅ Test PASSED: Files endpoint validation succeeded")
         exit(0)
     else:
-        print(f"\n❌ Test FAILED: Expected status 200, got {response.status_code}")
+        print(
+            f"\n❌ Test FAILED: Expected status 200, got {response.status_code}"
+        )
         exit(1)
 
 except requests.exceptions.RequestException as e:

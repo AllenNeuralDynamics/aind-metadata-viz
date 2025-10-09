@@ -3,7 +3,11 @@ from test_config import parse_test_args
 
 # Parse command line arguments
 args = parse_test_args()
-base_url = 'https://metadata-portal.allenneuraldynamics-test.org' if args.env == 'prod' else 'http://localhost:5006'
+base_url = (
+    "https://metadata-portal.allenneuraldynamics-test.org"
+    if args.env == "prod"
+    else "http://localhost:5006"
+)
 
 print(f"Testing against: {base_url}")
 print("=" * 50)
