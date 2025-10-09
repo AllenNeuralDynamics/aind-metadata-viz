@@ -17,8 +17,7 @@ BEDROCK_SONNET_3_7 = "us.anthropic.claude-sonnet-4-20250514-v1:0"
 SONNET_3_7_LLM = ChatBedrockConverse(
     model=BEDROCK_SONNET_3_7,
     temperature=0,
-    credentials_profile_name="bedrock-access"
-
+    credentials_profile_name="bedrock-access",
 )
 
 API_GATEWAY_HOST = "api.allenneuraldynamics.org"
@@ -72,7 +71,7 @@ tools = [get_records]
 
 prompt = hub.pull("eden19/entire_db_retrieval")
 query_generator = SONNET_3_7_LLM.bind_tools(tools)
-#query_generator_agent = prompt | query_generator
+# query_generator_agent = prompt | query_generator
 
 
 class ComplexQueryBuilder(param.Parameterized):
@@ -153,7 +152,7 @@ class ComplexQueryBuilder(param.Parameterized):
                         "type": "text",
                         "text": user_query,
                     }
-                ]                       
+                ],
             }
         )
         llm_response = await query_generator.ainvoke(messages)

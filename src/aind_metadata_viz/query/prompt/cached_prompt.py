@@ -4,10 +4,10 @@ from typing import List, Dict, Any
 from aind_metadata_viz.query.database import (
     get_project_names,
     get_session_types,
-    get_modalities
+    get_modalities,
 )
 
-prompt = '''
+prompt = """
 You are a neuroscientist who is expert in constructing MongoDB filters queries. 
 Your main task is constructing a concise query filter that takes into account what the user is looking for. This filter will then be used to query a MongoDB database.
 
@@ -3814,16 +3814,15 @@ Answer: {"subject.subject_id": "792288","quality_control.evaluations": { $elemMa
 Question: Retrieve records from the openscope project where the session type is OPHYS_9_moving_texture.
 Answer: 
  { "data_description.project_name": "OpenScope","session.session_type": "OPHYS_9_moving_texture"}
-'''
-
+"""
 
 
 project_names = get_project_names()
 
 project_session_list = []
 for name in project_names:
-    sessions= get_session_types(name)
-    project_session_list.append({"project_name": name, "sessions":sessions})
+    sessions = get_session_types(name)
+    project_session_list.append({"project_name": name, "sessions": sessions})
 
 
 def get_initial_messages() -> List[Dict[str, Any]]:
@@ -3833,12 +3832,12 @@ def get_initial_messages() -> List[Dict[str, Any]]:
 
     project_session_list = []
     for name in project_names:
-        sessions= get_session_types(name)
-        modalities= get_modalities(name)
+        sessions = get_session_types(name)
+        modalities = get_modalities(name)
         project_session_list.append(
             {
-                "project_name": name, 
-                "sessions":sessions,
+                "project_name": name,
+                "sessions": sessions,
                 "modalities": modalities,
             }
         )
@@ -3856,7 +3855,7 @@ def get_initial_messages() -> List[Dict[str, Any]]:
                     "text": (
                         "Use this list of project names,sessions and modalities:"
                         f"{project_session_list}"
-                        ),
+                    ),
                 },
                 {
                     "cachePoint": {"type": "default"},

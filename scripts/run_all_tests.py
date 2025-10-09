@@ -60,7 +60,8 @@ def main():
         'test_200.py',
         'test_400.py',
         'test_individual_fields.py',
-        'test_files_endpoint.py'
+        'test_files_endpoint.py',
+        'test_gather_integration.py'
     ]
     
     results = []
