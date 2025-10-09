@@ -65,6 +65,30 @@ else:
 
 Example usage: `requests.post("https://metadata-portal.allenneuraldynamics-test.org/validate/subject", json=subject_data)`
 
+### Gather endpoint
+
+Get fresh metadata from the metadata service:
+
+```python
+import requests
+
+response = requests.get(
+    "https://metadata-portal.allenneuraldynamics-test.org/gather",
+    params={
+        "subject_id": "804670",
+        "project_name": "Learning mFISH-V1omFISH",
+        "modalities": "ecephys",  # comma-separated abbreviations
+        "acquisition_start_time": "2025-09-17T10:26:00Z"
+    }
+)
+
+if response.status_code == 200:
+    metadata = response.json()
+    print(f"✅ Retrieved {list(metadata.keys())}")
+else:
+    print(f"❌ Failed: {response.json()}")
+```
+
 ## Usage
 
 Clone the repository and `cd` into the folder

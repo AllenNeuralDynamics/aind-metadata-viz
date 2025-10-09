@@ -1,8 +1,16 @@
 """Test validation handlers including the GatherHandler."""
 
 import json
-import unittest
-from unittest.mock import Mock, patch
+import unitte        # Convert test data to query parameters
+        query_params = []
+        for key, value in test_data.items():
+            if isinstance(value, list):
+                query_params.append(f"{key}={','.join(map(str, value))}")
+            else:
+                query_params.append(f"{key}={value}")
+        query_string = "&".join(query_params)
+        
+        response = self.fetch(f'/gather?{query_string}')m unittest.mock import Mock, patch
 import os
 from tornado.testing import AsyncHTTPTestCase
 from tornado.web import Application

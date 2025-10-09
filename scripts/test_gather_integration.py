@@ -47,23 +47,33 @@ def main():
     print(f"📋 Subject ID: {subject_id}")
     print(f"📋 Project Name: {project_name}")
 
+    # Extract acquisition start time from existing metadata if available
+    acquisition_start_time = None
+    if 'acquisition' in existing_metadata and 'acquisition_start_time' in existing_metadata['acquisition']:
+        acquisition_start_time = existing_metadata['acquisition']['acquisition_start_time']
+        print(f"📅 Using acquisition start time: {acquisition_start_time}")
+
     # Prepare gather request with some optional parameters
-    gather_request = {
+    gather_params = {
         "subject_id": subject_id,
         "project_name": project_name,
-        "modalities": ["MULTIPLANE_OPHYS"],  # Based on the data
-        "tags": ["integration_test"],
+        "modalities": "pophys",  # Use abbreviation string
+        "tags": "integration_test",
         "data_summary": "Integration test of gather endpoint with real metadata service"
     }
+    
+    # Add acquisition_start_time if available
+    if acquisition_start_time:
+        gather_params["acquisition_start_time"] = acquisition_start_time
 
     print("\n🚀 Calling /gather endpoint...")
-    print(f"Request: {json.dumps(gather_request, indent=2)}")
+    print(f"Parameters: {json.dumps(gather_params, indent=2)}")
 
     # Call the gather endpoint
     try:
-        response = requests.post(
+        response = requests.get(
             f"{base_url}/gather",
-            json=gather_request,
+            params=gather_params,
             timeout=30
         )
         

@@ -32,21 +32,14 @@ CLASS_MAPPING = {
 
 
 class GatherHandler(RequestHandler):
-
-    def post(self):
+    
+    def get(self):
         """Gather metadata from metadata service like GatherMetadataJob"""
         self.set_header("Content-Type", "application/json")
-
-        try:
-            data = json.loads(self.request.body)
-        except json.JSONDecodeError:
-            self.set_status(400)
-            self.write({"error": "Invalid JSON format."})
-            return
-
-        # Required parameters
-        subject_id = data.get("subject_id")
-        project_name = data.get("project_name")
+        
+        # Required parameters from query string
+        subject_id = self.get_argument('subject_id', None)
+        project_name = self.get_argument('project_name', None)
 
         if not subject_id:
             self.set_status(400)
@@ -59,14 +52,17 @@ class GatherHandler(RequestHandler):
             return
 
         # Optional parameters with defaults
-        metadata_service_url = data.get(
+        metadata_service_url = self.get_argument(
             "metadata_service_url", "http://aind-metadata-service"
         )
-        modalities = data.get("modalities", [])
-        tags = data.get("tags")
-        group = data.get("group")
-        restrictions = data.get("restrictions")
-        data_summary = data.get("data_summary")
+        modalities_str = self.get_argument("modalities", "")
+        modalities = modalities_str.split(",") if modalities_str else []
+        tags_str = self.get_argument("tags", "")
+        tags = tags_str.split(",") if tags_str else None
+        group = self.get_argument("group", None)
+        restrictions = self.get_argument("restrictions", None)
+        data_summary = self.get_argument("data_summary", None)
+        acquisition_start_time = self.get_argument("acquisition_start_time", None)
 
         try:
             # Gather metadata from service
@@ -79,6 +75,7 @@ class GatherHandler(RequestHandler):
                 group=group,
                 restrictions=restrictions,
                 data_summary=data_summary,
+                acquisition_start_time=acquisition_start_time,
             )
 
             self.write(result)
@@ -99,6 +96,7 @@ class GatherHandler(RequestHandler):
         group: Optional[str],
         restrictions: Optional[str],
         data_summary: Optional[str],
+        acquisition_start_time: Optional[str],
     ) -> dict:
         """Gather and validate metadata from service"""
 
@@ -144,6 +142,7 @@ class GatherHandler(RequestHandler):
             group=group,
             restrictions=restrictions,
             data_summary=data_summary,
+            acquisition_start_time=acquisition_start_time,
         )
 
         # Validate data description
@@ -255,34 +254,37 @@ class GatherHandler(RequestHandler):
         group: Optional[str],
         restrictions: Optional[str],
         data_summary: Optional[str],
+        acquisition_start_time: Optional[str],
     ) -> dict:
         """Build data description metadata with optional settings"""
 
-        creation_time = datetime.now(tz=timezone.utc)
+        # Use acquisition_start_time if provided, otherwise use current time
+        if acquisition_start_time:
+            try:
+                # Parse the acquisition start time (handle Z suffix)
+                iso_time_str = acquisition_start_time.replace("Z", "+00:00")
+                creation_time = datetime.fromisoformat(iso_time_str)
+            except (ValueError, AttributeError):
+                # If parsing fails, fall back to current time
+                creation_time = datetime.now(tz=timezone.utc)
+        else:
+            creation_time = datetime.now(tz=timezone.utc)
 
         # Get funding information
         funding_source, investigators = self._get_funding(
             project_name, metadata_service_url
         )
 
-        # Convert modalities to proper enum values if needed
+        # Convert modalities from abbreviation strings to modality objects
         parsed_modalities = []
         for modality in modalities:
             if isinstance(modality, str):
-                # Try to get modality by abbreviation first
                 try:
-                    found_modality = Modality.from_abbreviation(
-                        modality.lower()
-                    )
+                    found_modality = Modality.from_abbreviation(modality.lower())
                     parsed_modalities.append(found_modality)
                 except (AttributeError, ValueError):
-                    # Try by direct attribute access
-                    try:
-                        found_modality = getattr(Modality, modality.upper())
-                        parsed_modalities.append(found_modality)
-                    except AttributeError:
-                        # Keep as string and let validation handle it
-                        parsed_modalities.append(modality)
+                    # Keep as string and let validation handle the error
+                    parsed_modalities.append(modality)
             else:
                 parsed_modalities.append(modality)
 
