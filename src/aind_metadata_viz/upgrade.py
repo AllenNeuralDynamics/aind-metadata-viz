@@ -18,14 +18,15 @@ extra_columns = {
     "name": 1,
 }
 
+client = MetadataDbClient(
+    host="api.allenneuraldynamics.org",
+    version="v1",
+)
+
 
 @pn.cache()
 def get_extra_col_df():
     print("Retrieving extra columns from DocDB...")
-    client = MetadataDbClient(
-        host="api.allenneuraldynamics.org",
-        version="v1",
-    )
 
     all_records = client.retrieve_docdb_records(
         filter_query={},
@@ -88,12 +89,41 @@ def get_data():
     return df
 
 
+def run_upgrade(record_id_or_name: str):
+    record = None
+    # Try to find by _id first
+    record = client.retrieve_docdb_records(
+        filter_query={"_id": record_id_or_name},
+        limit=1,
+    )
+    if not record:
+        # Try to find by name
+        record = client.retrieve_docdb_records(
+            filter_query={"name": record_id_or_name},
+            limit=1,
+        )
+    if not record:
+        return f"Record with _id or name '{record_id_or_name}' not found."
+
+    record = record[0]
+    try:
+        Upgrade(record)
+        return f"Upgrade successful for record '{record_id_or_name}'."
+    except Exception as e:
+        return f"Upgrade failed for record '{record_id_or_name}': {e}"
+
+
 def build_panel_app():
-    col = pn.Column("# Metadata Upgrade Status Table", sizing_mode="stretch_width")
+    table_col = pn.Column()
     button = pn.widgets.Button(name="Load Table", button_type="primary")
 
+    # New widgets for upgrade functionality
+    text_input = pn.widgets.TextInput(name="Enter _id or name", placeholder="Type _id or name here...")
+    upgrade_button = pn.widgets.Button(name="Run Upgrade", button_type="success")
+    output_box = pn.pane.Markdown("", sizing_mode="stretch_width")
+
     def load_table(event):
-        col.loading = True
+        table_col.loading = True
         df = get_data()
         tab = pn.widgets.Tabulator(
             df,
@@ -104,12 +134,25 @@ def build_panel_app():
             page_size=500,
             show_index=False,
         )
-        col[:] = ["# Metadata Upgrade Status Table", tab]
-        col.loading = False
+        table_col[:] = ["# Metadata Upgrade Status Table", tab]
+        table_col.loading = False
+
+    def run_upgrade_callback(event):
+        record_id_or_name = text_input.value
+        result = run_upgrade(record_id_or_name)
+        output_box.object = f"**Upgrade Output:**\n{result}"
 
     button.on_click(load_table)
-    col.append(button)
-    return col
+    upgrade_button.on_click(run_upgrade_callback)
+    table_col.append(button)
+    main_col = pn.Column(
+        "# Metadata Upgrade Status Table",
+        table_col,
+        pn.Row(text_input, upgrade_button),
+        output_box,
+        sizing_mode="stretch_width"
+    )
+    return main_col
 
 
 app = build_panel_app()
