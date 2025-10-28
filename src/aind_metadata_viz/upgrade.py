@@ -1,16 +1,14 @@
-import logging
 from aind_data_access_api.rds_tables import RDSCredentials, Client
 from aind_data_access_api.document_db import MetadataDbClient
 import pandas as pd
 import panel as pn
-
-# Configure logging
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-logger = logging.getLogger(__name__)
+from aind_metadata_upgrader.upgrade import Upgrade
 
 # Redshift settings
 REDSHIFT_SECRETS = "/aind/prod/redshift/credentials/readwrite"
 RDS_TABLE_NAME = "metadata_upgrade_status_prod"
+
+pn.extension('tabulator')
 
 
 extra_columns = {
@@ -23,15 +21,35 @@ extra_columns = {
 
 @pn.cache()
 def get_extra_col_df():
+    print("Retrieving extra columns from DocDB...")
     client = MetadataDbClient(
         host="api.allenneuraldynamics.org",
         version="v1",
     )
-    records = client.retrieve_docdb_records(
+
+    all_records = client.retrieve_docdb_records(
         filter_query={},
-        projection=extra_columns,
+        projection={"_id": 1},
         limit=0,
     )
+    all_ids = [record["_id"] for record in all_records]
+
+    # Batch by 100 to avoid excessively large queries
+    batch_size = 100
+
+    records = []
+    for start_idx in range(0, len(all_ids), batch_size):
+        print(f"Retrieving records {start_idx} to {start_idx + batch_size}...")
+        end_idx = start_idx + batch_size
+        batch_ids = all_ids[start_idx:end_idx]
+        filter_query = {"_id": {"$in": batch_ids}}
+        batch_records = client.retrieve_docdb_records(
+            filter_query=filter_query,
+            projection=extra_columns,
+            limit=0,
+        )
+        records.extend(batch_records)
+
     for i, record in enumerate(records):
         data_description = record.get("data_description", {})
         if data_description:
@@ -39,31 +57,33 @@ def get_extra_col_df():
             record["project_name"] = data_description.get("project_name", None)
             record.pop("data_description")
 
-        record.pop("_id")
         records[i] = record
+    print(f"Retrieved {len(records)} records from DocDB.")
     return pd.DataFrame(records)
 
 
 @pn.cache()
 def get_redshift_table():
+    print("Connecting to Redshift RDS...")
     rds_client = Client(
         credentials=RDSCredentials(
             aws_secrets_name=REDSHIFT_SECRETS,
         ),
     )
     df = rds_client.read_table(RDS_TABLE_NAME)
+    print(f"Retrieved {len(df)} records from Redshift table.")
     return df
 
 
 @pn.cache()
 def get_data():
-    logger.info("Loading extra columns from DocDB...")
+    print("Loading extra columns from DocDB...")
     extra_col_df = get_extra_col_df()
-    logger.info("Loading Redshift table...")
+    print("Loading Redshift table...")
     df = get_redshift_table()
     if df is None or len(df) == 0:
         return pn.pane.Markdown("**Table is empty or could not be read**")
-    logger.info("Merging extra columns...")
+    print("Merging extra columns...")
     df = df.merge(extra_col_df, how="left", left_on="v1_id", right_on="_id")
     return df
 
