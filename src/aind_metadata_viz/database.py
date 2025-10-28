@@ -309,18 +309,16 @@ def _get_metadata(test_mode=False) -> pd.DataFrame:
 
     records = []
     # Now add some information about the records, i.e. modality, derived state, etc.
-    for i, record in enumerate(record_list):
-        print(f"Processing record {i + 1} of {len(record_list)}")
-        print(f"Record ID: {record['_id']}")
+    for record in record_list:
         if (
             "data_description" in record
             and record["data_description"]
-            and "modality" in record["data_description"]
+            and "modalities" in record["data_description"]
         ):
-            if isinstance(record["data_description"]["modality"], list):
+            if isinstance(record["data_description"]["modalities"], list):
                 modalities = [
                     mod["abbreviation"]
-                    for mod in record["data_description"]["modality"]
+                    for mod in record["data_description"]["modalities"]
                 ]
         else:
             modalities = []
