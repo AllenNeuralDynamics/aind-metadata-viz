@@ -5,7 +5,7 @@ import panel as pn
 from aind_metadata_upgrader.upgrade import Upgrade
 
 # Redshift settings
-REDSHIFT_SECRETS = "/aind/prod/redshift/credentials/readwrite"
+REDSHIFT_SECRETS = "/aind/prod/redshift/credentials/readonly"
 RDS_TABLE_NAME = "metadata_upgrade_status_prod"
 
 pn.extension('tabulator')
@@ -117,7 +117,8 @@ def build_panel_app():
     table_col = pn.Column()
     button = pn.widgets.Button(name="Load Table", button_type="primary")
 
-    # New widgets for upgrade functionality
+    summary_box = pn.pane.Markdown("", sizing_mode="stretch_width")
+
     text_input = pn.widgets.TextInput(name="Enter _id or name", placeholder="Type _id or name here...")
     upgrade_button = pn.widgets.Button(name="Run Upgrade", button_type="success")
     output_box = pn.pane.Markdown("", sizing_mode="stretch_width")
@@ -125,6 +126,11 @@ def build_panel_app():
     def load_table(event):
         table_col.loading = True
         df = get_data()
+
+        summary_box.object = f"""
+**Records upgraded:** {len(df[df['status'] == "success"])}/{len(df)}
+"""
+
         tab = pn.widgets.Tabulator(
             df,
             sizing_mode="stretch_width",
@@ -147,6 +153,7 @@ def build_panel_app():
     table_col.append(button)
     main_col = pn.Column(
         "# Metadata Upgrade Status Table",
+        summary_box,
         table_col,
         pn.Row(text_input, upgrade_button),
         output_box,
