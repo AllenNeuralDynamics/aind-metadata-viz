@@ -298,7 +298,7 @@ def _get_metadata(test_mode=False) -> pd.DataFrame:
     record_list = docdb_api_client.retrieve_docdb_records(
         filter_query={},
         projection={
-            "data_description.modality": 1,
+            "data_description.modalities": 1,
             "name": 1,
             "_id": 1,
             "location": 1,
