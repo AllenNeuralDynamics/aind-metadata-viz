@@ -79,7 +79,6 @@ def get_redshift_table():
     return df
 
 
-@pn.cache()
 def get_data():
     print("Loading extra columns from DocDB...")
     extra_col_df = get_extra_col_df()
