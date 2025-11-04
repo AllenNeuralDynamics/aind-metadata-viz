@@ -23,8 +23,11 @@ client = MetadataDbClient(
     version="v1",
 )
 
+TTL_DAY = 24 * 60 * 60
+TTL_HOUR = 60 * 60
 
-@pn.cache()
+
+@pn.cache(ttl=TTL_DAY)
 def get_extra_col_df():
     print("Retrieving extra columns from DocDB...")
 
@@ -63,7 +66,7 @@ def get_extra_col_df():
     return pd.DataFrame(records)
 
 
-@pn.cache()
+@pn.cache(ttl=TTL_HOUR)
 def get_redshift_table():
     print("Connecting to Redshift RDS...")
     rds_client = Client(
