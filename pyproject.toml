@@ -17,14 +17,12 @@ readme = "README.md"
 dynamic = ["version"]
 
 dependencies = [
-    'pydantic',
+    'pydantic<2.9',
     'panel>=1.6.1',
     'altair',
-    'aind-data-schema<2.0.0',
-    'aind-data-access-api[docdb]',
-    'aind-data-access-api[rds]',
-    'aind-metadata-validator<0.9',
-    'flask',
+    'aind-data-schema==1.4.0',
+    'aind-data-access-api[docdb,rds]',
+    'aind-metadata-validator==0.8.4',
 ]
 
 [project.optional-dependencies]
