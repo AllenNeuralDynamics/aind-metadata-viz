@@ -115,6 +115,11 @@ class MetadataView(param.Parameterized):
     def _toggle_visibility(self, event, file):
         """Toggle the visibility of a file"""
         self.file_panels[file].visible = not self.file_panels[file].visible
+        self.buttons[file].button_type = (
+            "primary"
+            if self.file_panels[file].visible
+            else "default"
+        )
 
     def header_panel(self):
         """Return a header panel with simple metadata information"""
@@ -198,6 +203,8 @@ class MetadataView(param.Parameterized):
 metadata_view = MetadataView()
 metadata_view.set_record(get_record(settings.name))
 metadata_view_pane = metadata_view.panel()
+
+print(f"Viewing record: {settings.name}")
 
 main_row = pn.Row(
     pn.HSpacer(),
