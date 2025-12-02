@@ -119,7 +119,21 @@ class MetadataView(param.Parameterized):
     def header_panel(self):
         """Return a header panel with simple metadata information"""
 
-        md = f"## {self.record['name']}"
+        # Turn other_identifiers dict[list[str]] into a little table
+        other_identifiers = self.record["other_identifiers"]
+        other_identifiers["S3 Path"] = [self.record["location"]]
+        if other_identifiers:
+            other_id_md = "### Other Identifiers\n\n"
+            for key, values in other_identifiers.items():
+                other_id_md += f"- **{key}**: {', '.join(values)}\n"
+        else:
+            other_id_md = ""
+
+        md = f"""
+## {self.record['name']}
+{other_id_md}
+
+"""
 
         return pn.pane.Markdown(md)
 
@@ -155,7 +169,7 @@ class MetadataView(param.Parameterized):
 
         md_header = pn.pane.Markdown(
             f"## {file} \n"
-            f"aind-data-schema link: [{file}.py]({self.describedBys[file]})"
+            f'aind-data-schema docs: <a href="https://aind-data-schema.readthedocs.io/en/latest/{file}.html" target="_blank">{file}.json</a>'
         )
         data = pn.pane.JSON(self.record[file], width=FIXED_WIDTH - 50)
 
