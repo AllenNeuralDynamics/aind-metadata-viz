@@ -334,8 +334,6 @@ def _get_metadata(test_mode=False) -> pd.DataFrame:
 
         records.append(info_data)
 
-    print(records)
-
     return pd.DataFrame(
         records,
         columns=[

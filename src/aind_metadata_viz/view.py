@@ -1,7 +1,6 @@
 """App for viewing individual metadata assets"""
 
-import os
-
+from typing import Optional
 import panel as pn
 import param
 
@@ -36,25 +35,15 @@ docdb_api_client = MetadataDbClient(
 )
 
 
-# State sync
-class Settings(param.Parameterized):
-    """Top-level settings for QC app"""
-
-    name = param.String(default="")
-
-
-settings = Settings()
-pn.state.location.sync(settings, {"name": "name"})
-
-
-def get_record(name):
+def get_record(asset_name: str) -> Optional[dict]:
     """Get a record from the database by name"""
     records = docdb_api_client.retrieve_docdb_records(
-        filter_query={"name": name},
+        filter_query={"name": asset_name},
         limit=1,
     )
 
     if len(records) == 0:
+        print(f"Record with name {asset_name} not found.")
         return None
     return records[0]
 
@@ -62,6 +51,7 @@ def get_record(name):
 class MetadataView(param.Parameterized):
     """Class for viewing metadata records"""
 
+    asset_name = param.String(default="")
     record = param.Dict(default=None)
     files_present = param.List(default=[])
     describedBys = param.Dict(default={})
@@ -203,11 +193,14 @@ class MetadataView(param.Parameterized):
 
 
 metadata_view = MetadataView()
-metadata_view.set_record(get_record(settings.name))
+
+pn.state.location.sync(metadata_view, {"asset_name": "name"})
+
+metadata_view.set_record(get_record(metadata_view.asset_name))
 metadata_view_pane = metadata_view.panel()
 
 print(f"AIND Metadata Viz version: {__version__}")
-print(f"Viewing record: {settings.name}")
+print(f"Viewing record: {metadata_view.asset_name}")
 
 main_row = pn.Row(
     pn.HSpacer(),
