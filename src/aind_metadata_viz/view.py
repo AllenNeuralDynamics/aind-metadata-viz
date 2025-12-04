@@ -10,6 +10,8 @@ from aind_data_access_api.document_db import MetadataDbClient
 
 from aind_metadata_viz.utils import outer_style, AIND_COLORS
 from aind_data_schema.core.metadata import CORE_FILES
+from aind_metadata_viz import __version__
+
 
 FIXED_WIDTH = 1200
 
@@ -204,6 +206,7 @@ metadata_view = MetadataView()
 metadata_view.set_record(get_record(settings.name))
 metadata_view_pane = metadata_view.panel()
 
+print(f"AIND Metadata Viz version: {__version__}")
 print(f"Viewing record: {settings.name}")
 
 main_row = pn.Row(
