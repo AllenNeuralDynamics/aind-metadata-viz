@@ -4,6 +4,7 @@ import pandas as pd
 import panel as pn
 from aind_metadata_upgrader.upgrade import Upgrade
 from aind_metadata_viz.utils import AIND_COLORS, outer_style
+from aind_data_schema import __version__ as schema_version
 import copy
 import json
 import traceback
@@ -277,18 +278,35 @@ def display_upgrade_results(results):
     asset_name = results.get('asset_name', 'Unknown')
     if results['overall_success']:
         status_color = AIND_COLORS['green']
-        status_text = "✓ Full upgrade successful"
+        status_text = "SUCCESS: Full upgrade successful"
     elif results.get('partial_success'):
         status_color = AIND_COLORS['yellow']
-        status_text = "⚠ Partial upgrade (some fields failed)"
+        status_text = "PARTIAL: Some fields failed"
     else:
         status_color = AIND_COLORS['red']
-        status_text = "✗ Upgrade failed"
+        status_text = "FAILED: Upgrade failed"
 
     header_md = f"## Upgrade Results for: {asset_name}\n\n"
     header_md += f"<span style='color:{status_color}; font-weight:bold;'>{status_text}</span>\n\n"
-    header_md += f"<small>Schema upgrade: <code>v1.x</code> → <code>v2.0</code></small>"
+    header_md += f"<small>Schema upgrade: <code>v1.x</code> -> <code>v{schema_version}</code></small>"
     main_col.append(pn.pane.Markdown(header_md))
+
+    # Summary statistics panel
+    files_tested = results.get('files_tested', {})
+    total_files = len(files_tested)
+    successful_files = sum(1 for f in files_tested.values() if f.get('success', False))
+    failed_files = total_files - successful_files
+
+    if total_files > 0:
+        summary_md = f"""
+<div style='background-color: #f8f9fa; border: 1px solid #dee2e6; border-radius: 5px; padding: 15px; margin: 15px 0;'>
+    <strong>Summary:</strong> {total_files} files tested
+    <br/>
+    <span style='color:{AIND_COLORS['green']}'>{successful_files} successful</span> |
+    <span style='color:{AIND_COLORS['red']}'>{failed_files} failed</span>
+</div>
+"""
+        main_col.append(pn.pane.Markdown(summary_md))
 
     # Overall error message if present
     if results.get('overall_error'):
@@ -301,22 +319,14 @@ def display_upgrade_results(results):
         success = file_result.get('success', False)
         converted_to = file_result.get('converted_to')
 
-        # Determine header color and icon
-        if success:
-            color = AIND_COLORS['green']
-            icon = "✓"
-        else:
-            color = AIND_COLORS['red']
-            icon = "✗"
-
         # Create display name
         display_name = f"{file_name}"
         if converted_to:
-            display_name += f" → {converted_to}"
+            display_name += f" -> {converted_to}"
 
         # Create collapsible section with button
         toggle_button = pn.widgets.Button(
-            name=f"{icon} {display_name}",
+            name=display_name,
             button_type="primary" if success else "danger",
             width=300,
         )
@@ -328,8 +338,8 @@ def display_upgrade_results(results):
         if converted_to:
             notice_md = f"""
 <div style='background-color: {AIND_COLORS['light_blue']}20; border-left: 4px solid {AIND_COLORS['light_blue']}; padding: 10px; margin: 10px 0;'>
-    <strong>🔄 Field Conversion:</strong> <code>{file_name}</code> → <code>{converted_to}</code>
-    <br/><small>This field was renamed in schema v2.0</small>
+    <strong>Field Conversion:</strong> <code>{file_name}</code> -> <code>{converted_to}</code>
+    <br/><small>This field was renamed in schema v{schema_version}</small>
 </div>
 """
             content_col.append(pn.pane.Markdown(notice_md))
@@ -361,7 +371,7 @@ def display_upgrade_results(results):
             error_text = file_result.get('error', 'Unknown error')
             error_md = f"""
 <div style='background-color: {AIND_COLORS['red']}20; border-left: 4px solid {AIND_COLORS['red']}; padding: 10px; margin: 10px 0;'>
-    <strong>❌ Upgrade Failed</strong><br/>
+    <strong>Upgrade Failed</strong><br/>
     {error_text}
 </div>
 """
