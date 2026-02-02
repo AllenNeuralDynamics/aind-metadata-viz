@@ -433,7 +433,18 @@ def build_panel_app():
 
     text_input = pn.widgets.TextInput(name="Enter _id or name", placeholder="Type _id or name here...")
     upgrade_button = pn.widgets.Button(name="Run Upgrade", button_type="success")
+    copy_url_button = pn.widgets.Button(name="Copy Shareable URL", button_type="default", width=180)
+    copy_status = pn.pane.Markdown("", width=150)
     output_box = pn.Column(sizing_mode="stretch_width")
+    js_pane = pn.pane.HTML("", height=0, width=0)
+
+    # Sync text_input with URL parameter
+    pn.state.location.sync(text_input, {"value": "asset_id"})
+
+    # Auto-run upgrade if asset_id is in URL
+    if text_input.value:
+        results = upgrade_asset_detailed(text_input.value)
+        output_box[:] = [display_upgrade_results(results)]
 
     def load_table(event):
         table_col.loading = True
@@ -467,15 +478,40 @@ def build_panel_app():
         # Display results with side-by-side comparison
         output_box[:] = [display_upgrade_results(results)]
 
+    def copy_url_callback(event):
+        # Generate JavaScript to copy current URL to clipboard
+        js_code = """
+var url = window.location.href;
+navigator.clipboard.writeText(url).then(function() {
+    console.log('URL copied to clipboard');
+}, function(err) {
+    console.error('Failed to copy URL: ', err);
+});
+"""
+        js_pane.object = ""
+        js_pane.object = f"<script>{js_code}</script>"
+        copy_status.object = "<span style='color:green'>URL copied!</span>"
+
+        # Clear status after 3 seconds
+        import time
+        def clear_status():
+            time.sleep(3)
+            copy_status.object = ""
+
+        import threading
+        threading.Thread(target=clear_status, daemon=True).start()
+
     button.on_click(load_table)
     upgrade_button.on_click(run_upgrade_callback)
+    copy_url_button.on_click(copy_url_callback)
     table_col.append(button)
     main_col = pn.Column(
         "# Metadata Upgrade Status Table",
         summary_box,
         table_col,
-        pn.Row(text_input, upgrade_button),
+        pn.Row(text_input, upgrade_button, copy_url_button, copy_status),
         output_box,
+        js_pane,
         sizing_mode="stretch_width"
     )
     return main_col
