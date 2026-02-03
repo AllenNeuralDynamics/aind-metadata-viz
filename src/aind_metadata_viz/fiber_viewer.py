@@ -1,5 +1,7 @@
 """App for viewing fiber implant locations in mouse brains"""
 
+import base64
+import io
 import json
 from pathlib import Path
 import requests
@@ -439,14 +441,25 @@ def create_schematic(fibers, subject_id):
     return fig
 
 
+def save_fig_to_base64(fig):
+    """Save matplotlib figure to base64-encoded PNG string."""
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=DPI, bbox_inches="tight")
+    buf.seek(0)
+    img_base64 = base64.b64encode(buf.read()).decode("utf-8")
+    buf.close()
+    return img_base64
+
+
 def build_panel_app():
     """Build the fiber viewer Panel app"""
 
     # Input widgets
-    input_label = pn.pane.Markdown("**Enter Subject ID:**")
     text_input = pn.widgets.TextInput(
+        name="",
         placeholder="e.g., 123456",
         sizing_mode="stretch_width",
+        min_width=300,
     )
 
     generate_button = pn.widgets.Button(
@@ -454,8 +467,23 @@ def build_panel_app():
         button_type="primary",
     )
 
-    # Output container
+    download_button = pn.widgets.Button(
+        name="Download PNG",
+        button_type="success",
+        disabled=True,
+    )
+
+    copy_url_button = pn.widgets.Button(
+        name="Copy Shareable URL",
+        disabled=True,
+    )
+
+    # Output container and JS pane for downloads/clipboard
     output_col = pn.Column(sizing_mode="stretch_width")
+    js_pane = pn.pane.HTML("", height=0, width=0)
+
+    # Store current figure data for download
+    current_fig_data = {"base64": None, "subject_id": None}
 
     # Button callback
     def generate_callback(event):
@@ -495,10 +523,18 @@ def build_panel_app():
                 # Generate schematic
                 fig = create_schematic(fibers, subject_id)
 
+                # Save figure data for download
+                current_fig_data["base64"] = save_fig_to_base64(fig)
+                current_fig_data["subject_id"] = subject_id
+
                 # Display matplotlib figure
                 output_col[:] = [
                     pn.pane.Matplotlib(fig, tight=True, sizing_mode="stretch_width"),
                 ]
+
+                # Enable download and copy URL buttons
+                download_button.disabled = False
+                copy_url_button.disabled = False
 
                 # Close figure to free memory
                 plt.close(fig)
@@ -517,13 +553,118 @@ def build_panel_app():
         finally:
             output_col.loading = False
 
+    def download_callback(event):
+        """Download the current schematic as PNG."""
+        if current_fig_data["base64"] is None:
+            return
+
+        subject_id = current_fig_data["subject_id"]
+        img_base64 = current_fig_data["base64"]
+        filename = f"fiber_schematic_{subject_id}.png"
+
+        js_code = f"""
+var img_base64 = "{img_base64}";
+var binary = atob(img_base64);
+var array = new Uint8Array(binary.length);
+for (var i = 0; i < binary.length; i++) {{
+    array[i] = binary.charCodeAt(i);
+}}
+var blob = new Blob([array], {{type: 'image/png'}});
+
+var url = window.URL.createObjectURL(blob);
+
+var a = document.createElement('a');
+a.href = url;
+a.download = "{filename}";
+
+document.body.appendChild(a);
+
+a.click();
+
+document.body.removeChild(a);
+
+window.URL.revokeObjectURL(url);
+"""
+        js_pane.object = ""
+        js_pane.object = f"<script>{js_code}</script>"
+
+    def copy_url_callback(event):
+        """Copy current URL to clipboard."""
+        js_code = """
+            var url = window.location.href;
+            navigator.clipboard.writeText(url).then(function() {
+                console.log('URL copied to clipboard');
+            }, function(err) {
+                console.error('Failed to copy URL: ', err);
+            });
+        """
+        js_pane.object = ""
+        js_pane.object = f"<script>{js_code}</script>"
+
     generate_button.on_click(generate_callback)
+    download_button.on_click(download_callback)
+    copy_url_button.on_click(copy_url_callback)
+
+    # Get subject_id from URL and set text input manually
+    url_subject_id = pn.state.location.query_params.get("subject_id", "")
+    if url_subject_id:
+        text_input.value = str(url_subject_id)
+
+    # Sync for bidirectional URL updates
+    pn.state.location.sync(text_input, {"value": "subject_id"})
+
+    # Auto-run if subject_id is in URL
+    if text_input.value:
+        try:
+            subject_id = text_input.value.strip()
+            results = get_procedures_data(subject_id)
+            fibers = results.get("fibers", [])
+            fiber_count = results.get("fiber_count", 0)
+
+            if fiber_count == 0:
+                output_col[:] = [
+                    pn.pane.Markdown(
+                        f"**No fiber implants found for subject {subject_id}**",
+                        styles={
+                            "background": "#fff8e1",
+                            "border-left": f"4px solid {AIND_COLORS['yellow']}",
+                            "padding": "10px",
+                            "border-radius": "5px",
+                        },
+                    )
+                ]
+            else:
+                fig = create_schematic(fibers, subject_id)
+                current_fig_data["base64"] = save_fig_to_base64(fig)
+                current_fig_data["subject_id"] = subject_id
+                output_col[:] = [
+                    pn.pane.Matplotlib(fig, tight=True, sizing_mode="stretch_width"),
+                ]
+                download_button.disabled = False
+                copy_url_button.disabled = False
+                plt.close(fig)
+        except Exception as e:
+            output_col[:] = [
+                pn.pane.Markdown(
+                    f"**Error:** {str(e)}",
+                    styles={
+                        "background": "#fff5f5",
+                        "border-left": f"4px solid {AIND_COLORS['red']}",
+                        "padding": "10px",
+                        "border-radius": "5px",
+                    },
+                )
+            ]
 
     # Layout
     input_row = pn.Row(
         text_input,
         pn.Spacer(width=5),
         generate_button,
+        pn.Spacer(width=5),
+        download_button,
+        pn.Spacer(width=5),
+        copy_url_button,
         sizing_mode="stretch_width",
         align="center",
     )
@@ -532,6 +673,7 @@ def build_panel_app():
         pn.pane.Markdown("## Fiber Schematic Viewer"),
         input_row,
         output_col,
+        js_pane,
         sizing_mode="stretch_width",
     )
 

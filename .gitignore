@@ -144,3 +144,6 @@ panel_chat_query.py
 
 # Procedures cache
 .cache/procedures/
+
+# Claude Code project instructions
+.claude/
