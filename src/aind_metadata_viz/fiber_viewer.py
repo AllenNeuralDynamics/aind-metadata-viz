@@ -183,7 +183,7 @@ def get_procedures_data(subject_id: str) -> dict:
 
                         # Default values
                         ml = 0
-                        dv = 0
+                        dv = None  # None means no depth available
                         ap = 0
                         angle = 0
 
@@ -193,18 +193,26 @@ def get_procedures_data(subject_id: str) -> dict:
                         for transform_obj in transform:
                             obj_type = transform_obj.get("object_type", "")
 
-                            # Translation contains [AP, ML, DV]
+                            # Translation format:
+                            # - 3 values: [AP, ML, burr_hole_depth] (current incomplete format, no fiber depth)
+                            # - 4+ values: [AP, ML, burr_hole_depth, fiber_depth] (future complete format)
+                            #   where burr_hole_depth is usually 0 and should be ignored
                             if obj_type == "Translation":
                                 translation = transform_obj.get(
                                     "translation", []
                                 )
-                                if (
-                                    isinstance(translation, list)
-                                    and len(translation) >= 3
-                                ):
-                                    ap = safe_float(translation[0])
-                                    ml = safe_float(translation[1])
-                                    dv = safe_float(translation[2])
+                                if isinstance(translation, list):
+                                    if len(translation) >= 4:
+                                        # Future format: use 4th value as fiber depth
+                                        ap = safe_float(translation[0])
+                                        ml = safe_float(translation[1])
+                                        # translation[2] is burr hole depth (ignored)
+                                        dv = safe_float(translation[3])
+                                    elif len(translation) >= 2:
+                                        # Current format: only AP and ML are valid
+                                        ap = safe_float(translation[0])
+                                        ml = safe_float(translation[1])
+                                        # Leave dv as None (no valid depth info)
 
                             # Rotation contains angles
                             elif obj_type == "Rotation":
@@ -401,11 +409,16 @@ def create_legend_text(fibers):
 
         ap = safe_float(fiber.get("ap", 0))
         ml = safe_float(fiber.get("ml", 0))
-        dv = safe_float(fiber.get("dv", 0))
+        dv = fiber.get("dv")  # Could be None if no depth available
         angle = safe_float(fiber.get("angle", 0))
         name = fiber.get("name", "Unknown")
 
-        text = f"{name}: AP={ap:.2f}, ML={ml:.2f}, DV={dv:.2f} mm"
+        # Only include DV if it's available (not None)
+        if dv is not None:
+            text = f"{name}: AP={ap:.2f}, ML={ml:.2f}, DV={dv:.2f} mm"
+        else:
+            text = f"{name}: AP={ap:.2f}, ML={ml:.2f} mm"
+
         if abs(angle) > 1:
             text += f" ∠{angle}°"
 
