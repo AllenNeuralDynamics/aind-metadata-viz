@@ -96,30 +96,6 @@ def get_data():
     return df
 
 
-def run_upgrade(record_id_or_name: str):
-    record = None
-    # Try to find by _id first
-    record = client.retrieve_docdb_records(
-        filter_query={"_id": record_id_or_name},
-        limit=1,
-    )
-    if not record:
-        # Try to find by name
-        record = client.retrieve_docdb_records(
-            filter_query={"name": record_id_or_name},
-            limit=1,
-        )
-    if not record:
-        return f"Record with _id or name '{record_id_or_name}' not found."
-
-    record = record[0]
-    try:
-        Upgrade(record)
-        return f"Upgrade successful for record '{record_id_or_name}'."
-    except Exception as e:
-        return f"Upgrade failed for record '{record_id_or_name}': {e}"
-
-
 def upgrade_asset_detailed(record_id_or_name: str):
     """
     Perform detailed upgrade testing with field-by-field breakdown.
