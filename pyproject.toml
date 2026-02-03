@@ -29,6 +29,7 @@ dependencies = [
     'langchain_aws',
     'aind-metadata-upgrader>=0.6.2',
     'numpy<2.0',
+    'vl-convert-python',
 ]
 
 [project.optional-dependencies]
