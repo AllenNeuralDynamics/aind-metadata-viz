@@ -96,7 +96,7 @@ def get_data():
     return df
 
 
-def upgrade_asset_detailed(record_id_or_name: str):
+def run_upgrade(record_id_or_name: str):
     """
     Perform detailed upgrade testing with field-by-field breakdown.
 
@@ -287,15 +287,21 @@ def display_upgrade_results(results):
     failed_files = total_files - successful_files
 
     if total_files > 0:
-        summary_md = f"""
-            <div style='background-color: #f8f9fa; border: 1px solid #dee2e6; border-radius: 5px; padding: 15px; margin: 15px 0;'>
-                <strong>Summary:</strong> {total_files} files tested
-                <br/>
-                <span style='color:{AIND_COLORS['green']}'>{successful_files} successful</span> |
-                <span style='color:{AIND_COLORS['red']}'>{failed_files} failed</span>
-            </div>
-        """
-        main_col.append(pn.pane.Markdown(summary_md))
+        summary_text = f"**Summary:** {total_files} files tested\n\n"
+        summary_text += f"<span style='color:{AIND_COLORS['green']}'>{successful_files} successful</span> | "
+        summary_text += f"<span style='color:{AIND_COLORS['red']}'>{failed_files} failed</span>"
+
+        summary_pane = pn.pane.Markdown(
+            summary_text,
+            styles={
+                "background": "#f8f9fa",
+                "border": "1px solid #dee2e6",
+                "border-radius": "5px",
+                "padding": "15px",
+                "margin": "15px 0",
+            },
+        )
+        main_col.append(summary_pane)
 
     # Overall error message if present
     if results.get("overall_error"):
@@ -327,13 +333,16 @@ def display_upgrade_results(results):
 
         # Add conversion notice if applicable
         if converted_to:
-            notice_md = f"""
-                <div style='background-color: {AIND_COLORS['light_blue']}20; border-left: 4px solid {AIND_COLORS['light_blue']}; padding: 10px; margin: 10px 0;'>
-                    <strong>Field Conversion:</strong> <code>{file_name}</code> -> <code>{converted_to}</code>
-                    <br/><small>This field was renamed in schema v{schema_version}</small>
-                </div>
-            """
-            content_col.append(pn.pane.Markdown(notice_md))
+            notice_pane = pn.pane.Markdown(
+                f"**Field Conversion:** `{file_name}` -> `{converted_to}`\n\nThis field was renamed in schema v{schema_version}",
+                styles={
+                    "background": "#e3f2fd",
+                    "border-left": f"4px solid {AIND_COLORS['light_blue']}",
+                    "padding": "10px",
+                    "margin": "10px 0",
+                },
+            )
+            content_col.append(notice_pane)
 
         if success:
             # Side-by-side comparison
@@ -380,13 +389,16 @@ def display_upgrade_results(results):
         else:
             # Show error
             error_text = file_result.get("error", "Unknown error")
-            error_md = f"""
-                <div style='background-color: {AIND_COLORS['red']}20; border-left: 4px solid {AIND_COLORS['red']}; padding: 10px; margin: 10px 0;'>
-                    <strong>Upgrade Failed</strong><br/>
-                    {error_text}
-                </div>
-            """
-            content_col.append(pn.pane.Markdown(error_md))
+            error_pane = pn.pane.Markdown(
+                f"**Upgrade Failed:**\n\n{error_text}",
+                styles={
+                    "background": "#fff5f5",
+                    "border-left": f"4px solid {AIND_COLORS['red']}",
+                    "padding": "10px",
+                    "margin": "10px 0",
+                },
+            )
+            content_col.append(error_pane)
 
             # Add collapsible traceback if available
             traceback_text = file_result.get("traceback")
@@ -485,7 +497,6 @@ def build_panel_app():
         width=200,
         disabled=True,
     )
-    copy_status = pn.pane.Markdown("", width=150)
     output_box = pn.Column(sizing_mode="stretch_width")
     js_pane = pn.pane.HTML("", height=0, width=0)
 
@@ -495,34 +506,13 @@ def build_panel_app():
 
     text_input.param.watch(update_upgrade_button, "value")
 
-    # Light style for help text box
-    help_box_style = {
-        "background": "#f8f9fa",
-        "border": "1px solid #dee2e6",
-        "border-radius": "5px",
-        "padding": "15px",
-        "margin": "10px 0",
-    }
-
-    help_text = pn.pane.Markdown(
-        """
-        **How it works:** This tool tests metadata upgrades from schema v1.x to v{version}.
-        It first attempts a full upgrade. If that fails, it tests each metadata file individually
-        to identify which specific fields have issues.
-        """.format(
-            version=schema_version
-        ),
-        styles=help_box_style,
-        sizing_mode="stretch_width",
-    )
-
     # Sync text_input with URL parameter
     pn.state.location.sync(text_input, {"value": "asset_id"})
 
     # Auto-run upgrade if asset_id is in URL
     if text_input.value:
         upgrade_button.disabled = False
-        results = upgrade_asset_detailed(text_input.value)
+        results = run_upgrade(text_input.value)
         output_box[:] = [display_upgrade_results(results)]
         copy_url_button.disabled = False
 
@@ -560,11 +550,10 @@ def build_panel_app():
         output_box.loading = True
         upgrade_button.disabled = True
         copy_url_button.disabled = True
-        copy_status.object = ""
 
         try:
             # Use detailed upgrade function
-            results = upgrade_asset_detailed(record_id_or_name)
+            results = run_upgrade(record_id_or_name)
 
             # Display results with side-by-side comparison
             output_box[:] = [display_upgrade_results(results)]
@@ -588,18 +577,6 @@ def build_panel_app():
         """
         js_pane.object = ""
         js_pane.object = f"<script>{js_code}</script>"
-        copy_status.object = "<span style='color:green'>URL copied!</span>"
-
-        # Clear status after 3 seconds
-        import time
-
-        def clear_status():
-            time.sleep(3)
-            copy_status.object = ""
-
-        import threading
-
-        threading.Thread(target=clear_status, daemon=True).start()
 
     button.on_click(load_table)
     upgrade_button.on_click(run_upgrade_callback)
@@ -613,8 +590,6 @@ def build_panel_app():
         upgrade_button,
         pn.Spacer(width=5),
         copy_url_button,
-        pn.Spacer(width=5),
-        copy_status,
         sizing_mode="stretch_width",
         align="center",
     )
@@ -623,7 +598,6 @@ def build_panel_app():
         "# Metadata Upgrade Status Table",
         summary_box,
         table_col,
-        help_text,
         input_label,
         input_row,
         output_box,
