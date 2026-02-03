@@ -141,3 +141,6 @@ dmypy.json
 # Local UI testing
 panel_chat_query.py
 .github/copilot-instructions.md
+
+# Procedures cache
+.cache/procedures/
