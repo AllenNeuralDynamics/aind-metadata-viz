@@ -457,7 +457,7 @@ def build_panel_app():
     # Input widgets
     text_input = pn.widgets.TextInput(
         name="",
-        placeholder="e.g., 123456",
+        placeholder="Enter subject_id (e.g., 804434)",
         sizing_mode="stretch_width",
         min_width=300,
     )
