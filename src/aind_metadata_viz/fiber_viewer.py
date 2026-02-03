@@ -125,43 +125,30 @@ def get_procedures_data(subject_id: str) -> dict:
         from_cache = True
     else:
         # Query metadata service (same pattern as validation.py)
-        print(
-            f"Retrieving procedures for {subject_id} from metadata service..."
-        )
+        print(f"Retrieving procedures for {subject_id} from metadata service...")
         try:
-            response = requests.get(
-                f"{METADATA_SERVICE_URL}/api/v2/procedures/{subject_id}"
-            )
+            response = requests.get(f"{METADATA_SERVICE_URL}/api/v2/procedures/{subject_id}")
 
             if response.status_code == 404:
-                raise ValueError(
-                    f"No procedures found for subject ID: {subject_id}"
-                )
+                raise ValueError(f"No procedures found for subject ID: {subject_id}")
 
             # Try to parse JSON response (metadata service may return 400 with valid data)
             try:
                 procedures_data = response.json()
                 # Handle both direct response and wrapped in "data" key
-                if (
-                    isinstance(procedures_data, dict)
-                    and "data" in procedures_data
-                ):
+                if isinstance(procedures_data, dict) and "data" in procedures_data:
                     procedures_data = procedures_data["data"]
             except ValueError:
-                raise ValueError(
-                    f"Metadata service returned invalid JSON (status {response.status_code})"
-                )
+                raise ValueError(f"Metadata service returned invalid JSON (status {response.status_code})")
 
         except requests.RequestException as e:
-            raise ValueError(
-                f"Failed to retrieve procedures metadata: {str(e)}"
-            )
+            raise ValueError(f"Failed to retrieve procedures metadata: {str(e)}")
 
         # Save to cache
         save_to_cache(subject_id, procedures_data)
         from_cache = False
 
-    # Extract fiber implants from procedures (matching Flask app logic)
+    # Extract fiber implants from procedures
     fibers = []
     if procedures_data:
         subject_procedures = procedures_data.get("subject_procedures", [])
@@ -198,9 +185,7 @@ def get_procedures_data(subject_id: str) -> dict:
                             # - 4+ values: [AP, ML, burr_hole_depth, fiber_depth] (future complete format)
                             #   where burr_hole_depth is usually 0 and should be ignored
                             if obj_type == "Translation":
-                                translation = transform_obj.get(
-                                    "translation", []
-                                )
+                                translation = transform_obj.get("translation", [])
                                 if isinstance(translation, list):
                                     if len(translation) >= 4:
                                         # Future format: use 4th value as fiber depth
@@ -225,26 +210,17 @@ def get_procedures_data(subject_id: str) -> dict:
                                             break
 
                         # Get targeted structure
-                        primary_target = (
-                            device_config.get("primary_targeted_structure")
-                            or {}
-                        )
-                        target_name = primary_target.get(
-                            "name", "Not specified in surgical request form"
-                        )
+                        primary_target = device_config.get("primary_targeted_structure") or {}
+                        target_name = primary_target.get("name", "Not specified in surgical request form")
 
                         fiber_info = {
-                            "name": device_config.get(
-                                "device_name", "Unknown"
-                            ),
+                            "name": device_config.get("device_name", "Unknown"),
                             "ap": ap,
                             "ml": ml,
                             "dv": dv,
                             "angle": angle,
                             "unit": "millimeter",
-                            "reference": (
-                                device_config.get("coordinate_system") or {}
-                            ).get("origin", "Bregma"),
+                            "reference": (device_config.get("coordinate_system") or {}).get("origin", "Bregma"),
                             "targeted_structure": target_name,
                         }
                         fibers.append(fiber_info)
@@ -607,9 +583,7 @@ def build_panel_app():
     async def generate_callback(event):
         subject_id = text_input.value.strip()
         if not subject_id:
-            output_col[:] = [
-                pn.pane.Markdown("**Error:** Please enter a subject ID.")
-            ]
+            output_col[:] = [pn.pane.Markdown("**Error:** Please enter a subject ID.")]
             return
 
         # Immediately show loading state and clear previous content
@@ -653,9 +627,7 @@ def build_panel_app():
 
                 # Display matplotlib figure
                 output_col[:] = [
-                    pn.pane.Matplotlib(
-                        fig, tight=True, sizing_mode="stretch_width"
-                    ),
+                    pn.pane.Matplotlib(fig, tight=True, sizing_mode="stretch_width"),
                 ]
 
                 # Enable download and copy URL buttons
@@ -764,9 +736,7 @@ def build_panel_app():
                 current_fig_data["base64"] = save_fig_to_base64(fig)
                 current_fig_data["subject_id"] = subject_id
                 output_col[:] = [
-                    pn.pane.Matplotlib(
-                        fig, tight=True, sizing_mode="stretch_width"
-                    ),
+                    pn.pane.Matplotlib(fig, tight=True, sizing_mode="stretch_width"),
                 ]
                 download_button.disabled = False
                 copy_url_button.disabled = False
