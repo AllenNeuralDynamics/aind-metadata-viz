@@ -4,20 +4,17 @@ import asyncio
 import base64
 import io
 import json
+import math
 from pathlib import Path
 
-import matplotlib
-import matplotlib.patches as patches
-import matplotlib.pyplot as plt
+import altair as alt
+import pandas as pd
 import panel as pn
 import requests
-from matplotlib.patches import Circle
 
 from aind_metadata_viz.utils import AIND_COLORS
 
-matplotlib.use("Agg")
-
-pn.extension()
+pn.extension("vega")
 
 # Metadata service and cache configuration
 METADATA_SERVICE_URL = "http://aind-metadata-service"
@@ -52,25 +49,20 @@ LAMBDA_EDGE_COLOR = "#000000"
 LAMBDA_RADIUS = 0.25
 
 # Skull outline styling
-SKULL_FILL_COLOR = "#F5F5F5"
 SKULL_EDGE_COLOR = "#333333"
 SKULL_ALPHA = 0.3
 
 # Grid styling
 GRID_COLOR = "gray"
 GRID_ALPHA = 0.2
-GRID_LINESTYLE = ":"
 
-# Font sizes
-TITLE_FONTSIZE = 16.8
-LABEL_FONTSIZE = 14.4
-FIBER_LABEL_FONTSIZE = 12
-LEGEND_FONTSIZE = 10.8
-REFERENCE_FONTSIZE = 9.6
+# Font sizes (increased by 25% from original)
+TITLE_FONTSIZE = 21
+FIBER_LABEL_FONTSIZE = 15
+LEGEND_FONTSIZE = 13.5
+REFERENCE_FONTSIZE = 12
 
-# Figure dimensions and output quality
-FIGURE_WIDTH = 7.2
-FIGURE_HEIGHT = 9
+# Figure output quality
 DPI = 300
 
 # Apply white background
@@ -125,24 +117,37 @@ def get_procedures_data(subject_id: str) -> dict:
         from_cache = True
     else:
         # Query metadata service (same pattern as validation.py)
-        print(f"Retrieving procedures for {subject_id} from metadata service...")
+        print(
+            f"Retrieving procedures for {subject_id} from metadata service..."
+        )
         try:
-            response = requests.get(f"{METADATA_SERVICE_URL}/api/v2/procedures/{subject_id}")
+            response = requests.get(
+                f"{METADATA_SERVICE_URL}/api/v2/procedures/{subject_id}"
+            )
 
             if response.status_code == 404:
-                raise ValueError(f"No procedures found for subject ID: {subject_id}")
+                raise ValueError(
+                    f"No procedures found for subject ID: {subject_id}"
+                )
 
             # Try to parse JSON response (metadata service may return 400 with valid data)
             try:
                 procedures_data = response.json()
                 # Handle both direct response and wrapped in "data" key
-                if isinstance(procedures_data, dict) and "data" in procedures_data:
+                if (
+                    isinstance(procedures_data, dict)
+                    and "data" in procedures_data
+                ):
                     procedures_data = procedures_data["data"]
             except ValueError:
-                raise ValueError(f"Metadata service returned invalid JSON (status {response.status_code})")
+                raise ValueError(
+                    f"Metadata service returned invalid JSON (status {response.status_code})"
+                )
 
         except requests.RequestException as e:
-            raise ValueError(f"Failed to retrieve procedures metadata: {str(e)}")
+            raise ValueError(
+                f"Failed to retrieve procedures metadata: {str(e)}"
+            )
 
         # Save to cache
         save_to_cache(subject_id, procedures_data)
@@ -185,7 +190,9 @@ def get_procedures_data(subject_id: str) -> dict:
                             # - 4+ values: [AP, ML, burr_hole_depth, fiber_depth] (future complete format)
                             #   where burr_hole_depth is usually 0 and should be ignored
                             if obj_type == "Translation":
-                                translation = transform_obj.get("translation", [])
+                                translation = transform_obj.get(
+                                    "translation", []
+                                )
                                 if isinstance(translation, list):
                                     if len(translation) >= 4:
                                         # Future format: use 4th value as fiber depth
@@ -210,17 +217,26 @@ def get_procedures_data(subject_id: str) -> dict:
                                             break
 
                         # Get targeted structure
-                        primary_target = device_config.get("primary_targeted_structure") or {}
-                        target_name = primary_target.get("name", "Not specified in surgical request form")
+                        primary_target = (
+                            device_config.get("primary_targeted_structure")
+                            or {}
+                        )
+                        target_name = primary_target.get(
+                            "name", "Not specified in surgical request form"
+                        )
 
                         fiber_info = {
-                            "name": device_config.get("device_name", "Unknown"),
+                            "name": device_config.get(
+                                "device_name", "Unknown"
+                            ),
                             "ap": ap,
                             "ml": ml,
                             "dv": dv,
                             "angle": angle,
                             "unit": "millimeter",
-                            "reference": (device_config.get("coordinate_system") or {}).get("origin", "Bregma"),
+                            "reference": (
+                                device_config.get("coordinate_system") or {}
+                            ).get("origin", "Bregma"),
                             "targeted_structure": target_name,
                         }
                         fibers.append(fiber_info)
@@ -244,176 +260,24 @@ def safe_float(value, default=0.0):
         return default
 
 
-def create_skull_outline(ax):
-    """Draw a stylized mouse skull outline (top-down view)."""
-    skull = patches.Ellipse(
-        (0, 0),
-        width=SKULL_WIDTH_MM,
-        height=SKULL_LENGTH_MM,
-        facecolor=SKULL_FILL_COLOR,
-        edgecolor=SKULL_EDGE_COLOR,
-        linewidth=2,
-        alpha=SKULL_ALPHA,
-        zorder=1,
-    )
-    ax.add_patch(skull)
-
-    # Bregma marker (origin)
-    bregma = Circle(
-        (0, 0),
-        radius=BREGMA_RADIUS,
-        facecolor=BREGMA_COLOR,
-        edgecolor=BREGMA_EDGE_COLOR,
-        linewidth=1.5,
-        zorder=5,
-    )
-    ax.add_patch(bregma)
-    ax.text(
-        0,
-        -0.8,
-        "Bregma",
-        ha="center",
-        va="top",
-        fontsize=REFERENCE_FONTSIZE,
-        fontweight="bold",
-        color=BREGMA_EDGE_COLOR,
-    )
-
-    # Lambda marker (posterior reference point, typically ~4mm behind Bregma)
-    lambda_ap = -4.0
-    lambda_marker = Circle(
-        (0, lambda_ap),
-        radius=LAMBDA_RADIUS,
-        facecolor=LAMBDA_COLOR,
-        edgecolor=LAMBDA_EDGE_COLOR,
-        linewidth=1.5,
-        zorder=5,
-        alpha=0.7,
-    )
-    ax.add_patch(lambda_marker)
-    ax.text(
-        0,
-        lambda_ap - 0.6,
-        "Lambda",
-        ha="center",
-        va="top",
-        fontsize=REFERENCE_FONTSIZE,
-        color=LAMBDA_EDGE_COLOR,
-        alpha=0.7,
-    )
-
-    # Add coordinate grid
-    add_coordinate_grid(ax)
-
-
-def add_coordinate_grid(ax):
-    """Add a subtle coordinate grid for reference."""
-    # Vertical gridlines (ML axis)
-    for ml in range(-6, 7, 2):
-        ax.axvline(
-            ml,
-            color=GRID_COLOR,
-            linestyle=GRID_LINESTYLE,
-            linewidth=0.5,
-            alpha=GRID_ALPHA,
-        )
-
-    # Horizontal gridlines (AP axis)
-    for ap in range(-10, 11, 2):
-        ax.axhline(
-            ap,
-            color=GRID_COLOR,
-            linestyle=GRID_LINESTYLE,
-            linewidth=0.5,
-            alpha=GRID_ALPHA,
-        )
-
-
-def draw_fiber(ax, fiber, fiber_index):
-    """Draw a single fiber implant on the schematic."""
-    ml = safe_float(fiber.get("ml", 0))
-    ap = safe_float(fiber.get("ap", 0))
-    name = fiber.get("name", "Unknown")
-
-    # Choose color
-    color = FIBER_COLORS[fiber_index % len(FIBER_COLORS)]
-
-    # Draw fiber insertion point
-    fiber_point = Circle(
-        (ml, ap),
-        radius=FIBER_MARKER_RADIUS,
-        facecolor=color,
-        edgecolor="black",
-        linewidth=2,
-        zorder=10,
-    )
-    ax.add_patch(fiber_point)
-
-    # Label the fiber - position based on left/right side to avoid overlap
-    label_offset_y = 0.9
-    if ml < 0:  # Left side - align to right corner
-        ha = "right"
-    else:  # Right side - align to left corner
-        ha = "left"
-
-    ax.text(
-        ml,
-        ap + label_offset_y,
-        name,
-        ha=ha,
-        va="bottom",
-        fontsize=FIBER_LABEL_FONTSIZE,
-        fontweight="bold",
-        color="black",
-        bbox=dict(
-            boxstyle="round,pad=0.3",
-            facecolor=color,
-            alpha=0.7,
-            edgecolor="black",
-        ),
-    )
-
-
-def create_legend_text(fibers):
-    """
-    Create legend data with fiber details and colors.
-    Returns list of (text, color) tuples.
-    """
-    legend_items = [("Fiber Details:", "black")]
-    for idx, fiber in enumerate(fibers):
-        color = FIBER_COLORS[idx % len(FIBER_COLORS)]
-
-        ap = safe_float(fiber.get("ap", 0))
-        ml = safe_float(fiber.get("ml", 0))
-        dv = fiber.get("dv")  # Could be None if no depth available
-        angle = safe_float(fiber.get("angle", 0))
-        name = fiber.get("name", "Unknown")
-
-        # Only include DV if it's available (not None)
-        if dv is not None:
-            text = f"{name}: AP={ap:.2f}, ML={ml:.2f}, DV={dv:.2f} mm"
-        else:
-            text = f"{name}: AP={ap:.2f}, ML={ml:.2f} mm"
-
-        if abs(angle) > 1:
-            text += f" ∠{angle}°"
-
-        target = fiber.get("targeted_structure", "Unknown")
-        if not target or target == "" or target.lower() == "root":
-            target = "Not specified in surgical request form"
-        text += f"\nTarget: {target}"
-
-        legend_items.append((text, color))
-    return legend_items
+def create_ellipse_points(center_x, center_y, width, height, num_points=100):
+    """Generate points for an ellipse outline."""
+    points = []
+    for i in range(num_points + 1):
+        angle = 2 * math.pi * i / num_points
+        x = center_x + (width / 2) * math.cos(angle)
+        y = center_y + (height / 2) * math.sin(angle)
+        points.append({"x": x, "y": y, "order": i})
+    return points
 
 
 def create_schematic(fibers, subject_id):
     """
-    Create the complete fiber implant schematic.
-    Returns matplotlib figure.
+    Create the complete fiber implant schematic using Altair.
+    Returns Altair chart.
     """
 
-    # Sort fibers by name (Fiber_0, Fiber_1, Fiber_2...) to ensure consistent order
+    # Sort fibers by name
     def get_fiber_index(fiber):
         name = fiber.get("name", "Unknown")
         try:
@@ -425,124 +289,398 @@ def create_schematic(fibers, subject_id):
 
     sorted_fibers = sorted(fibers, key=get_fiber_index)
 
-    # Create figure
-    fig, ax = plt.subplots(figsize=(FIGURE_WIDTH, FIGURE_HEIGHT))
+    # Create skull outline points
+    skull_points = create_ellipse_points(0, 0, SKULL_WIDTH_MM, SKULL_LENGTH_MM)
+    skull_df = pd.DataFrame(skull_points)
 
-    # Draw skull outline
-    create_skull_outline(ax)
+    # Define consistent scale domains for all layers
+    # 2:1 width:height ratio - x domain should be 2x the y domain
+    x_scale = alt.Scale(domain=[-8, 48])  # 56 units
+    y_scale = alt.Scale(domain=[-14, 14])  # 28 units
 
-    # Draw each fiber
+    # Create skull outline layer
+    skull_layer = (
+        alt.Chart(skull_df)
+        .mark_line(color=SKULL_EDGE_COLOR, strokeWidth=2, opacity=0.5)
+        .encode(
+            x=alt.X("x:Q", scale=x_scale),
+            y=alt.Y("y:Q", scale=y_scale),
+            order="order:Q",
+        )
+    )
+
+    # Grid lines data
+    grid_data = []
+    for ml in range(-6, 7, 2):
+        grid_data.append(
+            {"x": ml, "y": -13, "x2": ml, "y2": 13, "type": "vertical"}
+        )
+    for ap in range(-10, 11, 2):
+        grid_data.append(
+            {"x": -9, "y": ap, "x2": 9, "y2": ap, "type": "horizontal"}
+        )
+    grid_df = pd.DataFrame(grid_data)
+
+    # Grid layer
+    grid_layer = (
+        alt.Chart(grid_df)
+        .mark_rule(
+            strokeDash=[3, 3],
+            color=GRID_COLOR,
+            opacity=GRID_ALPHA,
+            strokeWidth=0.5,
+        )
+        .encode(
+            x=alt.X("x:Q", scale=x_scale),
+            y=alt.Y("y:Q", scale=y_scale),
+            x2="x2:Q",
+            y2="y2:Q",
+        )
+    )
+
+    # Reference points (Bregma and Lambda)
+    ref_points_df = pd.DataFrame(
+        [
+            {"x": 0, "y": 0, "label": "Bregma", "size": BREGMA_RADIUS * 200},
+            {
+                "x": 0,
+                "y": -4.0,
+                "label": "Lambda",
+                "size": LAMBDA_RADIUS * 200,
+            },
+        ]
+    )
+
+    ref_layer = (
+        alt.Chart(ref_points_df)
+        .mark_circle(color=BREGMA_COLOR, stroke="black", strokeWidth=1.5)
+        .encode(
+            x=alt.X("x:Q", scale=x_scale),
+            y=alt.Y("y:Q", scale=y_scale),
+            size=alt.Size("size:Q", legend=None),
+        )
+    )
+
+    ref_labels_df = pd.DataFrame(
+        [
+            {"x": 0, "y": -0.8, "label": "Bregma"},
+            {"x": 0, "y": -4.6, "label": "Lambda"},
+        ]
+    )
+
+    ref_text_layer = (
+        alt.Chart(ref_labels_df)
+        .mark_text(fontSize=REFERENCE_FONTSIZE, fontWeight="bold", dy=5)
+        .encode(
+            x=alt.X("x:Q", scale=x_scale),
+            y=alt.Y("y:Q", scale=y_scale),
+            text="label:N",
+        )
+    )
+
+    # Fiber points
+    fiber_data = []
+    fiber_label_data = []
     for idx, fiber in enumerate(sorted_fibers):
-        draw_fiber(ax, fiber, idx)
+        ml = safe_float(fiber.get("ml", 0))
+        ap = safe_float(fiber.get("ap", 0))
+        name = fiber.get("name", "Unknown")
+        color = FIBER_COLORS[idx % len(FIBER_COLORS)]
 
-    # Set up axes limits and aspect
-    ax.set_xlim(-SKULL_WIDTH_MM / 2 - 2, SKULL_WIDTH_MM / 2 + 2)
-    ax.set_ylim(-SKULL_LENGTH_MM / 2 - 2, SKULL_LENGTH_MM / 2 + 2)
-    ax.set_aspect("equal")
+        fiber_data.append(
+            {
+                "ml": ml,
+                "ap": ap,
+                "name": name,
+                "color": color,
+                "size": FIBER_MARKER_RADIUS * 400,
+            }
+        )
 
-    # Turn off axes and grid
-    ax.axis("off")
+        # Smart label positioning: left side fibers get right-aligned labels,
+        # right side fibers get left-aligned labels
+        label_offset = 0.9
+        if ml < 0:  # Left side - align right
+            align = "right"
+        else:  # Right side - align left
+            align = "left"
 
-    # Title
-    title = f"Fiber Implant Locations - Top View\nSubject: {subject_id}"
-    ax.set_title(title, fontsize=TITLE_FONTSIZE, fontweight="bold", pad=20)
+        fiber_label_data.append(
+            {
+                "ml": ml,
+                "ap": ap + label_offset,
+                "name": name,
+                "color": color,
+                "align": align,
+            }
+        )
 
-    # Add orientation arrow on left side (vertical double-headed arrow)
-    arrow_x = -SKULL_WIDTH_MM / 2 - 1.5  # Position on left side
-    arrow_bottom = -4  # Bottom of arrow
-    arrow_top = 4  # Top of arrow
+    fiber_df = pd.DataFrame(fiber_data)
+    fiber_labels_df = pd.DataFrame(fiber_label_data)
 
-    # Draw double-headed arrow
-    ax.annotate(
-        "",
-        xy=(arrow_x, arrow_top),
-        xytext=(arrow_x, arrow_bottom),
-        arrowprops=dict(arrowstyle="<->", color="black", lw=2),
+    # Fiber points layer
+    fiber_layer = (
+        alt.Chart(fiber_df)
+        .mark_circle(stroke="black", strokeWidth=2)
+        .encode(
+            x=alt.X("ml:Q", scale=x_scale),
+            y=alt.Y("ap:Q", scale=y_scale),
+            color=alt.Color("color:N", scale=None),
+            size=alt.Size("size:Q", legend=None),
+        )
     )
 
-    # Add "anterior" label above top arrowhead
-    ax.text(
-        arrow_x,
-        arrow_top + 0.8,
-        "anterior",
-        ha="center",
-        va="bottom",
-        fontsize=REFERENCE_FONTSIZE,
-        fontweight="bold",
+    # Split labels into left and right for different alignments
+    left_labels_df = fiber_labels_df[fiber_labels_df["align"] == "right"]
+    right_labels_df = fiber_labels_df[fiber_labels_df["align"] == "left"]
+
+    # Left-side fiber labels (right-aligned)
+    left_text_layer = (
+        alt.Chart(left_labels_df)
+        .mark_text(
+            fontSize=FIBER_LABEL_FONTSIZE,
+            fontWeight="bold",
+            dy=-8,
+            align="right",
+        )
+        .encode(
+            x=alt.X("ml:Q", scale=x_scale),
+            y=alt.Y("ap:Q", scale=y_scale),
+            text="name:N",
+            color=alt.Color("color:N", scale=None),
+        )
     )
 
-    # Add "posterior" label below bottom arrowhead
-    ax.text(
-        arrow_x,
-        arrow_bottom - 0.8,
-        "posterior",
-        ha="center",
-        va="top",
-        fontsize=REFERENCE_FONTSIZE,
-        fontweight="bold",
+    # Right-side fiber labels (left-aligned)
+    right_text_layer = (
+        alt.Chart(right_labels_df)
+        .mark_text(
+            fontSize=FIBER_LABEL_FONTSIZE,
+            fontWeight="bold",
+            dy=-8,
+            align="left",
+        )
+        .encode(
+            x=alt.X("ml:Q", scale=x_scale),
+            y=alt.Y("ap:Q", scale=y_scale),
+            text="name:N",
+            color=alt.Color("color:N", scale=None),
+        )
     )
 
-    # Add scale bar in bottom left
-    scale_bar_length = 5  # 5 mm
+    # Orientation arrow (simplified - just text labels)
+    arrow_x = -SKULL_WIDTH_MM / 2 - 1.5
+    orientation_df = pd.DataFrame(
+        [
+            {
+                "x": arrow_x,
+                "y": 10,
+                "label": "anterior",
+                "size": REFERENCE_FONTSIZE,
+            },
+            {
+                "x": arrow_x,
+                "y": -10,
+                "label": "posterior",
+                "size": REFERENCE_FONTSIZE,
+            },
+            {
+                "x": arrow_x,
+                "y": 7,
+                "label": "↑",
+                "size": REFERENCE_FONTSIZE * 2,
+            },
+            {
+                "x": arrow_x,
+                "y": -7,
+                "label": "↓",
+                "size": REFERENCE_FONTSIZE * 2,
+            },
+        ]
+    )
+
+    orientation_layer = (
+        alt.Chart(orientation_df)
+        .mark_text(fontWeight="bold")
+        .encode(
+            x=alt.X("x:Q", scale=x_scale),
+            y=alt.Y("y:Q", scale=y_scale),
+            text="label:N",
+            size=alt.Size("size:Q", legend=None),
+        )
+    )
+
+    # Scale bar
     scale_bar_x = -SKULL_WIDTH_MM / 2 - 1.5
     scale_bar_y = -SKULL_LENGTH_MM / 2 - 1
-
-    # Draw scale bar (horizontal line)
-    ax.plot(
-        [scale_bar_x, scale_bar_x + scale_bar_length],
-        [scale_bar_y, scale_bar_y],
-        "k-",
-        lw=3,
+    scale_bar_df = pd.DataFrame(
+        [
+            {
+                "x": scale_bar_x,
+                "y": scale_bar_y,
+                "x2": scale_bar_x + 5,
+                "y2": scale_bar_y,
+            }
+        ]
     )
 
-    # Add "5 mm" label above scale bar
-    ax.text(
-        scale_bar_x + scale_bar_length / 2,
-        scale_bar_y + 0.5,
-        "5 mm",
-        ha="center",
-        va="bottom",
-        fontsize=REFERENCE_FONTSIZE,
-        fontweight="bold",
-    )
-
-    # Add legend with fiber details (color-coded text, no box)
-    legend_items = create_legend_text(sorted_fibers)
-
-    # Add colored text lines
-    legend_y = 0.98
-    line_spacing = 0.035
-
-    for text, color in legend_items:
-        ax.text(
-            0.02,
-            legend_y,
-            text,
-            transform=ax.transAxes,
-            fontsize=LEGEND_FONTSIZE,
-            verticalalignment="top",
-            color=color,
-            fontweight="bold" if color != "black" else "normal",
-            family="monospace",
+    scale_bar_layer = (
+        alt.Chart(scale_bar_df)
+        .mark_rule(color="black", strokeWidth=3)
+        .encode(
+            x=alt.X("x:Q", scale=x_scale),
+            y=alt.Y("y:Q", scale=y_scale),
+            x2="x2:Q",
+            y2="y2:Q",
         )
-        # Count newlines for proper spacing
-        num_lines = text.count("\n") + 1
-        legend_y -= line_spacing * num_lines
+    )
 
-    # Tight layout
-    plt.tight_layout()
+    scale_text_df = pd.DataFrame(
+        [{"x": scale_bar_x + 2.5, "y": scale_bar_y + 0.5, "label": "5 mm"}]
+    )
 
-    return fig
+    scale_text_layer = (
+        alt.Chart(scale_text_df)
+        .mark_text(fontSize=REFERENCE_FONTSIZE, fontWeight="bold")
+        .encode(
+            x=alt.X("x:Q", scale=x_scale),
+            y=alt.Y("y:Q", scale=y_scale),
+            text="label:N",
+        )
+    )
+
+    # Legend text (positioned on right side)
+    legend_data = []
+    legend_x = 9.5  # Position on right side
+    legend_y_start = 11
+    within_fiber_spacing = 0.6  # Small spacing between coord and target lines
+    between_fiber_spacing = 1.5  # Larger spacing between different fibers
+
+    legend_data.append(
+        {
+            "x": legend_x,
+            "y": legend_y_start,
+            "text": "Fiber Details:",
+            "color": "black",
+        }
+    )
+
+    current_y = legend_y_start - 1.2
+    for idx, fiber in enumerate(sorted_fibers):
+        color = FIBER_COLORS[idx % len(FIBER_COLORS)]
+        ap = safe_float(fiber.get("ap", 0))
+        ml = safe_float(fiber.get("ml", 0))
+        dv = fiber.get("dv")
+        name = fiber.get("name", "Unknown")
+
+        if dv is not None:
+            text = f"{name}: AP={ap:.2f}, ML={ml:.2f}, DV={dv:.2f} mm"
+        else:
+            text = f"{name}: AP={ap:.2f}, ML={ml:.2f} mm"
+
+        angle = safe_float(fiber.get("angle", 0))
+        if abs(angle) > 1:
+            text += f" ∠{angle}°"
+
+        # Add coordinate line
+        legend_data.append(
+            {"x": legend_x, "y": current_y, "text": text, "color": color}
+        )
+        current_y -= within_fiber_spacing  # Small spacing to target line
+
+        # Add target line
+        target = fiber.get("targeted_structure", "Unknown")
+        if not target or target == "" or target.lower() == "root":
+            target = "Not specified in surgical request form"
+        legend_data.append(
+            {
+                "x": legend_x,
+                "y": current_y,
+                "text": f"Target: {target}",
+                "color": color,
+            }
+        )
+        current_y -= between_fiber_spacing  # Larger spacing to next fiber
+
+    legend_df = pd.DataFrame(legend_data)
+
+    legend_layer = (
+        alt.Chart(legend_df)
+        .mark_text(fontSize=LEGEND_FONTSIZE, align="left", fontWeight="normal")
+        .encode(
+            x=alt.X("x:Q", scale=x_scale),
+            y=alt.Y("y:Q", scale=y_scale),
+            text="text:N",
+            color=alt.Color("color:N", scale=None),
+        )
+    )
+
+    # Title positioned at skull's left edge
+    title_df = pd.DataFrame(
+        [
+            {
+                "x": -SKULL_WIDTH_MM / 2,
+                "y": 15,
+                "text": f"Fiber Implant Locations - Top View | Subject: {subject_id}",
+            }
+        ]
+    )
+
+    title_layer = (
+        alt.Chart(title_df)
+        .mark_text(fontSize=TITLE_FONTSIZE, align="left", fontWeight="bold")
+        .encode(
+            x=alt.X("x:Q", scale=x_scale),
+            y=alt.Y("y:Q", scale=y_scale),
+            text="text:N",
+        )
+    )
+
+    # Combine all layers
+    chart = (
+        alt.layer(
+            grid_layer,
+            skull_layer,
+            ref_layer,
+            ref_text_layer,
+            fiber_layer,
+            left_text_layer,
+            right_text_layer,
+            orientation_layer,
+            scale_bar_layer,
+            scale_text_layer,
+            legend_layer,
+            title_layer,
+        )
+        .properties(
+            width=1400,
+            height=700,
+        )
+        .configure_view(strokeWidth=0)
+        .configure_axis(
+            grid=False,
+            domain=False,
+            labels=False,
+            ticks=False,
+            title=None,
+        )
+        .resolve_scale(x="shared", y="shared")
+    )
+
+    return chart
 
 
-def save_fig_to_base64(fig):
-    """Save matplotlib figure to base64-encoded PNG string."""
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=DPI, bbox_inches="tight")
-    buf.seek(0)
-    img_base64 = base64.b64encode(buf.read()).decode("utf-8")
-    buf.close()
-    return img_base64
+def save_chart_to_base64(chart):
+    """Save Altair chart to base64-encoded PNG string."""
+    try:
+        # Try to save as PNG using vl-convert or altair_saver
+        png_data = chart.to_image(format="png")
+        img_base64 = base64.b64encode(png_data).decode("utf-8")
+        return img_base64
+    except Exception as e:
+        print(f"Error saving chart to PNG: {e}")
+        # Fallback: return None if PNG conversion fails
+        return None
 
 
 def build_panel_app():
@@ -576,14 +714,16 @@ def build_panel_app():
     output_col = pn.Column(sizing_mode="stretch_width")
     js_pane = pn.pane.HTML("", height=0, width=0)
 
-    # Store current figure data for download
-    current_fig_data = {"base64": None, "subject_id": None}
+    # Store current chart data for download
+    current_chart_data = {"chart": None, "base64": None, "subject_id": None}
 
     # Button callback
     async def generate_callback(event):
         subject_id = text_input.value.strip()
         if not subject_id:
-            output_col[:] = [pn.pane.Markdown("**Error:** Please enter a subject ID.")]
+            output_col[:] = [
+                pn.pane.Markdown("**Error:** Please enter a subject ID.")
+            ]
             return
 
         # Immediately show loading state and clear previous content
@@ -619,23 +759,21 @@ def build_panel_app():
                 ]
             else:
                 # Generate schematic
-                fig = create_schematic(fibers, subject_id)
+                chart = create_schematic(fibers, subject_id)
 
-                # Save figure data for download
-                current_fig_data["base64"] = save_fig_to_base64(fig)
-                current_fig_data["subject_id"] = subject_id
+                # Save chart data for download
+                current_chart_data["chart"] = chart
+                current_chart_data["base64"] = save_chart_to_base64(chart)
+                current_chart_data["subject_id"] = subject_id
 
-                # Display matplotlib figure
+                # Display Altair chart (no sizing_mode to preserve aspect ratio)
                 output_col[:] = [
-                    pn.pane.Matplotlib(fig, tight=True, sizing_mode="stretch_width"),
+                    pn.pane.Vega(chart),
                 ]
 
                 # Enable download and copy URL buttons
                 download_button.disabled = False
                 copy_url_button.disabled = False
-
-                # Close figure to free memory
-                plt.close(fig)
         except Exception as e:
             output_col[:] = [
                 pn.pane.Markdown(
@@ -653,11 +791,11 @@ def build_panel_app():
 
     def download_callback(event):
         """Download the current schematic as PNG."""
-        if current_fig_data["base64"] is None:
+        if current_chart_data["base64"] is None:
             return
 
-        subject_id = current_fig_data["subject_id"]
-        img_base64 = current_fig_data["base64"]
+        subject_id = current_chart_data["subject_id"]
+        img_base64 = current_chart_data["base64"]
         filename = f"fiber_schematic_{subject_id}.png"
 
         js_code = f"""
@@ -732,15 +870,15 @@ def build_panel_app():
                     )
                 ]
             else:
-                fig = create_schematic(fibers, subject_id)
-                current_fig_data["base64"] = save_fig_to_base64(fig)
-                current_fig_data["subject_id"] = subject_id
+                chart = create_schematic(fibers, subject_id)
+                current_chart_data["chart"] = chart
+                current_chart_data["base64"] = save_chart_to_base64(chart)
+                current_chart_data["subject_id"] = subject_id
                 output_col[:] = [
-                    pn.pane.Matplotlib(fig, tight=True, sizing_mode="stretch_width"),
+                    pn.pane.Vega(chart),
                 ]
                 download_button.disabled = False
                 copy_url_button.disabled = False
-                plt.close(fig)
         except Exception as e:
             output_col[:] = [
                 pn.pane.Markdown(
