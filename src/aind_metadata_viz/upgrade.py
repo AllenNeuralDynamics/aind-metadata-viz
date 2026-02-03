@@ -13,7 +13,7 @@ import traceback
 REDSHIFT_SECRETS = "/aind/prod/redshift/credentials/readonly"
 RDS_TABLE_NAME = "metadata_upgrade_status_prod"
 
-pn.extension('tabulator')
+pn.extension("tabulator")
 
 
 extra_columns = {
@@ -134,24 +134,24 @@ def upgrade_asset_detailed(record_id_or_name: str):
         )
     if not record:
         return {
-            'error': f"Record with _id or name '{record_id_or_name}' not found.",
-            'overall_success': False,
+            "error": f"Record with _id or name '{record_id_or_name}' not found.",
+            "overall_success": False,
         }
 
     record = record[0]
-    asset_name = record.get('name', record.get('_id', 'Unknown'))
+    asset_name = record.get("name", record.get("_id", "Unknown"))
 
     # Deep copy original record for comparison
     original_record = copy.deepcopy(record)
 
     # Initialize results structure
     results = {
-        'overall_success': False,
-        'overall_error': None,
-        'overall_traceback': None,
-        'asset_name': asset_name,
-        'asset_id': record.get('_id'),
-        'files_tested': {},
+        "overall_success": False,
+        "overall_error": None,
+        "overall_traceback": None,
+        "asset_name": asset_name,
+        "asset_id": record.get("_id"),
+        "files_tested": {},
     }
 
     # STEP 1: Try full asset upgrade
@@ -160,7 +160,7 @@ def upgrade_asset_detailed(record_id_or_name: str):
         upgraded_metadata = upgrader.metadata.model_dump()
 
         # Success! Extract per-field data
-        results['overall_success'] = True
+        results["overall_success"] = True
 
         for core_file in CORE_FILES:
             if core_file in original_record and original_record[core_file]:
@@ -168,20 +168,20 @@ def upgrade_asset_detailed(record_id_or_name: str):
                 converted_to = FIELD_CONVERSION_MAP.get(core_file)
                 target_field = converted_to if converted_to else core_file
 
-                results['files_tested'][core_file] = {
-                    'success': True,
-                    'error': None,
-                    'v1_data': original_record[core_file],
-                    'v2_data': upgraded_metadata.get(target_field),
-                    'converted_to': converted_to,
+                results["files_tested"][core_file] = {
+                    "success": True,
+                    "error": None,
+                    "v1_data": original_record[core_file],
+                    "v2_data": upgraded_metadata.get(target_field),
+                    "converted_to": converted_to,
                 }
 
         return results
 
     except Exception as e:
         # Full upgrade failed, capture error
-        results['overall_error'] = str(e)
-        results['overall_traceback'] = traceback.format_exc()
+        results["overall_error"] = str(e)
+        results["overall_traceback"] = traceback.format_exc()
 
     # STEP 2: Field-by-field testing with skip_metadata_validation=True
     for core_file in CORE_FILES:
@@ -196,13 +196,13 @@ def upgrade_asset_detailed(record_id_or_name: str):
         }
 
         # Add subject as companion data if testing other files
-        if core_file != 'subject' and 'subject' in original_record:
-            test_dict['subject'] = copy.deepcopy(original_record['subject'])
+        if core_file != "subject" and "subject" in original_record:
+            test_dict["subject"] = copy.deepcopy(original_record["subject"])
 
         # Add required metadata fields
-        test_dict['_id'] = record.get('_id', 'test')
-        test_dict['name'] = record.get('name', 'test')
-        test_dict['location'] = record.get('location', '')
+        test_dict["_id"] = record.get("_id", "test")
+        test_dict["name"] = record.get("name", "test")
+        test_dict["location"] = record.get("location", "")
 
         try:
             field_upgrader = Upgrade(test_dict, skip_metadata_validation=True)
@@ -210,29 +210,29 @@ def upgrade_asset_detailed(record_id_or_name: str):
 
             target_field = converted_to if converted_to else core_file
 
-            results['files_tested'][core_file] = {
-                'success': True,
-                'error': None,
-                'v1_data': original_record[core_file],
-                'v2_data': field_upgraded.get(target_field),
-                'converted_to': converted_to,
+            results["files_tested"][core_file] = {
+                "success": True,
+                "error": None,
+                "v1_data": original_record[core_file],
+                "v2_data": field_upgraded.get(target_field),
+                "converted_to": converted_to,
             }
 
         except Exception as e:
-            results['files_tested'][core_file] = {
-                'success': False,
-                'error': str(e),
-                'traceback': traceback.format_exc(),
-                'v1_data': original_record[core_file],
-                'v2_data': None,
-                'converted_to': converted_to,
+            results["files_tested"][core_file] = {
+                "success": False,
+                "error": str(e),
+                "traceback": traceback.format_exc(),
+                "v1_data": original_record[core_file],
+                "v2_data": None,
+                "converted_to": converted_to,
             }
 
     # Determine if any fields succeeded
     successful_fields = [
-        f for f, r in results['files_tested'].items() if r['success']
+        f for f, r in results["files_tested"].items() if r["success"]
     ]
-    results['partial_success'] = len(successful_fields) > 0
+    results["partial_success"] = len(successful_fields) > 0
 
     return results
 
@@ -242,10 +242,10 @@ def display_upgrade_results(results):
     Build Panel UI components to display upgrade results with collapsible
     side-by-side JSON comparisons.
     """
-    if 'error' in results and not results.get('overall_success'):
+    if "error" in results and not results.get("overall_success"):
         return pn.pane.Markdown(
             f"**Error:** {results['error']}",
-            styles={'color': AIND_COLORS['red']}
+            styles={"color": AIND_COLORS["red"]},
         )
 
     # Light style for JSON boxes (matching Flask original)
@@ -260,49 +260,55 @@ def display_upgrade_results(results):
     main_col = pn.Column(sizing_mode="stretch_width")
 
     # Overall status header
-    asset_name = results.get('asset_name', 'Unknown')
-    if results['overall_success']:
-        status_color = AIND_COLORS['green']
+    asset_name = results.get("asset_name", "Unknown")
+    if results["overall_success"]:
+        status_color = AIND_COLORS["green"]
         status_text = "SUCCESS: Full upgrade successful"
-    elif results.get('partial_success'):
-        status_color = AIND_COLORS['yellow']
+    elif results.get("partial_success"):
+        status_color = AIND_COLORS["yellow"]
         status_text = "PARTIAL: Some fields failed"
     else:
-        status_color = AIND_COLORS['red']
+        status_color = AIND_COLORS["red"]
         status_text = "FAILED: Upgrade failed"
 
     header_md = f"## Upgrade Results for: {asset_name}\n\n"
     header_md += f"<span style='color:{status_color}; font-weight:bold;'>{status_text}</span>\n"
-    header_md += f"Schema upgrade: <code>v1.x</code> -> <code>v{schema_version}</code>"
+    header_md += (
+        f"Schema upgrade: <code>v1.x</code> -> <code>v{schema_version}</code>"
+    )
     main_col.append(pn.pane.Markdown(header_md))
 
     # Summary statistics panel
-    files_tested = results.get('files_tested', {})
+    files_tested = results.get("files_tested", {})
     total_files = len(files_tested)
-    successful_files = sum(1 for f in files_tested.values() if f.get('success', False))
+    successful_files = sum(
+        1 for f in files_tested.values() if f.get("success", False)
+    )
     failed_files = total_files - successful_files
 
     if total_files > 0:
         summary_md = f"""
-<div style='background-color: #f8f9fa; border: 1px solid #dee2e6; border-radius: 5px; padding: 15px; margin: 15px 0;'>
-    <strong>Summary:</strong> {total_files} files tested
-    <br/>
-    <span style='color:{AIND_COLORS['green']}'>{successful_files} successful</span> |
-    <span style='color:{AIND_COLORS['red']}'>{failed_files} failed</span>
-</div>
-"""
+            <div style='background-color: #f8f9fa; border: 1px solid #dee2e6; border-radius: 5px; padding: 15px; margin: 15px 0;'>
+                <strong>Summary:</strong> {total_files} files tested
+                <br/>
+                <span style='color:{AIND_COLORS['green']}'>{successful_files} successful</span> |
+                <span style='color:{AIND_COLORS['red']}'>{failed_files} failed</span>
+            </div>
+        """
         main_col.append(pn.pane.Markdown(summary_md))
 
     # Overall error message if present
-    if results.get('overall_error'):
+    if results.get("overall_error"):
         error_md = f"\n\n**Overall Error:** {results['overall_error']}"
-        main_col.append(pn.pane.Markdown(error_md, styles={'color': AIND_COLORS['red']}))
+        main_col.append(
+            pn.pane.Markdown(error_md, styles={"color": AIND_COLORS["red"]})
+        )
 
     # Process each file
-    files_tested = results.get('files_tested', {})
+    files_tested = results.get("files_tested", {})
     for file_name, file_result in files_tested.items():
-        success = file_result.get('success', False)
-        converted_to = file_result.get('converted_to')
+        success = file_result.get("success", False)
+        converted_to = file_result.get("converted_to")
 
         # Create display name
         display_name = f"{file_name}"
@@ -322,17 +328,17 @@ def display_upgrade_results(results):
         # Add conversion notice if applicable
         if converted_to:
             notice_md = f"""
-<div style='background-color: {AIND_COLORS['light_blue']}20; border-left: 4px solid {AIND_COLORS['light_blue']}; padding: 10px; margin: 10px 0;'>
-    <strong>Field Conversion:</strong> <code>{file_name}</code> -> <code>{converted_to}</code>
-    <br/><small>This field was renamed in schema v{schema_version}</small>
-</div>
-"""
+                <div style='background-color: {AIND_COLORS['light_blue']}20; border-left: 4px solid {AIND_COLORS['light_blue']}; padding: 10px; margin: 10px 0;'>
+                    <strong>Field Conversion:</strong> <code>{file_name}</code> -> <code>{converted_to}</code>
+                    <br/><small>This field was renamed in schema v{schema_version}</small>
+                </div>
+            """
             content_col.append(pn.pane.Markdown(notice_md))
 
         if success:
             # Side-by-side comparison
-            v1_data = file_result.get('v1_data', {})
-            v2_data = file_result.get('v2_data', {})
+            v1_data = file_result.get("v1_data", {})
+            v2_data = file_result.get("v2_data", {})
 
             # Ensure data is JSON serializable
             v1_json = json.loads(json.dumps(v1_data, default=str))
@@ -340,21 +346,31 @@ def display_upgrade_results(results):
 
             # CSS for JSON pane to handle long URLs
             json_pane_styles = {
-                'overflow': 'auto',
-                'word-wrap': 'break-word',
-                'white-space': 'pre-wrap',
+                "overflow": "auto",
+                "word-wrap": "break-word",
+                "white-space": "pre-wrap",
             }
 
             comparison_row = pn.Row(
                 pn.Column(
                     pn.pane.Markdown("### Original (v1)"),
-                    pn.pane.JSON(v1_json, depth=2, styles=json_pane_styles, sizing_mode="stretch_width"),
+                    pn.pane.JSON(
+                        v1_json,
+                        depth=2,
+                        styles=json_pane_styles,
+                        sizing_mode="stretch_width",
+                    ),
                     styles=json_box_style,
                     sizing_mode="stretch_width",
                 ),
                 pn.Column(
                     pn.pane.Markdown("### Upgraded (v2)"),
-                    pn.pane.JSON(v2_json, depth=2, styles=json_pane_styles, sizing_mode="stretch_width"),
+                    pn.pane.JSON(
+                        v2_json,
+                        depth=2,
+                        styles=json_pane_styles,
+                        sizing_mode="stretch_width",
+                    ),
                     styles=json_box_style,
                     sizing_mode="stretch_width",
                 ),
@@ -363,17 +379,17 @@ def display_upgrade_results(results):
             content_col.append(comparison_row)
         else:
             # Show error
-            error_text = file_result.get('error', 'Unknown error')
+            error_text = file_result.get("error", "Unknown error")
             error_md = f"""
-<div style='background-color: {AIND_COLORS['red']}20; border-left: 4px solid {AIND_COLORS['red']}; padding: 10px; margin: 10px 0;'>
-    <strong>Upgrade Failed</strong><br/>
-    {error_text}
-</div>
-"""
+                <div style='background-color: {AIND_COLORS['red']}20; border-left: 4px solid {AIND_COLORS['red']}; padding: 10px; margin: 10px 0;'>
+                    <strong>Upgrade Failed</strong><br/>
+                    {error_text}
+                </div>
+            """
             content_col.append(pn.pane.Markdown(error_md))
 
             # Add collapsible traceback if available
-            traceback_text = file_result.get('traceback')
+            traceback_text = file_result.get("traceback")
             if traceback_text:
                 traceback_button = pn.widgets.Button(
                     name="Show Error Details",
@@ -383,7 +399,7 @@ def display_upgrade_results(results):
                 traceback_col = pn.Column(
                     pn.pane.Markdown(
                         f"```\n{traceback_text}\n```",
-                        styles={'background': '#f5f5f5', 'padding': '10px'}
+                        styles={"background": "#f5f5f5", "padding": "10px"},
                     ),
                     visible=False,
                     sizing_mode="stretch_width",
@@ -392,27 +408,39 @@ def display_upgrade_results(results):
                 def make_traceback_toggle(tb_col, tb_btn):
                     def toggle(event):
                         tb_col.visible = not tb_col.visible
-                        tb_btn.name = "Hide Error Details" if tb_col.visible else "Show Error Details"
+                        tb_btn.name = (
+                            "Hide Error Details"
+                            if tb_col.visible
+                            else "Show Error Details"
+                        )
+
                     return toggle
 
-                traceback_button.on_click(make_traceback_toggle(traceback_col, traceback_button))
+                traceback_button.on_click(
+                    make_traceback_toggle(traceback_col, traceback_button)
+                )
                 content_col.append(traceback_button)
                 content_col.append(traceback_col)
 
             # Show original data
-            v1_data = file_result.get('v1_data', {})
+            v1_data = file_result.get("v1_data", {})
             v1_json = json.loads(json.dumps(v1_data, default=str))
 
             json_pane_styles = {
-                'overflow': 'auto',
-                'word-wrap': 'break-word',
-                'white-space': 'pre-wrap',
+                "overflow": "auto",
+                "word-wrap": "break-word",
+                "white-space": "pre-wrap",
             }
 
             content_col.append(
                 pn.Column(
                     pn.pane.Markdown("### Original Data (v1)"),
-                    pn.pane.JSON(v1_json, depth=2, styles=json_pane_styles, sizing_mode="stretch_width"),
+                    pn.pane.JSON(
+                        v1_json,
+                        depth=2,
+                        styles=json_pane_styles,
+                        sizing_mode="stretch_width",
+                    ),
                     styles=json_box_style,
                     sizing_mode="stretch_width",
                 )
@@ -422,7 +450,10 @@ def display_upgrade_results(results):
         def make_toggle_callback(content):
             def toggle(event):
                 content.visible = not content.visible
-                event.obj.button_type = "primary" if content.visible else "default"
+                event.obj.button_type = (
+                    "primary" if content.visible else "default"
+                )
+
             return toggle
 
         toggle_button.on_click(make_toggle_callback(content_col))
@@ -439,9 +470,21 @@ def build_panel_app():
 
     summary_box = pn.pane.Markdown("", sizing_mode="stretch_width")
 
-    text_input = pn.widgets.TextInput(name="", placeholder="Type _id or name here...", sizing_mode="stretch_width", min_width=300)
-    upgrade_button = pn.widgets.Button(name="Run Upgrade", button_type="success", width=130, disabled=True)
-    copy_url_button = pn.widgets.Button(name="Copy Shareable URL", button_type="default", width=200, disabled=True)
+    text_input = pn.widgets.TextInput(
+        name="",
+        placeholder="Type _id or name here...",
+        sizing_mode="stretch_width",
+        min_width=300,
+    )
+    upgrade_button = pn.widgets.Button(
+        name="Run Upgrade", button_type="success", width=130, disabled=True
+    )
+    copy_url_button = pn.widgets.Button(
+        name="Copy Shareable URL",
+        button_type="default",
+        width=200,
+        disabled=True,
+    )
     copy_status = pn.pane.Markdown("", width=150)
     output_box = pn.Column(sizing_mode="stretch_width")
     js_pane = pn.pane.HTML("", height=0, width=0)
@@ -450,7 +493,7 @@ def build_panel_app():
     def update_upgrade_button(event):
         upgrade_button.disabled = not bool(text_input.value.strip())
 
-    text_input.param.watch(update_upgrade_button, 'value')
+    text_input.param.watch(update_upgrade_button, "value")
 
     # Light style for help text box
     help_box_style = {
@@ -461,11 +504,17 @@ def build_panel_app():
         "margin": "10px 0",
     }
 
-    help_text = pn.pane.Markdown("""
-**How it works:** This tool tests metadata upgrades from schema v1.x to v{version}.
-It first attempts a full upgrade. If that fails, it tests each metadata file individually
-to identify which specific fields have issues.
-""".format(version=schema_version), styles=help_box_style, sizing_mode="stretch_width")
+    help_text = pn.pane.Markdown(
+        """
+        **How it works:** This tool tests metadata upgrades from schema v1.x to v{version}.
+        It first attempts a full upgrade. If that fails, it tests each metadata file individually
+        to identify which specific fields have issues.
+        """.format(
+            version=schema_version
+        ),
+        styles=help_box_style,
+        sizing_mode="stretch_width",
+    )
 
     # Sync text_input with URL parameter
     pn.state.location.sync(text_input, {"value": "asset_id"})
@@ -482,8 +531,8 @@ to identify which specific fields have issues.
         df = get_data()
 
         summary_box.object = f"""
-**Records upgraded:** {len(df[df['status'] == "success"])}/{len(df)}
-"""
+            **Records upgraded:** {len(df[df['status'] == "success"])}/{len(df)}
+        """
 
         tab = pn.widgets.Tabulator(
             df,
@@ -500,7 +549,11 @@ to identify which specific fields have issues.
     def run_upgrade_callback(event):
         record_id_or_name = text_input.value
         if not record_id_or_name:
-            output_box[:] = [pn.pane.Markdown("**Error:** Please enter an asset ID or name.")]
+            output_box[:] = [
+                pn.pane.Markdown(
+                    "**Error:** Please enter an asset ID or name."
+                )
+            ]
             return
 
         # Show loading state
@@ -526,24 +579,26 @@ to identify which specific fields have issues.
     def copy_url_callback(event):
         # Generate JavaScript to copy current URL to clipboard
         js_code = """
-var url = window.location.href;
-navigator.clipboard.writeText(url).then(function() {
-    console.log('URL copied to clipboard');
-}, function(err) {
-    console.error('Failed to copy URL: ', err);
-});
-"""
+            var url = window.location.href;
+            navigator.clipboard.writeText(url).then(function() {
+                console.log('URL copied to clipboard');
+            }, function(err) {
+                console.error('Failed to copy URL: ', err);
+            });
+        """
         js_pane.object = ""
         js_pane.object = f"<script>{js_code}</script>"
         copy_status.object = "<span style='color:green'>URL copied!</span>"
 
         # Clear status after 3 seconds
         import time
+
         def clear_status():
             time.sleep(3)
             copy_status.object = ""
 
         import threading
+
         threading.Thread(target=clear_status, daemon=True).start()
 
     button.on_click(load_table)
@@ -561,7 +616,7 @@ navigator.clipboard.writeText(url).then(function() {
         pn.Spacer(width=5),
         copy_status,
         sizing_mode="stretch_width",
-        align="center"
+        align="center",
     )
 
     main_col = pn.Column(
@@ -573,7 +628,7 @@ navigator.clipboard.writeText(url).then(function() {
         input_row,
         output_box,
         js_pane,
-        sizing_mode="stretch_width"
+        sizing_mode="stretch_width",
     )
     return main_col
 
