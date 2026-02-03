@@ -272,6 +272,15 @@ def display_upgrade_results(results):
             styles={'color': AIND_COLORS['red']}
         )
 
+    # Light style for JSON boxes (matching Flask original)
+    json_box_style = {
+        "background": "#f8f9fa",
+        "border": "1px solid #dee2e6",
+        "border-radius": "5px",
+        "padding": "15px",
+        "margin": "5px",
+    }
+
     main_col = pn.Column(sizing_mode="stretch_width")
 
     # Overall status header
@@ -287,8 +296,8 @@ def display_upgrade_results(results):
         status_text = "FAILED: Upgrade failed"
 
     header_md = f"## Upgrade Results for: {asset_name}\n\n"
-    header_md += f"<span style='color:{status_color}; font-weight:bold;'>{status_text}</span>\n\n"
-    header_md += f"<small>Schema upgrade: <code>v1.x</code> -> <code>v{schema_version}</code></small>"
+    header_md += f"<span style='color:{status_color}; font-weight:bold;'>{status_text}</span>\n"
+    header_md += f"Schema upgrade: <code>v1.x</code> -> <code>v{schema_version}</code>"
     main_col.append(pn.pane.Markdown(header_md))
 
     # Summary statistics panel
@@ -328,11 +337,11 @@ def display_upgrade_results(results):
         toggle_button = pn.widgets.Button(
             name=display_name,
             button_type="primary" if success else "danger",
-            width=300,
+            sizing_mode="stretch_width",
         )
 
         # Create content section (initially visible)
-        content_col = pn.Column(styles=outer_style, width=800, visible=True)
+        content_col = pn.Column(sizing_mode="stretch_width", visible=True)
 
         # Add conversion notice if applicable
         if converted_to:
@@ -353,17 +362,27 @@ def display_upgrade_results(results):
             v1_json = json.loads(json.dumps(v1_data, default=str))
             v2_json = json.loads(json.dumps(v2_data, default=str))
 
+            # CSS for JSON pane to handle long URLs
+            json_pane_styles = {
+                'overflow': 'auto',
+                'word-wrap': 'break-word',
+                'white-space': 'pre-wrap',
+            }
+
             comparison_row = pn.Row(
                 pn.Column(
                     pn.pane.Markdown("### Original (v1)"),
-                    pn.pane.JSON(v1_json, depth=2, width=380),
-                    width=400,
+                    pn.pane.JSON(v1_json, depth=2, styles=json_pane_styles, sizing_mode="stretch_width"),
+                    styles=json_box_style,
+                    sizing_mode="stretch_width",
                 ),
                 pn.Column(
                     pn.pane.Markdown("### Upgraded (v2)"),
-                    pn.pane.JSON(v2_json, depth=2, width=380),
-                    width=400,
+                    pn.pane.JSON(v2_json, depth=2, styles=json_pane_styles, sizing_mode="stretch_width"),
+                    styles=json_box_style,
+                    sizing_mode="stretch_width",
                 ),
+                sizing_mode="stretch_width",
             )
             content_col.append(comparison_row)
         else:
@@ -391,7 +410,7 @@ def display_upgrade_results(results):
                         styles={'background': '#f5f5f5', 'padding': '10px'}
                     ),
                     visible=False,
-                    width=780,
+                    sizing_mode="stretch_width",
                 )
 
                 def make_traceback_toggle(tb_col, tb_btn):
@@ -407,8 +426,21 @@ def display_upgrade_results(results):
             # Show original data
             v1_data = file_result.get('v1_data', {})
             v1_json = json.loads(json.dumps(v1_data, default=str))
-            content_col.append(pn.pane.Markdown("### Original Data (v1)"))
-            content_col.append(pn.pane.JSON(v1_json, depth=2, width=780))
+
+            json_pane_styles = {
+                'overflow': 'auto',
+                'word-wrap': 'break-word',
+                'white-space': 'pre-wrap',
+            }
+
+            content_col.append(
+                pn.Column(
+                    pn.pane.Markdown("### Original Data (v1)"),
+                    pn.pane.JSON(v1_json, depth=2, styles=json_pane_styles, sizing_mode="stretch_width"),
+                    styles=json_box_style,
+                    sizing_mode="stretch_width",
+                )
+            )
 
         # Toggle visibility callback
         def make_toggle_callback(content):
@@ -431,20 +463,43 @@ def build_panel_app():
 
     summary_box = pn.pane.Markdown("", sizing_mode="stretch_width")
 
-    text_input = pn.widgets.TextInput(name="Enter _id or name", placeholder="Type _id or name here...")
-    upgrade_button = pn.widgets.Button(name="Run Upgrade", button_type="success")
-    copy_url_button = pn.widgets.Button(name="Copy Shareable URL", button_type="default", width=180)
+    text_input = pn.widgets.TextInput(name="", placeholder="Type _id or name here...", sizing_mode="stretch_width", min_width=300)
+    upgrade_button = pn.widgets.Button(name="Run Upgrade", button_type="success", width=130, disabled=True)
+    copy_url_button = pn.widgets.Button(name="Copy Shareable URL", button_type="default", width=200, disabled=True)
     copy_status = pn.pane.Markdown("", width=150)
     output_box = pn.Column(sizing_mode="stretch_width")
     js_pane = pn.pane.HTML("", height=0, width=0)
+
+    # Enable/disable upgrade button based on text input
+    def update_upgrade_button(event):
+        upgrade_button.disabled = not bool(text_input.value.strip())
+
+    text_input.param.watch(update_upgrade_button, 'value')
+
+    # Light style for help text box
+    help_box_style = {
+        "background": "#f8f9fa",
+        "border": "1px solid #dee2e6",
+        "border-radius": "5px",
+        "padding": "15px",
+        "margin": "10px 0",
+    }
+
+    help_text = pn.pane.Markdown("""
+**How it works:** This tool tests metadata upgrades from schema v1.x to v{version}.
+It first attempts a full upgrade. If that fails, it tests each metadata file individually
+to identify which specific fields have issues.
+""".format(version=schema_version), styles=help_box_style, sizing_mode="stretch_width")
 
     # Sync text_input with URL parameter
     pn.state.location.sync(text_input, {"value": "asset_id"})
 
     # Auto-run upgrade if asset_id is in URL
     if text_input.value:
+        upgrade_button.disabled = False
         results = upgrade_asset_detailed(text_input.value)
         output_box[:] = [display_upgrade_results(results)]
+        copy_url_button.disabled = False
 
     def load_table(event):
         table_col.loading = True
@@ -472,11 +527,25 @@ def build_panel_app():
             output_box[:] = [pn.pane.Markdown("**Error:** Please enter an asset ID or name.")]
             return
 
-        # Use detailed upgrade function
-        results = upgrade_asset_detailed(record_id_or_name)
+        # Show loading state
+        output_box.loading = True
+        upgrade_button.disabled = True
+        copy_url_button.disabled = True
+        copy_status.object = ""
 
-        # Display results with side-by-side comparison
-        output_box[:] = [display_upgrade_results(results)]
+        try:
+            # Use detailed upgrade function
+            results = upgrade_asset_detailed(record_id_or_name)
+
+            # Display results with side-by-side comparison
+            output_box[:] = [display_upgrade_results(results)]
+
+            # Enable copy URL button after successful upgrade
+            copy_url_button.disabled = False
+        finally:
+            # Clear loading state
+            output_box.loading = False
+            upgrade_button.disabled = False
 
     def copy_url_callback(event):
         # Generate JavaScript to copy current URL to clipboard
@@ -505,11 +574,27 @@ navigator.clipboard.writeText(url).then(function() {
     upgrade_button.on_click(run_upgrade_callback)
     copy_url_button.on_click(copy_url_callback)
     table_col.append(button)
+    input_label = pn.pane.Markdown("**Enter _id or name:**")
+
+    input_row = pn.Row(
+        text_input,
+        pn.Spacer(width=5),
+        upgrade_button,
+        pn.Spacer(width=5),
+        copy_url_button,
+        pn.Spacer(width=5),
+        copy_status,
+        sizing_mode="stretch_width",
+        align="center"
+    )
+
     main_col = pn.Column(
         "# Metadata Upgrade Status Table",
         summary_box,
         table_col,
-        pn.Row(text_input, upgrade_button, copy_url_button, copy_status),
+        help_text,
+        input_label,
+        input_row,
         output_box,
         js_pane,
         sizing_mode="stretch_width"
