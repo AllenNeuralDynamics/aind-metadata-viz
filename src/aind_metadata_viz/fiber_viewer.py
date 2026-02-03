@@ -1,26 +1,77 @@
 """App for viewing fiber implant locations in mouse brains"""
 
+import asyncio
 import base64
 import io
 import json
 from pathlib import Path
-import requests
-import panel as pn
-from aind_metadata_viz.utils import AIND_COLORS
+
 import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 import matplotlib.patches as patches
+import matplotlib.pyplot as plt
+import panel as pn
+import requests
 from matplotlib.patches import Circle
+
+from aind_metadata_viz.utils import AIND_COLORS
+
+matplotlib.use("Agg")
 
 pn.extension()
 
-# Metadata service URL (internal service, same as validation.py)
+# Metadata service and cache configuration
 METADATA_SERVICE_URL = "http://aind-metadata-service"
-
-# Cache directory (same as Flask app)
 CACHE_DIR = Path(".cache/procedures")
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+# Visualization configuration (skull and fiber dimensions)
+SKULL_LENGTH_MM = 25
+SKULL_WIDTH_MM = 15
+
+# Fiber colors and marker sizes
+FIBER_COLORS = [
+    "#FF6B6B",  # Red (Fiber_0)
+    "#4CAF50",  # Green (Fiber_1)
+    "#2196F3",  # Blue (Fiber_2)
+    "#FF9800",  # Orange (Fiber_3)
+    "#9C27B0",  # Purple (Fiber_4)
+    "#00BCD4",  # Cyan (Fiber_5)
+    "#FFC107",  # Amber (Fiber_6)
+    "#795548",  # Brown (Fiber_7)
+]
+FIBER_MARKER_RADIUS = 0.4
+
+# Bregma reference point styling
+BREGMA_COLOR = "#000000"
+BREGMA_EDGE_COLOR = "#000000"
+BREGMA_RADIUS = 0.3
+
+# Lambda reference point styling
+LAMBDA_COLOR = "#000000"
+LAMBDA_EDGE_COLOR = "#000000"
+LAMBDA_RADIUS = 0.25
+
+# Skull outline styling
+SKULL_FILL_COLOR = "#F5F5F5"
+SKULL_EDGE_COLOR = "#333333"
+SKULL_ALPHA = 0.3
+
+# Grid styling
+GRID_COLOR = "gray"
+GRID_ALPHA = 0.2
+GRID_LINESTYLE = ":"
+
+# Font sizes
+TITLE_FONTSIZE = 16.8
+LABEL_FONTSIZE = 14.4
+FIBER_LABEL_FONTSIZE = 12
+LEGEND_FONTSIZE = 10.8
+REFERENCE_FONTSIZE = 9.6
+
+# Figure dimensions and output quality
+FIGURE_WIDTH = 7.2
+FIGURE_HEIGHT = 9
+DPI = 300
 
 # Apply white background
 css = """
@@ -74,20 +125,27 @@ def get_procedures_data(subject_id: str) -> dict:
         from_cache = True
     else:
         # Query metadata service (same pattern as validation.py)
-        print(f"Retrieving procedures for {subject_id} from metadata service...")
+        print(
+            f"Retrieving procedures for {subject_id} from metadata service..."
+        )
         try:
             response = requests.get(
                 f"{METADATA_SERVICE_URL}/api/v2/procedures/{subject_id}"
             )
 
             if response.status_code == 404:
-                raise ValueError(f"No procedures found for subject ID: {subject_id}")
+                raise ValueError(
+                    f"No procedures found for subject ID: {subject_id}"
+                )
 
             # Try to parse JSON response (metadata service may return 400 with valid data)
             try:
                 procedures_data = response.json()
                 # Handle both direct response and wrapped in "data" key
-                if isinstance(procedures_data, dict) and "data" in procedures_data:
+                if (
+                    isinstance(procedures_data, dict)
+                    and "data" in procedures_data
+                ):
                     procedures_data = procedures_data["data"]
             except ValueError:
                 raise ValueError(
@@ -95,7 +153,9 @@ def get_procedures_data(subject_id: str) -> dict:
                 )
 
         except requests.RequestException as e:
-            raise ValueError(f"Failed to retrieve procedures metadata: {str(e)}")
+            raise ValueError(
+                f"Failed to retrieve procedures metadata: {str(e)}"
+            )
 
         # Save to cache
         save_to_cache(subject_id, procedures_data)
@@ -135,8 +195,13 @@ def get_procedures_data(subject_id: str) -> dict:
 
                             # Translation contains [AP, ML, DV]
                             if obj_type == "Translation":
-                                translation = transform_obj.get("translation", [])
-                                if isinstance(translation, list) and len(translation) >= 3:
+                                translation = transform_obj.get(
+                                    "translation", []
+                                )
+                                if (
+                                    isinstance(translation, list)
+                                    and len(translation) >= 3
+                                ):
                                     ap = safe_float(translation[0])
                                     ml = safe_float(translation[1])
                                     dv = safe_float(translation[2])
@@ -152,17 +217,26 @@ def get_procedures_data(subject_id: str) -> dict:
                                             break
 
                         # Get targeted structure
-                        primary_target = device_config.get("primary_targeted_structure") or {}
-                        target_name = primary_target.get("name", "Not specified in surgical request form")
+                        primary_target = (
+                            device_config.get("primary_targeted_structure")
+                            or {}
+                        )
+                        target_name = primary_target.get(
+                            "name", "Not specified in surgical request form"
+                        )
 
                         fiber_info = {
-                            "name": device_config.get("device_name", "Unknown"),
+                            "name": device_config.get(
+                                "device_name", "Unknown"
+                            ),
                             "ap": ap,
                             "ml": ml,
                             "dv": dv,
                             "angle": angle,
                             "unit": "millimeter",
-                            "reference": (device_config.get("coordinate_system") or {}).get("origin", "Bregma"),
+                            "reference": (
+                                device_config.get("coordinate_system") or {}
+                            ).get("origin", "Bregma"),
                             "targeted_structure": target_name,
                         }
                         fibers.append(fiber_info)
@@ -174,49 +248,6 @@ def get_procedures_data(subject_id: str) -> dict:
         "fiber_count": len(fibers),
         "from_cache": from_cache,
     }
-
-
-# Visualization configuration (from Flask app config.py)
-SKULL_LENGTH_MM = 25
-SKULL_WIDTH_MM = 15
-
-FIBER_COLORS = [
-    '#FF6B6B',  # Red (Fiber_0)
-    '#4CAF50',  # Green (Fiber_1)
-    '#2196F3',  # Blue (Fiber_2)
-    '#FF9800',  # Orange (Fiber_3)
-    '#9C27B0',  # Purple (Fiber_4)
-    '#00BCD4',  # Cyan (Fiber_5)
-    '#FFC107',  # Amber (Fiber_6)
-    '#795548',  # Brown (Fiber_7)
-]
-
-FIBER_MARKER_RADIUS = 0.4
-BREGMA_COLOR = '#000000'
-BREGMA_EDGE_COLOR = '#000000'
-BREGMA_RADIUS = 0.3
-
-LAMBDA_COLOR = '#000000'
-LAMBDA_EDGE_COLOR = '#000000'
-LAMBDA_RADIUS = 0.25
-
-SKULL_FILL_COLOR = '#F5F5F5'
-SKULL_EDGE_COLOR = '#333333'
-SKULL_ALPHA = 0.3
-
-GRID_COLOR = 'gray'
-GRID_ALPHA = 0.2
-GRID_LINESTYLE = ':'
-
-TITLE_FONTSIZE = 16.8
-LABEL_FONTSIZE = 14.4
-FIBER_LABEL_FONTSIZE = 12
-LEGEND_FONTSIZE = 10.8
-REFERENCE_FONTSIZE = 9.6
-
-FIGURE_WIDTH = 7.2
-FIGURE_HEIGHT = 9
-DPI = 300
 
 
 def safe_float(value, default=0.0):
@@ -296,13 +327,21 @@ def add_coordinate_grid(ax):
     # Vertical gridlines (ML axis)
     for ml in range(-6, 7, 2):
         ax.axvline(
-            ml, color=GRID_COLOR, linestyle=GRID_LINESTYLE, linewidth=0.5, alpha=GRID_ALPHA
+            ml,
+            color=GRID_COLOR,
+            linestyle=GRID_LINESTYLE,
+            linewidth=0.5,
+            alpha=GRID_ALPHA,
         )
 
     # Horizontal gridlines (AP axis)
     for ap in range(-10, 11, 2):
         ax.axhline(
-            ap, color=GRID_COLOR, linestyle=GRID_LINESTYLE, linewidth=0.5, alpha=GRID_ALPHA
+            ap,
+            color=GRID_COLOR,
+            linestyle=GRID_LINESTYLE,
+            linewidth=0.5,
+            alpha=GRID_ALPHA,
         )
 
 
@@ -317,7 +356,12 @@ def draw_fiber(ax, fiber, fiber_index):
 
     # Draw fiber insertion point
     fiber_point = Circle(
-        (ml, ap), radius=FIBER_MARKER_RADIUS, facecolor=color, edgecolor="black", linewidth=2, zorder=10
+        (ml, ap),
+        radius=FIBER_MARKER_RADIUS,
+        facecolor=color,
+        edgecolor="black",
+        linewidth=2,
+        zorder=10,
     )
     ax.add_patch(fiber_point)
 
@@ -337,7 +381,12 @@ def draw_fiber(ax, fiber, fiber_index):
         fontsize=FIBER_LABEL_FONTSIZE,
         fontweight="bold",
         color="black",
-        bbox=dict(boxstyle="round,pad=0.3", facecolor=color, alpha=0.7, edgecolor="black"),
+        bbox=dict(
+            boxstyle="round,pad=0.3",
+            facecolor=color,
+            alpha=0.7,
+            edgecolor="black",
+        ),
     )
 
 
@@ -374,6 +423,7 @@ def create_schematic(fibers, subject_id):
     Create the complete fiber implant schematic.
     Returns matplotlib figure.
     """
+
     # Sort fibers by name (Fiber_0, Fiber_1, Fiber_2...) to ensure consistent order
     def get_fiber_index(fiber):
         name = fiber.get("name", "Unknown")
@@ -396,18 +446,76 @@ def create_schematic(fibers, subject_id):
     for idx, fiber in enumerate(sorted_fibers):
         draw_fiber(ax, fiber, idx)
 
-    # Set up axes
+    # Set up axes limits and aspect
     ax.set_xlim(-SKULL_WIDTH_MM / 2 - 2, SKULL_WIDTH_MM / 2 + 2)
     ax.set_ylim(-SKULL_LENGTH_MM / 2 - 2, SKULL_LENGTH_MM / 2 + 2)
     ax.set_aspect("equal")
 
-    # Labels
-    ax.set_xlabel("Medial-Lateral (mm)", fontsize=LABEL_FONTSIZE, fontweight="bold")
-    ax.set_ylabel("Anterior-Posterior (mm)", fontsize=LABEL_FONTSIZE, fontweight="bold")
+    # Turn off axes and grid
+    ax.axis("off")
 
     # Title
     title = f"Fiber Implant Locations - Top View\nSubject: {subject_id}"
     ax.set_title(title, fontsize=TITLE_FONTSIZE, fontweight="bold", pad=20)
+
+    # Add orientation arrow on left side (vertical double-headed arrow)
+    arrow_x = -SKULL_WIDTH_MM / 2 - 1.5  # Position on left side
+    arrow_bottom = -4  # Bottom of arrow
+    arrow_top = 4  # Top of arrow
+
+    # Draw double-headed arrow
+    ax.annotate(
+        "",
+        xy=(arrow_x, arrow_top),
+        xytext=(arrow_x, arrow_bottom),
+        arrowprops=dict(arrowstyle="<->", color="black", lw=2),
+    )
+
+    # Add "anterior" label above top arrowhead
+    ax.text(
+        arrow_x,
+        arrow_top + 0.8,
+        "anterior",
+        ha="center",
+        va="bottom",
+        fontsize=REFERENCE_FONTSIZE,
+        fontweight="bold",
+    )
+
+    # Add "posterior" label below bottom arrowhead
+    ax.text(
+        arrow_x,
+        arrow_bottom - 0.8,
+        "posterior",
+        ha="center",
+        va="top",
+        fontsize=REFERENCE_FONTSIZE,
+        fontweight="bold",
+    )
+
+    # Add scale bar in bottom left
+    scale_bar_length = 5  # 5 mm
+    scale_bar_x = -SKULL_WIDTH_MM / 2 - 1.5
+    scale_bar_y = -SKULL_LENGTH_MM / 2 - 1
+
+    # Draw scale bar (horizontal line)
+    ax.plot(
+        [scale_bar_x, scale_bar_x + scale_bar_length],
+        [scale_bar_y, scale_bar_y],
+        "k-",
+        lw=3,
+    )
+
+    # Add "5 mm" label above scale bar
+    ax.text(
+        scale_bar_x + scale_bar_length / 2,
+        scale_bar_y + 0.5,
+        "5 mm",
+        ha="center",
+        va="bottom",
+        fontsize=REFERENCE_FONTSIZE,
+        fontweight="bold",
+    )
 
     # Add legend with fiber details (color-coded text, no box)
     legend_items = create_legend_text(sorted_fibers)
@@ -432,9 +540,6 @@ def create_schematic(fibers, subject_id):
         num_lines = text.count("\n") + 1
         legend_y -= line_spacing * num_lines
 
-    # Grid
-    ax.grid(True, alpha=GRID_ALPHA, linestyle="--")
-
     # Tight layout
     plt.tight_layout()
 
@@ -457,7 +562,7 @@ def build_panel_app():
     # Input widgets
     text_input = pn.widgets.TextInput(
         name="",
-        placeholder="Enter subject_id (e.g., 804434)",
+        placeholder="Enter subject_id (e.g., 813992)",
         sizing_mode="stretch_width",
         min_width=300,
     )
@@ -486,7 +591,7 @@ def build_panel_app():
     current_fig_data = {"base64": None, "subject_id": None}
 
     # Button callback
-    def generate_callback(event):
+    async def generate_callback(event):
         subject_id = text_input.value.strip()
         if not subject_id:
             output_col[:] = [
@@ -494,11 +599,17 @@ def build_panel_app():
             ]
             return
 
-        # Show loading message
+        # Immediately show loading state and clear previous content
         output_col[:] = [
-            pn.pane.Markdown(f"Querying metadata service for subject {subject_id}...")
+            pn.pane.Markdown(
+                f"Querying metadata service for subject_id {subject_id}. This should take about 30 seconds..."
+            ),
+            pn.Spacer(height=75),
         ]
         output_col.loading = True
+
+        # Give Panel time to render the UI update
+        await asyncio.sleep(0.2)
 
         try:
             # Get procedures data (file-based cache, never expires)
@@ -529,7 +640,9 @@ def build_panel_app():
 
                 # Display matplotlib figure
                 output_col[:] = [
-                    pn.pane.Matplotlib(fig, tight=True, sizing_mode="stretch_width"),
+                    pn.pane.Matplotlib(
+                        fig, tight=True, sizing_mode="stretch_width"
+                    ),
                 ]
 
                 # Enable download and copy URL buttons
@@ -563,28 +676,28 @@ def build_panel_app():
         filename = f"fiber_schematic_{subject_id}.png"
 
         js_code = f"""
-var img_base64 = "{img_base64}";
-var binary = atob(img_base64);
-var array = new Uint8Array(binary.length);
-for (var i = 0; i < binary.length; i++) {{
-    array[i] = binary.charCodeAt(i);
-}}
-var blob = new Blob([array], {{type: 'image/png'}});
+            var img_base64 = "{img_base64}";
+            var binary = atob(img_base64);
+            var array = new Uint8Array(binary.length);
+            for (var i = 0; i < binary.length; i++) {{
+                array[i] = binary.charCodeAt(i);
+            }}
+            var blob = new Blob([array], {{type: 'image/png'}});
 
-var url = window.URL.createObjectURL(blob);
+            var url = window.URL.createObjectURL(blob);
 
-var a = document.createElement('a');
-a.href = url;
-a.download = "{filename}";
+            var a = document.createElement('a');
+            a.href = url;
+            a.download = "{filename}";
 
-document.body.appendChild(a);
+            document.body.appendChild(a);
 
-a.click();
+            a.click();
 
-document.body.removeChild(a);
+            document.body.removeChild(a);
 
-window.URL.revokeObjectURL(url);
-"""
+            window.URL.revokeObjectURL(url);
+        """
         js_pane.object = ""
         js_pane.object = f"<script>{js_code}</script>"
 
@@ -638,7 +751,9 @@ window.URL.revokeObjectURL(url);
                 current_fig_data["base64"] = save_fig_to_base64(fig)
                 current_fig_data["subject_id"] = subject_id
                 output_col[:] = [
-                    pn.pane.Matplotlib(fig, tight=True, sizing_mode="stretch_width"),
+                    pn.pane.Matplotlib(
+                        fig, tight=True, sizing_mode="stretch_width"
+                    ),
                 ]
                 download_button.disabled = False
                 copy_url_button.disabled = False
