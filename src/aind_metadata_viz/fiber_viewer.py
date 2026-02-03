@@ -684,7 +684,25 @@ def save_chart_to_base64(chart):
 
 
 def build_panel_app():
-    """Build the fiber viewer Panel app"""
+    """
+    Build the fiber viewer Panel app.
+
+    The app displays fiber implant locations for mouse subjects using data
+    from the metadata service. Results are cached locally for fast access.
+
+    URL Parameters:
+        subject_id (str): Subject identifier to load on page load
+
+        Admin parameters (for cache management):
+            clear_cache=all&confirm=yes: Clears all cached procedures.
+                Example: /fiber_viewer?clear_cache=all&confirm=yes
+                Use when metadata service is updated and all cached data
+                needs to be refreshed (e.g., after depth values are fixed).
+
+            clear_cache={subject_id}&confirm=yes: Clears cache for one subject.
+                Example: /fiber_viewer?clear_cache=813992&confirm=yes
+                Use to refresh data for a specific subject.
+    """
 
     # Input widgets
     text_input = pn.widgets.TextInput(
@@ -840,6 +858,73 @@ def build_panel_app():
     generate_button.on_click(generate_callback)
     download_button.on_click(download_callback)
     copy_url_button.on_click(copy_url_callback)
+
+    # Check for cache clearing request (admin feature)
+    clear_cache = pn.state.location.query_params.get("clear_cache", "")
+    confirm = pn.state.location.query_params.get("confirm", "")
+
+    if clear_cache and confirm == "yes":
+        try:
+            if clear_cache == "all":
+                # Clear all cached procedures
+                cache_files = list(CACHE_DIR.glob("*.json"))
+                count = len(cache_files)
+                for cache_file in cache_files:
+                    cache_file.unlink()
+                output_col[:] = [
+                    pn.pane.Markdown(
+                        f"**Cache cleared:** Deleted {count} cached procedure file(s). "
+                        f"All subsequent queries will fetch fresh data from metadata service.",
+                        styles={
+                            "background": "#e8f5e9",
+                            "border-left": "4px solid #4caf50",
+                            "padding": "10px",
+                            "border-radius": "5px",
+                        },
+                    )
+                ]
+            else:
+                # Clear cache for specific subject
+                subject_id = clear_cache
+                cache_file = CACHE_DIR / f"{subject_id}.json"
+                if cache_file.exists():
+                    cache_file.unlink()
+                    output_col[:] = [
+                        pn.pane.Markdown(
+                            f"**Cache cleared:** Deleted cached data for subject {subject_id}. "
+                            f"Next query will fetch fresh data from metadata service.",
+                            styles={
+                                "background": "#e8f5e9",
+                                "border-left": "4px solid #4caf50",
+                                "padding": "10px",
+                                "border-radius": "5px",
+                            },
+                        )
+                    ]
+                else:
+                    output_col[:] = [
+                        pn.pane.Markdown(
+                            f"**No cache found:** Subject {subject_id} has no cached data.",
+                            styles={
+                                "background": "#fff8e1",
+                                "border-left": "4px solid #ff9800",
+                                "padding": "10px",
+                                "border-radius": "5px",
+                            },
+                        )
+                    ]
+        except Exception as e:
+            output_col[:] = [
+                pn.pane.Markdown(
+                    f"**Error clearing cache:** {str(e)}",
+                    styles={
+                        "background": "#fff5f5",
+                        "border-left": "4px solid #f44336",
+                        "padding": "10px",
+                        "border-radius": "5px",
+                    },
+                )
+            ]
 
     # Get subject_id from URL and set text input manually
     url_subject_id = pn.state.location.query_params.get("subject_id", "")
