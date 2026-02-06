@@ -10,7 +10,7 @@ from pathlib import Path
 import altair as alt
 import pandas as pd
 import panel as pn
-import requests
+import param
 
 from aind_metadata_viz.utils import AIND_COLORS
 
@@ -97,62 +97,20 @@ def save_to_cache(subject_id: str, procedures: dict):
         print(f"Error writing cache: {e}")
 
 
-def get_procedures_data(subject_id: str) -> dict:
+def process_procedures_data(subject_id: str, procedures_data: dict) -> dict:
     """
-    Get fiber procedures data for a subject.
+    Process fiber procedures data for a subject.
 
-    Cache: Never expires (delete files manually to invalidate)
+    This function extracts fiber implant information from procedures data
+    that was fetched by the client-side JavaScript.
 
     Args:
         subject_id: Subject identifier
+        procedures_data: Procedures JSON data from metadata service
 
     Returns:
-        dict with keys: procedures, fibers, subject_id, fiber_count, from_cache
+        dict with keys: procedures, fibers, subject_id, fiber_count
     """
-    # Check cache first
-    cached_data = get_cached_procedures(subject_id)
-    if cached_data:
-        print(f"Loading procedures for {subject_id} from cache...")
-        procedures_data = cached_data.get("procedures")
-        from_cache = True
-    else:
-        # Query metadata service (same pattern as validation.py)
-        print(
-            f"Retrieving procedures for {subject_id} from metadata service..."
-        )
-        try:
-            response = requests.get(
-                f"{METADATA_SERVICE_URL}/api/v2/procedures/{subject_id}"
-            )
-
-            if response.status_code == 404:
-                raise ValueError(
-                    f"No procedures found for subject ID: {subject_id}"
-                )
-
-            # Try to parse JSON response (metadata service may return 400 with valid data)
-            try:
-                procedures_data = response.json()
-                # Handle both direct response and wrapped in "data" key
-                if (
-                    isinstance(procedures_data, dict)
-                    and "data" in procedures_data
-                ):
-                    procedures_data = procedures_data["data"]
-            except ValueError:
-                raise ValueError(
-                    f"Metadata service returned invalid JSON (status {response.status_code})"
-                )
-
-        except requests.RequestException as e:
-            raise ValueError(
-                f"Failed to retrieve procedures metadata: {str(e)}"
-            )
-
-        # Save to cache
-        save_to_cache(subject_id, procedures_data)
-        from_cache = False
-
     # Extract fiber implants from procedures
     fibers = []
     if procedures_data:
@@ -246,8 +204,46 @@ def get_procedures_data(subject_id: str) -> dict:
         "fibers": fibers,
         "subject_id": subject_id,
         "fiber_count": len(fibers),
-        "from_cache": from_cache,
     }
+
+
+def get_procedures_data_from_cache_or_client(subject_id: str, client_data: dict = None) -> dict:
+    """
+    Get fiber procedures data from cache or client-provided data.
+
+    This is a wrapper that checks cache first, or uses client-provided data.
+
+    Args:
+        subject_id: Subject identifier
+        client_data: Optional procedures data fetched by client-side JavaScript
+
+    Returns:
+        dict with keys: procedures, fibers, subject_id, fiber_count, from_cache
+    """
+    # Check cache first
+    cached_data = get_cached_procedures(subject_id)
+    if cached_data:
+        print(f"Loading procedures for {subject_id} from cache...")
+        procedures_data = cached_data.get("procedures")
+        from_cache = True
+    elif client_data:
+        print(f"Using client-provided data for {subject_id}")
+        # Handle both direct response and wrapped in "data" key
+        if isinstance(client_data, dict) and "data" in client_data:
+            procedures_data = client_data["data"]
+        else:
+            procedures_data = client_data
+
+        # Save to cache
+        save_to_cache(subject_id, procedures_data)
+        from_cache = False
+    else:
+        raise ValueError("No cached data and no client data provided")
+
+    # Process the data
+    result = process_procedures_data(subject_id, procedures_data)
+    result["from_cache"] = from_cache
+    return result
 
 
 def safe_float(value, default=0.0):
@@ -683,6 +679,60 @@ def save_chart_to_base64(chart):
         return None
 
 
+class MetadataFetcher(pn.reactive.ReactiveHTML):
+    """
+    Client-side data fetcher using JavaScript fetch API.
+
+    This component runs in the browser and fetches data from the metadata service,
+    which is accessible on the AIND internal network. The fetched data is then
+    passed back to Python for processing.
+    """
+
+    subject_id = param.String(default="")
+    data = param.Dict(default={})
+    error = param.String(default="")
+
+    _template = """
+    <div id="fetcher" style="display: none;"></div>
+    """
+
+    _scripts = {
+        'subject_id': """
+            // This method is called automatically when subject_id changes
+            if (data.subject_id && data.subject_id.trim() !== '') {
+                const subjectId = data.subject_id.trim();
+
+                data.error = "";
+                data.data = {};
+
+                const url = `http://aind-metadata-service/api/v2/procedures/${subjectId}`;
+
+                fetch(url)
+                    .then(response => {
+                        if (response.status === 404) {
+                            throw new Error(`No procedures found for subject ID: ${subjectId}`);
+                        }
+                        if (!response.ok) {
+                            // Try to parse even if status is not OK (metadata service may return 400 with valid data)
+                            return response.json().catch(() => {
+                                throw new Error(`Metadata service returned status ${response.status}`);
+                            });
+                        }
+                        return response.json();
+                    })
+                    .then(json => {
+                        data.data = json;
+                        data.error = "";
+                    })
+                    .catch(err => {
+                        data.error = err.message || "Failed to fetch procedures data";
+                        data.data = {};
+                    });
+            }
+        """
+    }
+
+
 def build_panel_app():
     """
     Build the fiber viewer Panel app.
@@ -735,30 +785,22 @@ def build_panel_app():
     # Store current chart data for download
     current_chart_data = {"chart": None, "base64": None, "subject_id": None}
 
-    # Button callback
-    async def generate_callback(event):
-        subject_id = text_input.value.strip()
-        if not subject_id:
-            output_col[:] = [
-                pn.pane.Markdown("**Error:** Please enter a subject ID.")
-            ]
+    # Create metadata fetcher (client-side)
+    fetcher = MetadataFetcher()
+
+    # Watch for data changes from the fetcher
+    def process_fetched_data(event):
+        """Process data that was fetched by the client-side JavaScript"""
+        if not fetcher.data or not fetcher.data.get("subject_procedures"):
             return
 
-        # Immediately show loading state and clear previous content
-        output_col[:] = [
-            pn.pane.Markdown(
-                f"Querying metadata service for subject_id {subject_id}. This should take about 30 seconds..."
-            ),
-            pn.Spacer(height=75),
-        ]
-        output_col.loading = True
-
-        # Give Panel time to render the UI update
-        await asyncio.sleep(0.2)
+        subject_id = text_input.value.strip()
 
         try:
-            # Get procedures data (file-based cache, never expires)
-            data = get_procedures_data(subject_id)
+            # Process the client-provided data
+            data = get_procedures_data_from_cache_or_client(
+                subject_id, fetcher.data
+            )
 
             fibers = data.get("fibers", [])
             fiber_count = data.get("fiber_count", 0)
@@ -806,6 +848,105 @@ def build_panel_app():
             ]
         finally:
             output_col.loading = False
+
+    def handle_fetch_error(event):
+        """Handle errors from the client-side fetch"""
+        if fetcher.error:
+            output_col[:] = [
+                pn.pane.Markdown(
+                    f"**Error:** {fetcher.error}",
+                    styles={
+                        "background": "#fff5f5",
+                        "border-left": f"4px solid {AIND_COLORS['red']}",
+                        "padding": "10px",
+                        "border-radius": "5px",
+                    },
+                )
+            ]
+            output_col.loading = False
+
+    # Watch for data and error changes
+    fetcher.param.watch(process_fetched_data, 'data')
+    fetcher.param.watch(handle_fetch_error, 'error')
+
+    # Button callback - trigger client-side fetch or use cache
+    async def generate_callback(event):
+        subject_id = text_input.value.strip()
+        if not subject_id:
+            output_col[:] = [
+                pn.pane.Markdown("**Error:** Please enter a subject ID.")
+            ]
+            return
+
+        # Check cache first
+        cached_data = get_cached_procedures(subject_id)
+        if cached_data:
+            # Use cached data directly
+            output_col.loading = True
+            try:
+                data = get_procedures_data_from_cache_or_client(subject_id)
+
+                fibers = data.get("fibers", [])
+                fiber_count = data.get("fiber_count", 0)
+
+                if fiber_count == 0:
+                    output_col[:] = [
+                        pn.pane.Markdown(
+                            f"**No fiber implants found for subject {subject_id}**",
+                            styles={
+                                "background": "#fff8e1",
+                                "border-left": f"4px solid {AIND_COLORS['yellow']}",
+                                "padding": "10px",
+                                "border-radius": "5px",
+                            },
+                        )
+                    ]
+                else:
+                    # Generate schematic
+                    chart = create_schematic(fibers, subject_id)
+
+                    # Save chart data for download
+                    current_chart_data["chart"] = chart
+                    current_chart_data["base64"] = save_chart_to_base64(chart)
+                    current_chart_data["subject_id"] = subject_id
+
+                    # Display Altair chart (no sizing_mode to preserve aspect ratio)
+                    output_col[:] = [
+                        pn.pane.Vega(chart),
+                    ]
+
+                    # Enable download and copy URL buttons
+                    download_button.disabled = False
+                    copy_url_button.disabled = False
+            except Exception as e:
+                output_col[:] = [
+                    pn.pane.Markdown(
+                        f"**Error:** {str(e)}",
+                        styles={
+                            "background": "#fff5f5",
+                            "border-left": f"4px solid {AIND_COLORS['red']}",
+                            "padding": "10px",
+                            "border-radius": "5px",
+                        },
+                    )
+                ]
+            finally:
+                output_col.loading = False
+        else:
+            # No cache - trigger client-side fetch
+            output_col[:] = [
+                pn.pane.Markdown(
+                    f"Querying metadata service for subject_id {subject_id}. This should take about 30 seconds..."
+                ),
+                pn.Spacer(height=75),
+            ]
+            output_col.loading = True
+
+            # Give Panel time to render the UI update
+            await asyncio.sleep(0.2)
+
+            # Trigger the fetch by setting subject_id
+            fetcher.subject_id = subject_id
 
     def download_callback(event):
         """Download the current schematic as PNG."""
@@ -860,8 +1001,12 @@ def build_panel_app():
     copy_url_button.on_click(copy_url_callback)
 
     # Check for cache clearing request (admin feature)
-    clear_cache = pn.state.location.query_params.get("clear_cache", "")
-    confirm = pn.state.location.query_params.get("confirm", "")
+    if pn.state.location:
+        clear_cache = pn.state.location.query_params.get("clear_cache", "")
+        confirm = pn.state.location.query_params.get("confirm", "")
+    else:
+        clear_cache = ""
+        confirm = ""
 
     if clear_cache and confirm == "yes":
         try:
@@ -927,55 +1072,70 @@ def build_panel_app():
             ]
 
     # Get subject_id from URL and set text input manually
-    url_subject_id = pn.state.location.query_params.get("subject_id", "")
-    if url_subject_id:
-        text_input.value = str(url_subject_id)
+    if pn.state.location:
+        url_subject_id = pn.state.location.query_params.get("subject_id", "")
+        if url_subject_id:
+            text_input.value = str(url_subject_id)
 
-    # Sync for bidirectional URL updates
-    pn.state.location.sync(text_input, {"value": "subject_id"})
+        # Sync for bidirectional URL updates
+        pn.state.location.sync(text_input, {"value": "subject_id"})
 
     # Auto-run if subject_id is in URL
     if text_input.value:
-        try:
-            subject_id = text_input.value.strip()
-            results = get_procedures_data(subject_id)
-            fibers = results.get("fibers", [])
-            fiber_count = results.get("fiber_count", 0)
+        subject_id = text_input.value.strip()
+        cached_data = get_cached_procedures(subject_id)
 
-            if fiber_count == 0:
+        if cached_data:
+            # Use cached data for instant load
+            try:
+                results = get_procedures_data_from_cache_or_client(subject_id)
+                fibers = results.get("fibers", [])
+                fiber_count = results.get("fiber_count", 0)
+
+                if fiber_count == 0:
+                    output_col[:] = [
+                        pn.pane.Markdown(
+                            f"**No fiber implants found for subject {subject_id}**",
+                            styles={
+                                "background": "#fff8e1",
+                                "border-left": f"4px solid {AIND_COLORS['yellow']}",
+                                "padding": "10px",
+                                "border-radius": "5px",
+                            },
+                        )
+                    ]
+                else:
+                    chart = create_schematic(fibers, subject_id)
+                    current_chart_data["chart"] = chart
+                    current_chart_data["base64"] = save_chart_to_base64(chart)
+                    current_chart_data["subject_id"] = subject_id
+                    output_col[:] = [
+                        pn.pane.Vega(chart),
+                    ]
+                    download_button.disabled = False
+                    copy_url_button.disabled = False
+            except Exception as e:
                 output_col[:] = [
                     pn.pane.Markdown(
-                        f"**No fiber implants found for subject {subject_id}**",
+                        f"**Error:** {str(e)}",
                         styles={
-                            "background": "#fff8e1",
-                            "border-left": f"4px solid {AIND_COLORS['yellow']}",
+                            "background": "#fff5f5",
+                            "border-left": f"4px solid {AIND_COLORS['red']}",
                             "padding": "10px",
                             "border-radius": "5px",
                         },
                     )
                 ]
-            else:
-                chart = create_schematic(fibers, subject_id)
-                current_chart_data["chart"] = chart
-                current_chart_data["base64"] = save_chart_to_base64(chart)
-                current_chart_data["subject_id"] = subject_id
-                output_col[:] = [
-                    pn.pane.Vega(chart),
-                ]
-                download_button.disabled = False
-                copy_url_button.disabled = False
-        except Exception as e:
+        else:
+            # No cache - show loading and trigger client-side fetch
             output_col[:] = [
                 pn.pane.Markdown(
-                    f"**Error:** {str(e)}",
-                    styles={
-                        "background": "#fff5f5",
-                        "border-left": f"4px solid {AIND_COLORS['red']}",
-                        "padding": "10px",
-                        "border-radius": "5px",
-                    },
-                )
+                    f"Loading data for subject_id {subject_id}..."
+                ),
             ]
+            output_col.loading = True
+            # Trigger client-side fetch
+            fetcher.subject_id = subject_id
 
     # Layout
     input_row = pn.Row(
@@ -995,6 +1155,7 @@ def build_panel_app():
         input_row,
         output_col,
         js_pane,
+        fetcher,  # Hidden component for client-side fetching
         sizing_mode="stretch_width",
     )
 
