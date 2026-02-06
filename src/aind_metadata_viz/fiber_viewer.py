@@ -11,6 +11,7 @@ import altair as alt
 import pandas as pd
 import panel as pn
 import param
+import vl_convert as vlc
 
 from aind_metadata_viz.utils import AIND_COLORS
 
@@ -669,8 +670,16 @@ def create_schematic(fibers, subject_id):
 def save_chart_to_base64(chart):
     """Save Altair chart to base64-encoded PNG string."""
     try:
-        # Try to save as PNG using vl-convert or altair_saver
-        png_data = chart.to_image(format="png")
+        # Convert chart to Vega-Lite spec
+        vega_spec = chart.to_dict()
+
+        # Use vl-convert to convert to PNG
+        png_data = vlc.vegalite_to_png(
+            vl_spec=vega_spec,
+            scale=2.0  # Higher resolution (2x DPI)
+        )
+
+        # Encode to base64
         img_base64 = base64.b64encode(png_data).decode("utf-8")
         return img_base64
     except Exception as e:
