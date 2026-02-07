@@ -18,7 +18,7 @@ from aind_metadata_viz.utils import AIND_COLORS
 pn.extension("vega")
 
 # Metadata service and cache configuration
-METADATA_SERVICE_URL = "http://aind-metadata-service"
+METADATA_SERVICE_URL = "https://aind-metadata-service"
 CACHE_DIR = Path(".cache/procedures")
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -714,7 +714,7 @@ class MetadataFetcher(pn.reactive.ReactiveHTML):
                 data.error = "";
                 data.data = {};
 
-                const url = `http://aind-metadata-service/api/v2/procedures/${subjectId}`;
+                const url = `{METADATA_SERVICE_URL}/api/v2/procedures/${subjectId}`;
 
                 fetch(url)
                     .then(response => {
