@@ -726,18 +726,14 @@ if (data.subject_id && data.subject_id.trim()) {{
                     data.error_details = details;
                     throw new Error(`No procedures found for subject ID: ${{subjectId}}`);
                 }}
-                if (!response.ok) {{
-                    const details = `URL: ${{url}}\\nStatus: ${{status}} ${{statusText}}\\nResponse: ${{body}}`;
-                    data.error_details = details;
-                    throw new Error(`Metadata service returned status ${{status}}`);
-                }}
-                // Parse successful response
+                // Metadata service returns valid JSON even with 400/422 status codes
+                // Try to parse regardless of status (except 404)
                 try {{
                     return JSON.parse(body);
                 }} catch (e) {{
                     const details = `URL: ${{url}}\\nStatus: ${{status}} ${{statusText}}\\nResponse: ${{body}}\\nParse error: ${{e.message}}`;
                     data.error_details = details;
-                    throw new Error('Invalid JSON response from metadata service');
+                    throw new Error(`Invalid JSON response (status ${{status}}): ${{e.message}}`);
                 }}
             }});
         }})
@@ -959,6 +955,7 @@ def build_panel_app():
         js_pane.object = f"<script>{js_code}</script>"
 
     generate_button.on_click(generate_callback)
+    text_input.param.watch(generate_callback, 'value')  # Trigger on Enter key
     download_button.on_click(download_callback)
     copy_url_button.on_click(copy_url_callback)
 
