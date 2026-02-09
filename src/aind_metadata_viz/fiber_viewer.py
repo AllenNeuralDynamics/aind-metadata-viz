@@ -1,8 +1,65 @@
-"""App for viewing fiber implant locations in mouse brains"""
+"""
+Fiber Implant Viewer - Interactive web application for visualizing fiber probe locations
+
+OVERVIEW:
+    This Panel web app displays fiber photometry probe implant locations on a top-down
+    schematic of the mouse brain. Users enter a subject ID and see an interactive
+    visualization showing fiber coordinates, targeted brain structures, and metadata.
+
+ARCHITECTURE:
+    Client-Side Data Fetching (for deployment):
+        - JavaScript fetch() runs in user's browser to access aind-metadata-service
+        - Works when deployed to cloud and accessed from AIND internal network
+        - Overcomes network boundary: cloud server can't reach on-prem metadata service
+        - See MetadataFetcher class for implementation
+
+    Caching:
+        - Procedures data cached locally in .cache/procedures/ directory
+        - Never expires automatically (use URL params below to clear)
+        - Instant load when cached data available
+        - Clear cache via URL: ?clear_cache=all&confirm=yes (all subjects)
+        - Clear cache via URL: ?clear_cache=SUBJECT_ID&confirm=yes (one subject)
+
+DATA FLOW:
+    1. User enters subject ID
+    2. Check local cache first
+       - If cached: skip to step 5
+       - If not cached: continue to step 3
+    3. Client-side JavaScript fetches from aind-metadata-service API
+    4. Raw procedures JSON passed from browser to Python, saved to cache
+    5. extract_fiber_from_probe() extracts coordinates from transform data
+    6. create_schematic() generates Altair visualization
+    7. Display interactive chart with download/share options
+
+KEY COMPONENTS:
+    - MetadataFetcher: ReactiveHTML component with JavaScript fetch logic
+    - extract_fiber_from_probe(): Parse fiber coordinates from device config
+    - create_schematic(): Generate Altair/Vega chart with all visual layers
+    - render_fiber_visualization(): Core rendering logic with error handling
+    - create_styled_pane(): Styled error/warning/success messages with expandable details
+
+VISUALIZATION:
+    - Skull outline (ellipse)
+    - Reference points (Bregma, Lambda)
+    - Fiber markers (colored circles with labels)
+    - Legend with coordinates and targeted structures
+    - Orientation indicators and scale bar
+    - Download as high-res PNG
+
+ERROR HANDLING:
+    - Simple message shown by default
+    - Expandable details with full traceback/HTTP response
+    - Client-side errors capture: URL, status code, response body
+    - Python errors capture: full traceback
+
+URL PARAMETERS:
+    - subject_id: Auto-load visualization for this subject
+    - clear_cache=all&confirm=yes: Clear all cached data (admin)
+    - clear_cache={id}&confirm=yes: Clear cache for specific subject
+"""
 
 import asyncio
 import base64
-import io
 import json
 import math
 import traceback
@@ -205,10 +262,12 @@ def create_ellipse_points(center_x, center_y, width, height, num_points=100):
 def create_schematic(fibers, subject_id):
     """
     Create the complete fiber implant schematic using Altair.
+
+    High-level orchestration function that composes all visualization layers.
     Returns Altair chart.
     """
 
-    # Sort fibers by name
+    # Sort fibers by name for consistent display
     def get_fiber_index(fiber):
         name = fiber.get("name", "Unknown")
         try:
@@ -220,12 +279,7 @@ def create_schematic(fibers, subject_id):
 
     sorted_fibers = sorted(fibers, key=get_fiber_index)
 
-    # Create skull outline points
-    skull_points = create_ellipse_points(0, 0, SKULL_WIDTH_MM, SKULL_LENGTH_MM)
-    skull_df = pd.DataFrame(skull_points)
-
-    # Define consistent scale domains for all layers
-    # 2:1 width:height ratio - x domain should be 2x the y domain
+    # Define consistent scale domains for all layers (2:1 width:height ratio)
     x_scale = alt.Scale(domain=[-8, 48])  # 56 units
     y_scale = alt.Scale(domain=[-14, 14])  # 28 units
 
@@ -236,46 +290,100 @@ def create_schematic(fibers, subject_id):
             "y": alt.Y(f"{y_col}:Q", scale=y_scale),
         }
 
-    # Create skull outline layer
-    skull_layer = (
+    # Step 1: Create skull outline
+    skull_layer = _create_skull_layer(xy_encode)
+
+    # Step 2: Create reference points (Bregma, Lambda)
+    ref_layer, ref_text_layer = _create_reference_layers(xy_encode)
+
+    # Step 3: Create fiber markers and labels
+    fiber_layer, left_text_layer, right_text_layer = _create_fiber_layers(
+        sorted_fibers, xy_encode
+    )
+
+    # Step 4: Create orientation indicators
+    orientation_layer = _create_orientation_layer(xy_encode)
+
+    # Step 5: Create scale bar
+    scale_bar_layer, scale_text_layer = _create_scale_layers(xy_encode)
+
+    # Step 6: Create legend with fiber details
+    legend_layer = _create_legend_layer(sorted_fibers, xy_encode)
+
+    # Step 7: Create title
+    title_layer = _create_title_layer(subject_id, xy_encode)
+
+    # Step 8: Compose all layers into final chart
+    chart = (
+        alt.layer(
+            skull_layer,
+            ref_layer,
+            ref_text_layer,
+            fiber_layer,
+            left_text_layer,
+            right_text_layer,
+            orientation_layer,
+            scale_bar_layer,
+            scale_text_layer,
+            legend_layer,
+            title_layer,
+        )
+        .properties(width=1400, height=700)
+        .configure_view(strokeWidth=0)
+        .configure_axis(
+            grid=False, domain=False, labels=False, ticks=False, title=None
+        )
+        .resolve_scale(x="shared", y="shared")
+    )
+
+    return chart
+
+
+def _create_skull_layer(xy_encode):
+    """Create skull outline ellipse layer"""
+    skull_points = create_ellipse_points(0, 0, SKULL_WIDTH_MM, SKULL_LENGTH_MM)
+    skull_df = pd.DataFrame(skull_points)
+    return (
         alt.Chart(skull_df)
         .mark_line(color=SKULL_EDGE_COLOR, strokeWidth=2, opacity=0.5)
         .encode(**xy_encode(), order="order:Q")
     )
 
-    # Reference points (Bregma and Lambda)
+
+def _create_reference_layers(xy_encode):
+    """Create Bregma and Lambda reference point layers (markers + labels)"""
+    # Reference point markers
     ref_points_df = pd.DataFrame(
         [
             {"x": 0, "y": 0, "label": "Bregma", "size": BREGMA_RADIUS * 200},
-            {
-                "x": 0,
-                "y": -4.0,
-                "label": "Lambda",
-                "size": LAMBDA_RADIUS * 200,
-            },
+            {"x": 0, "y": -4.0, "label": "Lambda", "size": LAMBDA_RADIUS * 200},
         ]
     )
-
     ref_layer = (
         alt.Chart(ref_points_df)
         .mark_circle(color=BREGMA_COLOR, stroke="black", strokeWidth=1.5)
         .encode(**xy_encode(), size=alt.Size("size:Q", legend=None))
     )
 
+    # Reference point labels
     ref_labels_df = pd.DataFrame(
         [
             {"x": 0, "y": -0.8, "label": "Bregma"},
             {"x": 0, "y": -4.6, "label": "Lambda"},
         ]
     )
-
     ref_text_layer = (
         alt.Chart(ref_labels_df)
         .mark_text(fontSize=REFERENCE_FONTSIZE, fontWeight="bold", dy=5)
         .encode(**xy_encode(), text="label:N")
     )
 
-    # Fiber points
+    return ref_layer, ref_text_layer
+
+
+def _create_fiber_layers(sorted_fibers, xy_encode):
+    """Create fiber marker and label layers"""
+    # Build fiber data for markers and labels
     fiber_data = []
     fiber_label_data = []
     for idx, fiber in enumerate(sorted_fibers):
@@ -294,13 +402,9 @@ def create_schematic(fibers, subject_id):
             }
         )
 
-        # Smart label positioning: left side fibers get right-aligned labels,
-        # right side fibers get left-aligned labels
+        # Smart label positioning: left side gets right-aligned, right side gets left-aligned
         label_offset = 0.9
-        if ml < 0:  # Left side - align right
-            align = "right"
-        else:  # Right side - align left
-            align = "left"
+        align = "right" if ml < 0 else "left"
 
         fiber_label_data.append(
             {
@@ -315,7 +419,7 @@ def create_schematic(fibers, subject_id):
     fiber_df = pd.DataFrame(fiber_data)
     fiber_labels_df = pd.DataFrame(fiber_label_data)
 
-    # Fiber points layer
+    # Fiber markers layer
     fiber_layer = (
         alt.Chart(fiber_df)
         .mark_circle(stroke="black", strokeWidth=2)
@@ -326,7 +430,7 @@ def create_schematic(fibers, subject_id):
         )
     )
 
-    # Helper to create fiber label layer with specified alignment
+    # Helper to create label layer with alignment
     def create_label_layer(labels_df, alignment):
         return (
             alt.Chart(labels_df)
@@ -343,7 +447,7 @@ def create_schematic(fibers, subject_id):
             )
         )
 
-    # Create label layers for left and right sides
+    # Create separate layers for left and right aligned labels
     left_text_layer = create_label_layer(
         fiber_labels_df[fiber_labels_df["align"] == "right"], "right"
     )
@@ -351,89 +455,65 @@ def create_schematic(fibers, subject_id):
         fiber_labels_df[fiber_labels_df["align"] == "left"], "left"
     )
 
-    # Orientation arrow (simplified - just text labels)
+    return fiber_layer, left_text_layer, right_text_layer
+
+
+def _create_orientation_layer(xy_encode):
+    """Create anterior/posterior orientation indicators"""
     arrow_x = -SKULL_WIDTH_MM / 2 - 1.5
     orientation_df = pd.DataFrame(
         [
-            {
-                "x": arrow_x,
-                "y": 10,
-                "label": "anterior",
-                "size": REFERENCE_FONTSIZE,
-            },
-            {
-                "x": arrow_x,
-                "y": -10,
-                "label": "posterior",
-                "size": REFERENCE_FONTSIZE,
-            },
-            {
-                "x": arrow_x,
-                "y": 7,
-                "label": "↑",
-                "size": REFERENCE_FONTSIZE * 2,
-            },
-            {
-                "x": arrow_x,
-                "y": -7,
-                "label": "↓",
-                "size": REFERENCE_FONTSIZE * 2,
-            },
+            {"x": arrow_x, "y": 10, "label": "anterior", "size": REFERENCE_FONTSIZE},
+            {"x": arrow_x, "y": -10, "label": "posterior", "size": REFERENCE_FONTSIZE},
+            {"x": arrow_x, "y": 7, "label": "↑", "size": REFERENCE_FONTSIZE * 2},
+            {"x": arrow_x, "y": -7, "label": "↓", "size": REFERENCE_FONTSIZE * 2},
         ]
     )
-
-    orientation_layer = (
+    return (
         alt.Chart(orientation_df)
         .mark_text(fontWeight="bold")
-        .encode(
-            **xy_encode(), text="label:N", size=alt.Size("size:Q", legend=None)
-        )
+        .encode(**xy_encode(), text="label:N", size=alt.Size("size:Q", legend=None))
     )
 
-    # Scale bar
+
+def _create_scale_layers(xy_encode):
+    """Create scale bar and label layers"""
     scale_bar_x = -SKULL_WIDTH_MM / 2 - 1.5
     scale_bar_y = -SKULL_LENGTH_MM / 2 - 1
-    scale_bar_df = pd.DataFrame(
-        [
-            {
-                "x": scale_bar_x,
-                "y": scale_bar_y,
-                "x2": scale_bar_x + 5,
-                "y2": scale_bar_y,
-            }
-        ]
-    )
 
+    # Scale bar line
+    scale_bar_df = pd.DataFrame(
+        [{"x": scale_bar_x, "y": scale_bar_y, "x2": scale_bar_x + 5, "y2": scale_bar_y}]
+    )
     scale_bar_layer = (
         alt.Chart(scale_bar_df)
         .mark_rule(color="black", strokeWidth=3)
         .encode(**xy_encode(), x2="x2:Q", y2="y2:Q")
     )
 
+    # Scale bar label
     scale_text_df = pd.DataFrame(
         [{"x": scale_bar_x + 2.5, "y": scale_bar_y + 0.5, "label": "5 mm"}]
     )
-
     scale_text_layer = (
         alt.Chart(scale_text_df)
         .mark_text(fontSize=REFERENCE_FONTSIZE, fontWeight="bold")
         .encode(**xy_encode(), text="label:N")
     )
 
-    # Legend text (positioned on right side)
+    return scale_bar_layer, scale_text_layer
+
+
+def _create_legend_layer(sorted_fibers, xy_encode):
+    """Create legend with fiber coordinates and targeted structures"""
     legend_data = []
     legend_x = 9.5  # Position on right side
     legend_y_start = 11
-    within_fiber_spacing = 0.6  # Small spacing between coord and target lines
-    between_fiber_spacing = 1.5  # Larger spacing between different fibers
+    within_fiber_spacing = 0.6  # Spacing between coord and target lines
+    between_fiber_spacing = 1.5  # Spacing between different fibers
 
     legend_data.append(
-        {
-            "x": legend_x,
-            "y": legend_y_start,
-            "text": "Fiber Details:",
-            "color": "black",
-        }
+        {"x": legend_x, "y": legend_y_start, "text": "Fiber Details:", "color": "black"}
     )
 
     current_y = legend_y_start - 1.2
@@ -444,6 +524,7 @@ def create_schematic(fibers, subject_id):
         dv = fiber.get("dv")
         name = fiber.get("name", "Unknown")
 
+        # Coordinate line
         if dv is not None:
             text = f"{name}: AP={ap:.2f}, ML={ml:.2f}, DV={dv:.2f} mm"
         else:
@@ -453,39 +534,28 @@ def create_schematic(fibers, subject_id):
         if abs(angle) > 1:
             text += f" ∠{angle}°"
 
-        # Add coordinate line
-        legend_data.append(
-            {"x": legend_x, "y": current_y, "text": text, "color": color}
-        )
-        current_y -= within_fiber_spacing  # Small spacing to target line
+        legend_data.append({"x": legend_x, "y": current_y, "text": text, "color": color})
+        current_y -= within_fiber_spacing
 
-        # Add target line
+        # Target line
         target = fiber.get("targeted_structure", "Unknown")
         if not target or target == "" or target.lower() == "root":
             target = "Not specified in surgical request form"
         legend_data.append(
-            {
-                "x": legend_x,
-                "y": current_y,
-                "text": f"Target: {target}",
-                "color": color,
-            }
+            {"x": legend_x, "y": current_y, "text": f"Target: {target}", "color": color}
         )
-        current_y -= between_fiber_spacing  # Larger spacing to next fiber
+        current_y -= between_fiber_spacing
 
     legend_df = pd.DataFrame(legend_data)
-
-    legend_layer = (
+    return (
         alt.Chart(legend_df)
         .mark_text(fontSize=LEGEND_FONTSIZE, align="left", fontWeight="normal")
-        .encode(
-            **xy_encode(),
-            text="text:N",
-            color=alt.Color("color:N", scale=None),
-        )
+        .encode(**xy_encode(), text="text:N", color=alt.Color("color:N", scale=None))
     )
 
-    # Title positioned at skull's left edge
+
+def _create_title_layer(subject_id, xy_encode):
+    """Create title layer"""
     title_df = pd.DataFrame(
         [
             {
@@ -495,44 +565,12 @@ def create_schematic(fibers, subject_id):
             }
         ]
     )
-
-    title_layer = (
+    return (
         alt.Chart(title_df)
         .mark_text(fontSize=TITLE_FONTSIZE, align="left", fontWeight="bold")
         .encode(**xy_encode(), text="text:N")
     )
 
-    # Combine all layers
-    chart = (
-        alt.layer(
-            skull_layer,
-            ref_layer,
-            ref_text_layer,
-            fiber_layer,
-            left_text_layer,
-            right_text_layer,
-            orientation_layer,
-            scale_bar_layer,
-            scale_text_layer,
-            legend_layer,
-            title_layer,
-        )
-        .properties(
-            width=1400,
-            height=700,
-        )
-        .configure_view(strokeWidth=0)
-        .configure_axis(
-            grid=False,
-            domain=False,
-            labels=False,
-            ticks=False,
-            title=None,
-        )
-        .resolve_scale(x="shared", y="shared")
-    )
-
-    return chart
 
 
 def save_chart_to_base64(chart):
