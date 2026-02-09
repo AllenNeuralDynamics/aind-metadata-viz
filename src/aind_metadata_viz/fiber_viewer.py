@@ -78,127 +78,74 @@ pn.config.raw_css.append(css)
 def get_cached_procedures(subject_id: str):
     """Get procedures from cache if available"""
     cache_path = CACHE_DIR / f"{subject_id}.json"
-    if cache_path.exists():
-        try:
-            with open(cache_path, "r") as f:
-                return json.load(f)
-        except Exception as e:
-            print(f"Error reading cache: {e}")
-            return None
-    return None
+    try:
+        return json.load(cache_path.open()) if cache_path.exists() else None
+    except Exception as e:
+        print(f"Error reading cache: {e}")
+        return None
 
 
 def save_to_cache(subject_id: str, procedures: dict):
     """Save procedures to cache"""
-    cache_path = CACHE_DIR / f"{subject_id}.json"
     try:
-        with open(cache_path, "w") as f:
-            json.dump({"procedures": procedures}, f, indent=2)
+        json.dump({"procedures": procedures},
+                  (CACHE_DIR / f"{subject_id}.json").open("w"), indent=2)
     except Exception as e:
         print(f"Error writing cache: {e}")
 
 
+def extract_fiber_from_probe(device_config: dict) -> dict:
+    """Extract fiber coordinates and metadata from device config"""
+    ml = ap = angle = 0
+    dv = None  # None means no depth available
+
+    # Extract coordinates from transform array
+    for transform_obj in device_config.get("transform", []):
+        obj_type = transform_obj.get("object_type", "")
+
+        if obj_type == "Translation":
+            translation = transform_obj.get("translation", [])
+            if isinstance(translation, list) and len(translation) >= 2:
+                ap = safe_float(translation[0])
+                ml = safe_float(translation[1])
+                # Optional: 4th value is fiber depth (3rd is burr hole depth, ignored)
+                if len(translation) >= 4:
+                    dv = safe_float(translation[3])
+
+        elif obj_type == "Rotation":
+            angles = transform_obj.get("angles", [])
+            # Use first non-zero angle
+            angle = next((safe_float(a) for a in angles if a), 0)
+
+    # Get targeted structure
+    target = (device_config.get("primary_targeted_structure") or {}).get(
+        "name", "Not specified in surgical request form"
+    )
+
+    return {
+        "name": device_config.get("device_name", "Unknown"),
+        "ap": ap,
+        "ml": ml,
+        "dv": dv,
+        "angle": angle,
+        "unit": "millimeter",
+        "reference": (device_config.get("coordinate_system") or {}).get("origin", "Bregma"),
+        "targeted_structure": target,
+    }
+
+
 def process_procedures_data(subject_id: str, procedures_data: dict) -> dict:
-    """
-    Process fiber procedures data for a subject.
-
-    This function extracts fiber implant information from procedures data
-    that was fetched by the client-side JavaScript.
-
-    Args:
-        subject_id: Subject identifier
-        procedures_data: Procedures JSON data from metadata service
-
-    Returns:
-        dict with keys: procedures, fibers, subject_id, fiber_count
-    """
-    # Extract fiber implants from procedures
+    """Extract fiber implant information from procedures data"""
     fibers = []
-    if procedures_data:
-        subject_procedures = procedures_data.get("subject_procedures", [])
 
-        for surgery in subject_procedures:
-            procedures = surgery.get("procedures", [])
-
-            for proc in procedures:
-                proc_type = proc.get("object_type")
-
-                # V2 schema: Probe implant with Fiber probe device
-                if proc_type == "Probe implant":
-                    implanted_device = proc.get("implanted_device", {})
-                    device_type = implanted_device.get("object_type", "")
-
-                    if device_type == "Fiber probe":
-                        # Coordinates are in device_config.transform
-                        device_config = proc.get("device_config", {})
-
-                        # Default values
-                        ml = 0
-                        dv = None  # None means no depth available
-                        ap = 0
-                        angle = 0
-
-                        # Extract coordinates from transform array
-                        transform = device_config.get("transform", [])
-
-                        for transform_obj in transform:
-                            obj_type = transform_obj.get("object_type", "")
-
-                            # Translation format:
-                            # - 3 values: [AP, ML, burr_hole_depth] (current incomplete format, no fiber depth)
-                            # - 4+ values: [AP, ML, burr_hole_depth, fiber_depth] (future complete format)
-                            #   where burr_hole_depth is usually 0 and should be ignored
-                            if obj_type == "Translation":
-                                translation = transform_obj.get(
-                                    "translation", []
-                                )
-                                if isinstance(translation, list):
-                                    if len(translation) >= 4:
-                                        # Future format: use 4th value as fiber depth
-                                        ap = safe_float(translation[0])
-                                        ml = safe_float(translation[1])
-                                        # translation[2] is burr hole depth (ignored)
-                                        dv = safe_float(translation[3])
-                                    elif len(translation) >= 2:
-                                        # Current format: only AP and ML are valid
-                                        ap = safe_float(translation[0])
-                                        ml = safe_float(translation[1])
-                                        # Leave dv as None (no valid depth info)
-
-                            # Rotation contains angles
-                            elif obj_type == "Rotation":
-                                angles = transform_obj.get("angles", [])
-                                if isinstance(angles, list) and angles:
-                                    # Use first non-zero angle if available
-                                    for a in angles:
-                                        if a is not None and a != 0:
-                                            angle = safe_float(a)
-                                            break
-
-                        # Get targeted structure
-                        primary_target = (
-                            device_config.get("primary_targeted_structure")
-                            or {}
-                        )
-                        target_name = primary_target.get(
-                            "name", "Not specified in surgical request form"
-                        )
-
-                        fiber_info = {
-                            "name": device_config.get(
-                                "device_name", "Unknown"
-                            ),
-                            "ap": ap,
-                            "ml": ml,
-                            "dv": dv,
-                            "angle": angle,
-                            "unit": "millimeter",
-                            "reference": (
-                                device_config.get("coordinate_system") or {}
-                            ).get("origin", "Bregma"),
-                            "targeted_structure": target_name,
-                        }
-                        fibers.append(fiber_info)
+    for surgery in procedures_data.get("subject_procedures", []):
+        for proc in surgery.get("procedures", []):
+            # V2 schema: Probe implant with Fiber probe device
+            if proc.get("object_type") == "Probe implant":
+                device = proc.get("implanted_device", {})
+                if device.get("object_type") == "Fiber probe":
+                    device_config = proc.get("device_config", {})
+                    fibers.append(extract_fiber_from_probe(device_config))
 
     return {
         "procedures": procedures_data,
@@ -209,39 +156,22 @@ def process_procedures_data(subject_id: str, procedures_data: dict) -> dict:
 
 
 def get_procedures_data_from_cache_or_client(subject_id: str, client_data: dict = None) -> dict:
-    """
-    Get fiber procedures data from cache or client-provided data.
-
-    This is a wrapper that checks cache first, or uses client-provided data.
-
-    Args:
-        subject_id: Subject identifier
-        client_data: Optional procedures data fetched by client-side JavaScript
-
-    Returns:
-        dict with keys: procedures, fibers, subject_id, fiber_count, from_cache
-    """
-    # Check cache first
+    """Get fiber procedures data from cache or client-provided data"""
+    # Try cache first
     cached_data = get_cached_procedures(subject_id)
     if cached_data:
         print(f"Loading procedures for {subject_id} from cache...")
-        procedures_data = cached_data.get("procedures")
+        procedures_data = cached_data["procedures"]
         from_cache = True
     elif client_data:
         print(f"Using client-provided data for {subject_id}")
-        # Handle both direct response and wrapped in "data" key
-        if isinstance(client_data, dict) and "data" in client_data:
-            procedures_data = client_data["data"]
-        else:
-            procedures_data = client_data
-
-        # Save to cache
+        # Handle response wrapped in "data" key
+        procedures_data = client_data.get("data", client_data)
         save_to_cache(subject_id, procedures_data)
         from_cache = False
     else:
         raise ValueError("No cached data and no client data provided")
 
-    # Process the data
     result = process_procedures_data(subject_id, procedures_data)
     result["from_cache"] = from_cache
     return result
@@ -688,6 +618,79 @@ def save_chart_to_base64(chart):
         return None
 
 
+# Styling helpers
+def create_styled_pane(message: str, style_type: str):
+    """
+    Create a styled pane for displaying messages.
+
+    Args:
+        message: The message text (supports markdown)
+        style_type: One of 'error', 'warning', 'success'
+
+    Returns:
+        Panel Markdown pane with appropriate styling
+    """
+    styles = {
+        'error': {
+            "background": "#fff5f5",
+            "border-left": f"4px solid {AIND_COLORS['red']}",
+            "padding": "10px",
+            "border-radius": "5px",
+        },
+        'warning': {
+            "background": "#fff8e1",
+            "border-left": f"4px solid {AIND_COLORS['yellow']}",
+            "padding": "10px",
+            "border-radius": "5px",
+        },
+        'success': {
+            "background": "#e8f5e9",
+            "border-left": "4px solid #4caf50",
+            "padding": "10px",
+            "border-radius": "5px",
+        }
+    }
+    return pn.pane.Markdown(message, styles=styles[style_type])
+
+
+def render_fiber_visualization(subject_id: str, data: dict):
+    """
+    Core rendering logic for fiber visualization.
+
+    Takes processed fiber data and generates the appropriate display panes.
+
+    Args:
+        subject_id: Subject identifier
+        data: Processed data dict with keys: fibers, fiber_count
+
+    Returns:
+        tuple: (
+            panes_list: List of panes to display,
+            chart_data: Dict with chart, base64, subject_id keys,
+            enable_buttons: Boolean indicating if download buttons should be enabled
+        )
+    """
+    fibers = data.get("fibers", [])
+    fiber_count = data.get("fiber_count", 0)
+
+    if fiber_count == 0:
+        pane = create_styled_pane(
+            f"**No fiber implants found for subject {subject_id}**",
+            'warning'
+        )
+        return [pane], {"chart": None, "base64": None, "subject_id": None}, False
+
+    # Generate schematic
+    chart = create_schematic(fibers, subject_id)
+    chart_data = {
+        "chart": chart,
+        "base64": save_chart_to_base64(chart),
+        "subject_id": subject_id
+    }
+
+    return [pn.pane.Vega(chart)], chart_data, True
+
+
 class MetadataFetcher(pn.reactive.ReactiveHTML):
     """
     Client-side data fetcher using JavaScript fetch API.
@@ -705,42 +708,29 @@ class MetadataFetcher(pn.reactive.ReactiveHTML):
     <div id="fetcher" style="display: none;"></div>
     """
 
-    script = f"""
-// This method is called automatically when subject_id changes
-if (data.subject_id && data.subject_id.trim() !== '') {{
+    _scripts = {
+        'subject_id': f"""
+if (data.subject_id && data.subject_id.trim()) {{
     const subjectId = data.subject_id.trim();
+    const url = `{METADATA_SERVICE_URL}/api/v2/procedures/${{subjectId}}`;
 
     data.error = "";
     data.data = {{}};
 
-    const url = `{METADATA_SERVICE_URL}/api/v2/procedures/${{subjectId}}`;
-
     fetch(url)
         .then(response => {{
-            if (response.status === 404) {{
-                throw new Error(`No procedures found for subject ID: ${{subjectId}}`);
-            }}
+            if (response.status === 404) throw new Error(`No procedures found for subject ID: ${{subjectId}}`);
             if (!response.ok) {{
-                // Try to parse even if status is not OK (metadata service may return 400 with valid data)
                 return response.json().catch(() => {{
                     throw new Error(`Metadata service returned status ${{response.status}}`);
                 }});
             }}
             return response.json();
         }})
-        .then(json => {{
-            data.data = json;
-            data.error = "";
-        }})
-        .catch(err => {{
-            data.error = err.message || "Failed to fetch procedures data";
-            data.data = {{}};
-        }});
+        .then(json => {{ data.data = json; data.error = ""; }})
+        .catch(err => {{ data.error = err.message || "Failed to fetch procedures data"; data.data = {{}}; }});
 }}
 """
-
-    _scripts = {
-        'subject_id': script
     }
 
 
@@ -799,81 +789,34 @@ def build_panel_app():
     # Create metadata fetcher (client-side)
     fetcher = MetadataFetcher()
 
+    # Helper to render and update all UI elements
+    def render_and_update_ui(subject_id, data):
+        """Render visualization and update all UI state"""
+        panes, chart_data, enable_buttons = render_fiber_visualization(subject_id, data)
+        output_col[:] = panes
+        current_chart_data.update(chart_data)
+        download_button.disabled = not enable_buttons
+        copy_url_button.disabled = not enable_buttons
+
     # Watch for data changes from the fetcher
-    def process_fetched_data(event):
+    def process_fetched_data(_event):
         """Process data that was fetched by the client-side JavaScript"""
         if not fetcher.data or not fetcher.data.get("subject_procedures"):
             return
 
         subject_id = text_input.value.strip()
-
         try:
-            # Process the client-provided data
-            data = get_procedures_data_from_cache_or_client(
-                subject_id, fetcher.data
-            )
-
-            fibers = data.get("fibers", [])
-            fiber_count = data.get("fiber_count", 0)
-
-            if fiber_count == 0:
-                output_col[:] = [
-                    pn.pane.Markdown(
-                        f"**No fiber implants found for subject {subject_id}**",
-                        styles={
-                            "background": "#fff8e1",
-                            "border-left": f"4px solid {AIND_COLORS['yellow']}",
-                            "padding": "10px",
-                            "border-radius": "5px",
-                        },
-                    )
-                ]
-            else:
-                # Generate schematic
-                chart = create_schematic(fibers, subject_id)
-
-                # Save chart data for download
-                current_chart_data["chart"] = chart
-                current_chart_data["base64"] = save_chart_to_base64(chart)
-                current_chart_data["subject_id"] = subject_id
-
-                # Display Altair chart (no sizing_mode to preserve aspect ratio)
-                output_col[:] = [
-                    pn.pane.Vega(chart),
-                ]
-
-                # Enable download and copy URL buttons
-                download_button.disabled = False
-                copy_url_button.disabled = False
+            data = get_procedures_data_from_cache_or_client(subject_id, fetcher.data)
+            render_and_update_ui(subject_id, data)
         except Exception as e:
-            output_col[:] = [
-                pn.pane.Markdown(
-                    f"**Error:** {str(e)}",
-                    styles={
-                        "background": "#fff5f5",
-                        "border-left": f"4px solid {AIND_COLORS['red']}",
-                        "padding": "10px",
-                        "border-radius": "5px",
-                    },
-                )
-            ]
+            output_col[:] = [create_styled_pane(f"**Error:** {str(e)}", 'error')]
         finally:
             output_col.loading = False
 
-    def handle_fetch_error(event):
+    def handle_fetch_error(_event):
         """Handle errors from the client-side fetch"""
         if fetcher.error:
-            output_col[:] = [
-                pn.pane.Markdown(
-                    f"**Error:** {fetcher.error}",
-                    styles={
-                        "background": "#fff5f5",
-                        "border-left": f"4px solid {AIND_COLORS['red']}",
-                        "padding": "10px",
-                        "border-radius": "5px",
-                    },
-                )
-            ]
+            output_col[:] = [create_styled_pane(f"**Error:** {fetcher.error}", 'error')]
             output_col.loading = False
 
     # Watch for data and error changes
@@ -881,12 +824,10 @@ def build_panel_app():
     fetcher.param.watch(handle_fetch_error, 'error')
 
     # Button callback - trigger client-side fetch or use cache
-    async def generate_callback(event):
+    async def generate_callback(_event):
         subject_id = text_input.value.strip()
         if not subject_id:
-            output_col[:] = [
-                pn.pane.Markdown("**Error:** Please enter a subject ID.")
-            ]
+            output_col[:] = [create_styled_pane("**Error:** Please enter a subject ID.", 'error')]
             return
 
         # Check cache first
@@ -896,51 +837,9 @@ def build_panel_app():
             output_col.loading = True
             try:
                 data = get_procedures_data_from_cache_or_client(subject_id)
-
-                fibers = data.get("fibers", [])
-                fiber_count = data.get("fiber_count", 0)
-
-                if fiber_count == 0:
-                    output_col[:] = [
-                        pn.pane.Markdown(
-                            f"**No fiber implants found for subject {subject_id}**",
-                            styles={
-                                "background": "#fff8e1",
-                                "border-left": f"4px solid {AIND_COLORS['yellow']}",
-                                "padding": "10px",
-                                "border-radius": "5px",
-                            },
-                        )
-                    ]
-                else:
-                    # Generate schematic
-                    chart = create_schematic(fibers, subject_id)
-
-                    # Save chart data for download
-                    current_chart_data["chart"] = chart
-                    current_chart_data["base64"] = save_chart_to_base64(chart)
-                    current_chart_data["subject_id"] = subject_id
-
-                    # Display Altair chart (no sizing_mode to preserve aspect ratio)
-                    output_col[:] = [
-                        pn.pane.Vega(chart),
-                    ]
-
-                    # Enable download and copy URL buttons
-                    download_button.disabled = False
-                    copy_url_button.disabled = False
+                render_and_update_ui(subject_id, data)
             except Exception as e:
-                output_col[:] = [
-                    pn.pane.Markdown(
-                        f"**Error:** {str(e)}",
-                        styles={
-                            "background": "#fff5f5",
-                            "border-left": f"4px solid {AIND_COLORS['red']}",
-                            "padding": "10px",
-                            "border-radius": "5px",
-                        },
-                    )
-                ]
+                output_col[:] = [create_styled_pane(f"**Error:** {str(e)}", 'error')]
             finally:
                 output_col.loading = False
         else:
@@ -959,7 +858,7 @@ def build_panel_app():
             # Trigger the fetch by setting subject_id
             fetcher.subject_id = subject_id
 
-    def download_callback(event):
+    def download_callback(_event):
         """Download the current schematic as PNG."""
         if current_chart_data["base64"] is None:
             return
@@ -994,7 +893,7 @@ def build_panel_app():
         js_pane.object = ""
         js_pane.object = f"<script>{js_code}</script>"
 
-    def copy_url_callback(event):
+    def copy_url_callback(_event):
         """Copy current URL to clipboard."""
         js_code = """
             var url = window.location.href;
@@ -1028,15 +927,10 @@ def build_panel_app():
                 for cache_file in cache_files:
                     cache_file.unlink()
                 output_col[:] = [
-                    pn.pane.Markdown(
+                    create_styled_pane(
                         f"**Cache cleared:** Deleted {count} cached procedure file(s). "
                         f"All subsequent queries will fetch fresh data from metadata service.",
-                        styles={
-                            "background": "#e8f5e9",
-                            "border-left": "4px solid #4caf50",
-                            "padding": "10px",
-                            "border-radius": "5px",
-                        },
+                        'success'
                     )
                 ]
             else:
@@ -1046,41 +940,21 @@ def build_panel_app():
                 if cache_file.exists():
                     cache_file.unlink()
                     output_col[:] = [
-                        pn.pane.Markdown(
+                        create_styled_pane(
                             f"**Cache cleared:** Deleted cached data for subject {subject_id}. "
                             f"Next query will fetch fresh data from metadata service.",
-                            styles={
-                                "background": "#e8f5e9",
-                                "border-left": "4px solid #4caf50",
-                                "padding": "10px",
-                                "border-radius": "5px",
-                            },
+                            'success'
                         )
                     ]
                 else:
                     output_col[:] = [
-                        pn.pane.Markdown(
+                        create_styled_pane(
                             f"**No cache found:** Subject {subject_id} has no cached data.",
-                            styles={
-                                "background": "#fff8e1",
-                                "border-left": "4px solid #ff9800",
-                                "padding": "10px",
-                                "border-radius": "5px",
-                            },
+                            'warning'
                         )
                     ]
         except Exception as e:
-            output_col[:] = [
-                pn.pane.Markdown(
-                    f"**Error clearing cache:** {str(e)}",
-                    styles={
-                        "background": "#fff5f5",
-                        "border-left": "4px solid #f44336",
-                        "padding": "10px",
-                        "border-radius": "5px",
-                    },
-                )
-            ]
+            output_col[:] = [create_styled_pane(f"**Error clearing cache:** {str(e)}", 'error')]
 
     # Get subject_id from URL and set text input manually
     if pn.state.location:
@@ -1099,44 +973,10 @@ def build_panel_app():
         if cached_data:
             # Use cached data for instant load
             try:
-                results = get_procedures_data_from_cache_or_client(subject_id)
-                fibers = results.get("fibers", [])
-                fiber_count = results.get("fiber_count", 0)
-
-                if fiber_count == 0:
-                    output_col[:] = [
-                        pn.pane.Markdown(
-                            f"**No fiber implants found for subject {subject_id}**",
-                            styles={
-                                "background": "#fff8e1",
-                                "border-left": f"4px solid {AIND_COLORS['yellow']}",
-                                "padding": "10px",
-                                "border-radius": "5px",
-                            },
-                        )
-                    ]
-                else:
-                    chart = create_schematic(fibers, subject_id)
-                    current_chart_data["chart"] = chart
-                    current_chart_data["base64"] = save_chart_to_base64(chart)
-                    current_chart_data["subject_id"] = subject_id
-                    output_col[:] = [
-                        pn.pane.Vega(chart),
-                    ]
-                    download_button.disabled = False
-                    copy_url_button.disabled = False
+                data = get_procedures_data_from_cache_or_client(subject_id)
+                render_and_update_ui(subject_id, data)
             except Exception as e:
-                output_col[:] = [
-                    pn.pane.Markdown(
-                        f"**Error:** {str(e)}",
-                        styles={
-                            "background": "#fff5f5",
-                            "border-left": f"4px solid {AIND_COLORS['red']}",
-                            "padding": "10px",
-                            "border-radius": "5px",
-                        },
-                    )
-                ]
+                output_col[:] = [create_styled_pane(f"**Error:** {str(e)}", 'error')]
         else:
             # No cache - show loading and trigger client-side fetch
             output_col[:] = [
