@@ -5,6 +5,7 @@ import base64
 import io
 import json
 import math
+import traceback
 from pathlib import Path
 
 import altair as alt
@@ -619,13 +620,14 @@ def save_chart_to_base64(chart):
 
 
 # Styling helpers
-def create_styled_pane(message: str, style_type: str):
+def create_styled_pane(message: str, style_type: str, details: str = None):
     """
     Create a styled pane for displaying messages.
 
     Args:
         message: The message text (supports markdown)
         style_type: One of 'error', 'warning', 'success'
+        details: Optional detailed information (shown in expandable section)
 
     Returns:
         Panel Markdown pane with appropriate styling
@@ -650,7 +652,22 @@ def create_styled_pane(message: str, style_type: str):
             "border-radius": "5px",
         }
     }
-    return pn.pane.Markdown(message, styles=styles[style_type])
+
+    if details:
+        # Add expandable details section
+        content = f"""{message}
+
+<details>
+<summary><b>Click to expand error details</b></summary>
+
+```
+{details}
+```
+</details>"""
+    else:
+        content = message
+
+    return pn.pane.Markdown(content, styles=styles[style_type])
 
 
 def render_fiber_visualization(subject_id: str, data: dict):
@@ -703,6 +720,7 @@ class MetadataFetcher(pn.reactive.ReactiveHTML):
     subject_id = param.String(default="")
     data = param.Dict(default={})
     error = param.String(default="")
+    error_details = param.String(default="")
 
     _template = """
     <div id="fetcher" style="display: none;"></div>
@@ -715,20 +733,48 @@ if (data.subject_id && data.subject_id.trim()) {{
     const url = `{METADATA_SERVICE_URL}/api/v2/procedures/${{subjectId}}`;
 
     data.error = "";
+    data.error_details = "";
     data.data = {{}};
 
     fetch(url)
         .then(response => {{
-            if (response.status === 404) throw new Error(`No procedures found for subject ID: ${{subjectId}}`);
-            if (!response.ok) {{
-                return response.json().catch(() => {{
-                    throw new Error(`Metadata service returned status ${{response.status}}`);
-                }});
-            }}
-            return response.json();
+            const status = response.status;
+            const statusText = response.statusText;
+
+            // Try to get response body for error details
+            return response.text().then(body => {{
+                if (status === 404) {{
+                    const details = `URL: ${{url}}\\nStatus: ${{status}} ${{statusText}}\\nResponse: ${{body}}`;
+                    data.error_details = details;
+                    throw new Error(`No procedures found for subject ID: ${{subjectId}}`);
+                }}
+                if (!response.ok) {{
+                    const details = `URL: ${{url}}\\nStatus: ${{status}} ${{statusText}}\\nResponse: ${{body}}`;
+                    data.error_details = details;
+                    throw new Error(`Metadata service returned status ${{status}}`);
+                }}
+                // Parse successful response
+                try {{
+                    return JSON.parse(body);
+                }} catch (e) {{
+                    const details = `URL: ${{url}}\\nStatus: ${{status}} ${{statusText}}\\nResponse: ${{body}}\\nParse error: ${{e.message}}`;
+                    data.error_details = details;
+                    throw new Error('Invalid JSON response from metadata service');
+                }}
+            }});
         }})
-        .then(json => {{ data.data = json; data.error = ""; }})
-        .catch(err => {{ data.error = err.message || "Failed to fetch procedures data"; data.data = {{}}; }});
+        .then(json => {{
+            data.data = json;
+            data.error = "";
+            data.error_details = "";
+        }})
+        .catch(err => {{
+            data.error = err.message || "Failed to fetch procedures data";
+            if (!data.error_details) {{
+                data.error_details = `URL: ${{url}}\\nError: ${{err.stack || err.message}}`;
+            }}
+            data.data = {{}};
+        }});
 }}
 """
     }
@@ -809,14 +855,23 @@ def build_panel_app():
             data = get_procedures_data_from_cache_or_client(subject_id, fetcher.data)
             render_and_update_ui(subject_id, data)
         except Exception as e:
-            output_col[:] = [create_styled_pane(f"**Error:** {str(e)}", 'error')]
+            tb = traceback.format_exc()
+            output_col[:] = [create_styled_pane(
+                f"**Error processing data:** {str(e)}",
+                'error',
+                details=tb
+            )]
         finally:
             output_col.loading = False
 
     def handle_fetch_error(_event):
         """Handle errors from the client-side fetch"""
         if fetcher.error:
-            output_col[:] = [create_styled_pane(f"**Error:** {fetcher.error}", 'error')]
+            output_col[:] = [create_styled_pane(
+                f"**Error:** {fetcher.error}",
+                'error',
+                details=fetcher.error_details if fetcher.error_details else None
+            )]
             output_col.loading = False
 
     # Watch for data and error changes
@@ -839,7 +894,12 @@ def build_panel_app():
                 data = get_procedures_data_from_cache_or_client(subject_id)
                 render_and_update_ui(subject_id, data)
             except Exception as e:
-                output_col[:] = [create_styled_pane(f"**Error:** {str(e)}", 'error')]
+                tb = traceback.format_exc()
+                output_col[:] = [create_styled_pane(
+                    f"**Error:** {str(e)}",
+                    'error',
+                    details=tb
+                )]
             finally:
                 output_col.loading = False
         else:
@@ -954,7 +1014,12 @@ def build_panel_app():
                         )
                     ]
         except Exception as e:
-            output_col[:] = [create_styled_pane(f"**Error clearing cache:** {str(e)}", 'error')]
+            tb = traceback.format_exc()
+            output_col[:] = [create_styled_pane(
+                f"**Error clearing cache:** {str(e)}",
+                'error',
+                details=tb
+            )]
 
     # Get subject_id from URL and set text input manually
     if pn.state.location:
@@ -976,7 +1041,12 @@ def build_panel_app():
                 data = get_procedures_data_from_cache_or_client(subject_id)
                 render_and_update_ui(subject_id, data)
             except Exception as e:
-                output_col[:] = [create_styled_pane(f"**Error:** {str(e)}", 'error')]
+                tb = traceback.format_exc()
+                output_col[:] = [create_styled_pane(
+                    f"**Error:** {str(e)}",
+                    'error',
+                    details=tb
+                )]
         else:
             # No cache - show loading and trigger client-side fetch
             output_col[:] = [
