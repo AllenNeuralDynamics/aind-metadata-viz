@@ -3,8 +3,8 @@ Fiber Implant Viewer - Interactive web application for visualizing fiber probe l
 
 OVERVIEW:
     This Panel web app displays fiber photometry probe implant locations on a top-down
-    schematic of the mouse brain. Users enter a subject ID and see an interactive
-    visualization showing fiber coordinates, targeted brain structures, and metadata.
+    schematic of the mouse brain. Users enter a subject ID and see a
+    visualization showing fiber coordinates and targeted brain structures (if available).
 
 ARCHITECTURE:
     Client-Side Data Fetching (for deployment):
@@ -14,9 +14,10 @@ ARCHITECTURE:
         - See MetadataFetcher class for implementation
 
     Caching:
+        - The metadata service is slow (~30 seconds to fetch data) so we cache procedures data locally to speed up display when cached data is available.
         - Procedures data cached locally in .cache/procedures/ directory
         - Never expires automatically (use URL params below to clear)
-        - Instant load when cached data available
+        - Near instant load when cached data available
         - Clear cache via URL: ?clear_cache=all&confirm=yes (all subjects)
         - Clear cache via URL: ?clear_cache=SUBJECT_ID&confirm=yes (one subject)
 
@@ -27,13 +28,13 @@ DATA FLOW:
        - If not cached: continue to step 3
     3. Client-side JavaScript fetches from aind-metadata-service API
     4. Raw procedures JSON passed from browser to Python, saved to cache
-    5. extract_fiber_from_probe() extracts coordinates from transform data
+    5. extract_fiber_metadata() extracts coordinates from transform data
     6. create_schematic() generates Altair visualization
     7. Display interactive chart with download/share options
 
 KEY COMPONENTS:
     - MetadataFetcher: ReactiveHTML component with JavaScript fetch logic
-    - extract_fiber_from_probe(): Parse fiber coordinates from device config
+    - extract_fiber_metadata(): Parse fiber coordinates from device config
     - create_schematic(): Generate Altair/Vega chart with all visual layers
     - render_fiber_visualization(): Core rendering logic with error handling
     - create_styled_pane(): Styled error/warning/success messages with expandable details
@@ -151,7 +152,7 @@ def save_to_cache(subject_id: str, procedures: dict):
         print(f"Error writing cache: {e}")
 
 
-def extract_fiber_from_probe(device_config: dict) -> dict:
+def extract_fiber_metadata(device_config: dict) -> dict:
     """Extract fiber coordinates and metadata from device config"""
     ml = ap = angle = 0
     dv = None  # None means no depth available
@@ -204,7 +205,7 @@ def process_procedures_data(subject_id: str, procedures_data: dict) -> dict:
                 device = proc.get("implanted_device", {})
                 if device.get("object_type") == "Fiber probe":
                     device_config = proc.get("device_config", {})
-                    fibers.append(extract_fiber_from_probe(device_config))
+                    fibers.append(extract_fiber_metadata(device_config))
 
     return {
         "procedures": procedures_data,
