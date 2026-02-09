@@ -1,10 +1,69 @@
-"""App for viewing fiber implant locations in mouse brains"""
+"""
+Fiber Implant Viewer - Interactive web application for visualizing fiber probe locations
+
+OVERVIEW:
+    This Panel web app displays fiber photometry probe implant locations on a top-down
+    schematic of the mouse brain. Users enter a subject ID and see a
+    visualization showing fiber coordinates and targeted brain structures (if available).
+
+ARCHITECTURE:
+    Client-Side Data Fetching (for deployment):
+        - JavaScript fetch() runs in user's browser to access aind-metadata-service
+        - Works when deployed to cloud and accessed from AIND internal network
+        - Overcomes network boundary: cloud server can't reach on-prem metadata service
+        - See MetadataFetcher class for implementation
+
+    Caching:
+        - The metadata service is slow (~30 seconds to fetch data) so we cache procedures data locally to speed up display when cached data is available.
+        - Procedures data cached locally in .cache/procedures/ directory
+        - Never expires automatically (use URL params below to clear)
+        - Near instant load when cached data available
+        - Clear cache via URL: ?clear_cache=all&confirm=yes (all subjects)
+        - Clear cache via URL: ?clear_cache=SUBJECT_ID&confirm=yes (one subject)
+
+DATA FLOW:
+    1. User enters subject ID
+    2. Check local cache first
+       - If cached: skip to step 5
+       - If not cached: continue to step 3
+    3. Client-side JavaScript fetches from aind-metadata-service API
+    4. Raw procedures JSON passed from browser to Python, saved to cache
+    5. extract_fiber_metadata() extracts coordinates from transform data
+    6. create_schematic() generates Altair visualization
+    7. Display interactive chart with download/share options
+
+KEY COMPONENTS:
+    - MetadataFetcher: ReactiveHTML component with JavaScript fetch logic
+    - extract_fiber_metadata(): Parse fiber coordinates from device config
+    - create_schematic(): Generate Altair/Vega chart with all visual layers
+    - render_fiber_visualization(): Core rendering logic with error handling
+    - create_styled_pane(): Styled error/warning/success messages with expandable details
+
+VISUALIZATION:
+    - Skull outline (ellipse)
+    - Reference points (Bregma, Lambda)
+    - Fiber markers (colored circles with labels)
+    - Legend with coordinates and targeted structures
+    - Orientation indicators and scale bar
+    - Download as high-res PNG
+
+ERROR HANDLING:
+    - Simple message shown by default
+    - Expandable details with full traceback/HTTP response
+    - Client-side errors capture: URL, status code, response body
+    - Python errors capture: full traceback
+
+URL PARAMETERS:
+    - subject_id: Auto-load visualization for this subject
+    - clear_cache=all&confirm=yes: Clear all cached data (admin)
+    - clear_cache={id}&confirm=yes: Clear cache for specific subject
+"""
 
 import asyncio
 import base64
-import io
 import json
 import math
+import traceback
 from pathlib import Path
 
 import altair as alt
@@ -53,10 +112,6 @@ LAMBDA_RADIUS = 0.25
 SKULL_EDGE_COLOR = "#333333"
 SKULL_ALPHA = 0.3
 
-# Grid styling
-GRID_COLOR = "gray"
-GRID_ALPHA = 0.2
-
 # Font sizes (increased by 25% from original)
 TITLE_FONTSIZE = 21
 FIBER_LABEL_FONTSIZE = 15
@@ -78,127 +133,79 @@ pn.config.raw_css.append(css)
 def get_cached_procedures(subject_id: str):
     """Get procedures from cache if available"""
     cache_path = CACHE_DIR / f"{subject_id}.json"
-    if cache_path.exists():
-        try:
-            with open(cache_path, "r") as f:
-                return json.load(f)
-        except Exception as e:
-            print(f"Error reading cache: {e}")
-            return None
-    return None
+    try:
+        return json.load(cache_path.open()) if cache_path.exists() else None
+    except Exception as e:
+        print(f"Error reading cache: {e}")
+        return None
 
 
 def save_to_cache(subject_id: str, procedures: dict):
     """Save procedures to cache"""
-    cache_path = CACHE_DIR / f"{subject_id}.json"
     try:
-        with open(cache_path, "w") as f:
-            json.dump({"procedures": procedures}, f, indent=2)
+        json.dump(
+            {"procedures": procedures},
+            (CACHE_DIR / f"{subject_id}.json").open("w"),
+            indent=2,
+        )
     except Exception as e:
         print(f"Error writing cache: {e}")
 
 
+def extract_fiber_metadata(device_config: dict) -> dict:
+    """Extract fiber coordinates and metadata from device config"""
+    ml = ap = angle = 0
+    dv = None  # None means no depth available
+
+    # Extract coordinates from transform array
+    for transform_obj in device_config.get("transform", []):
+        obj_type = transform_obj.get("object_type", "")
+
+        if obj_type == "Translation":
+            translation = transform_obj.get("translation", [])
+            if isinstance(translation, list) and len(translation) >= 2:
+                ap = safe_float(translation[0])
+                ml = safe_float(translation[1])
+                # Optional: 4th value is fiber depth (3rd is burr hole depth, ignored)
+                if len(translation) >= 4:
+                    dv = safe_float(translation[3])
+
+        elif obj_type == "Rotation":
+            angles = transform_obj.get("angles", [])
+            # Use first non-zero angle
+            angle = next((safe_float(a) for a in angles if a), 0)
+
+    # Get targeted structure
+    target = (device_config.get("primary_targeted_structure") or {}).get(
+        "name", "Not specified in surgical request form"
+    )
+
+    return {
+        "name": device_config.get("device_name", "Unknown"),
+        "ap": ap,
+        "ml": ml,
+        "dv": dv,
+        "angle": angle,
+        "unit": "millimeter",
+        "reference": (device_config.get("coordinate_system") or {}).get(
+            "origin", "Bregma"
+        ),
+        "targeted_structure": target,
+    }
+
+
 def process_procedures_data(subject_id: str, procedures_data: dict) -> dict:
-    """
-    Process fiber procedures data for a subject.
-
-    This function extracts fiber implant information from procedures data
-    that was fetched by the client-side JavaScript.
-
-    Args:
-        subject_id: Subject identifier
-        procedures_data: Procedures JSON data from metadata service
-
-    Returns:
-        dict with keys: procedures, fibers, subject_id, fiber_count
-    """
-    # Extract fiber implants from procedures
+    """Extract fiber implant information from procedures data"""
     fibers = []
-    if procedures_data:
-        subject_procedures = procedures_data.get("subject_procedures", [])
 
-        for surgery in subject_procedures:
-            procedures = surgery.get("procedures", [])
-
-            for proc in procedures:
-                proc_type = proc.get("object_type")
-
-                # V2 schema: Probe implant with Fiber probe device
-                if proc_type == "Probe implant":
-                    implanted_device = proc.get("implanted_device", {})
-                    device_type = implanted_device.get("object_type", "")
-
-                    if device_type == "Fiber probe":
-                        # Coordinates are in device_config.transform
-                        device_config = proc.get("device_config", {})
-
-                        # Default values
-                        ml = 0
-                        dv = None  # None means no depth available
-                        ap = 0
-                        angle = 0
-
-                        # Extract coordinates from transform array
-                        transform = device_config.get("transform", [])
-
-                        for transform_obj in transform:
-                            obj_type = transform_obj.get("object_type", "")
-
-                            # Translation format:
-                            # - 3 values: [AP, ML, burr_hole_depth] (current incomplete format, no fiber depth)
-                            # - 4+ values: [AP, ML, burr_hole_depth, fiber_depth] (future complete format)
-                            #   where burr_hole_depth is usually 0 and should be ignored
-                            if obj_type == "Translation":
-                                translation = transform_obj.get(
-                                    "translation", []
-                                )
-                                if isinstance(translation, list):
-                                    if len(translation) >= 4:
-                                        # Future format: use 4th value as fiber depth
-                                        ap = safe_float(translation[0])
-                                        ml = safe_float(translation[1])
-                                        # translation[2] is burr hole depth (ignored)
-                                        dv = safe_float(translation[3])
-                                    elif len(translation) >= 2:
-                                        # Current format: only AP and ML are valid
-                                        ap = safe_float(translation[0])
-                                        ml = safe_float(translation[1])
-                                        # Leave dv as None (no valid depth info)
-
-                            # Rotation contains angles
-                            elif obj_type == "Rotation":
-                                angles = transform_obj.get("angles", [])
-                                if isinstance(angles, list) and angles:
-                                    # Use first non-zero angle if available
-                                    for a in angles:
-                                        if a is not None and a != 0:
-                                            angle = safe_float(a)
-                                            break
-
-                        # Get targeted structure
-                        primary_target = (
-                            device_config.get("primary_targeted_structure")
-                            or {}
-                        )
-                        target_name = primary_target.get(
-                            "name", "Not specified in surgical request form"
-                        )
-
-                        fiber_info = {
-                            "name": device_config.get(
-                                "device_name", "Unknown"
-                            ),
-                            "ap": ap,
-                            "ml": ml,
-                            "dv": dv,
-                            "angle": angle,
-                            "unit": "millimeter",
-                            "reference": (
-                                device_config.get("coordinate_system") or {}
-                            ).get("origin", "Bregma"),
-                            "targeted_structure": target_name,
-                        }
-                        fibers.append(fiber_info)
+    for surgery in procedures_data.get("subject_procedures", []):
+        for proc in surgery.get("procedures", []):
+            # V2 schema: Probe implant with Fiber probe device
+            if proc.get("object_type") == "Probe implant":
+                device = proc.get("implanted_device", {})
+                if device.get("object_type") == "Fiber probe":
+                    device_config = proc.get("device_config", {})
+                    fibers.append(extract_fiber_metadata(device_config))
 
     return {
         "procedures": procedures_data,
@@ -208,40 +215,25 @@ def process_procedures_data(subject_id: str, procedures_data: dict) -> dict:
     }
 
 
-def get_procedures_data_from_cache_or_client(subject_id: str, client_data: dict = None) -> dict:
-    """
-    Get fiber procedures data from cache or client-provided data.
-
-    This is a wrapper that checks cache first, or uses client-provided data.
-
-    Args:
-        subject_id: Subject identifier
-        client_data: Optional procedures data fetched by client-side JavaScript
-
-    Returns:
-        dict with keys: procedures, fibers, subject_id, fiber_count, from_cache
-    """
-    # Check cache first
+def get_procedures_data_from_cache_or_client(
+    subject_id: str, client_data: dict = None
+) -> dict:
+    """Get fiber procedures data from cache or client-provided data"""
+    # Try cache first
     cached_data = get_cached_procedures(subject_id)
     if cached_data:
         print(f"Loading procedures for {subject_id} from cache...")
-        procedures_data = cached_data.get("procedures")
+        procedures_data = cached_data["procedures"]
         from_cache = True
     elif client_data:
         print(f"Using client-provided data for {subject_id}")
-        # Handle both direct response and wrapped in "data" key
-        if isinstance(client_data, dict) and "data" in client_data:
-            procedures_data = client_data["data"]
-        else:
-            procedures_data = client_data
-
-        # Save to cache
+        # Handle response wrapped in "data" key
+        procedures_data = client_data.get("data", client_data)
         save_to_cache(subject_id, procedures_data)
         from_cache = False
     else:
         raise ValueError("No cached data and no client data provided")
 
-    # Process the data
     result = process_procedures_data(subject_id, procedures_data)
     result["from_cache"] = from_cache
     return result
@@ -271,10 +263,12 @@ def create_ellipse_points(center_x, center_y, width, height, num_points=100):
 def create_schematic(fibers, subject_id):
     """
     Create the complete fiber implant schematic using Altair.
+
+    High-level orchestration function that composes all visualization layers.
     Returns Altair chart.
     """
 
-    # Sort fibers by name
+    # Sort fibers by name for consistent display
     def get_fiber_index(fiber):
         name = fiber.get("name", "Unknown")
         try:
@@ -286,96 +280,111 @@ def create_schematic(fibers, subject_id):
 
     sorted_fibers = sorted(fibers, key=get_fiber_index)
 
-    # Create skull outline points
-    skull_points = create_ellipse_points(0, 0, SKULL_WIDTH_MM, SKULL_LENGTH_MM)
-    skull_df = pd.DataFrame(skull_points)
-
-    # Define consistent scale domains for all layers
-    # 2:1 width:height ratio - x domain should be 2x the y domain
+    # Define consistent scale domains for all layers (2:1 width:height ratio)
     x_scale = alt.Scale(domain=[-8, 48])  # 56 units
     y_scale = alt.Scale(domain=[-14, 14])  # 28 units
 
-    # Create skull outline layer
-    skull_layer = (
+    # Helper for common x/y encoding with consistent scales
+    def xy_encode(x_col="x", y_col="y"):
+        return {
+            "x": alt.X(f"{x_col}:Q", scale=x_scale),
+            "y": alt.Y(f"{y_col}:Q", scale=y_scale),
+        }
+
+    # Step 1: Create skull outline
+    skull_layer = _create_skull_layer(xy_encode)
+
+    # Step 2: Create reference points (Bregma, Lambda)
+    ref_layer, ref_text_layer = _create_reference_layers(xy_encode)
+
+    # Step 3: Create fiber markers and labels
+    fiber_layer, left_text_layer, right_text_layer = _create_fiber_layers(
+        sorted_fibers, xy_encode
+    )
+
+    # Step 4: Create orientation indicators
+    orientation_layer = _create_orientation_layer(xy_encode)
+
+    # Step 5: Create scale bar
+    scale_bar_layer, scale_text_layer = _create_scale_layers(xy_encode)
+
+    # Step 6: Create legend with fiber details
+    legend_layer = _create_legend_layer(sorted_fibers, xy_encode)
+
+    # Step 7: Create title
+    title_layer = _create_title_layer(subject_id, xy_encode)
+
+    # Step 8: Compose all layers into final chart
+    chart = (
+        alt.layer(
+            skull_layer,
+            ref_layer,
+            ref_text_layer,
+            fiber_layer,
+            left_text_layer,
+            right_text_layer,
+            orientation_layer,
+            scale_bar_layer,
+            scale_text_layer,
+            legend_layer,
+            title_layer,
+        )
+        .properties(width=1400, height=700)
+        .configure_view(strokeWidth=0)
+        .configure_axis(
+            grid=False, domain=False, labels=False, ticks=False, title=None
+        )
+        .resolve_scale(x="shared", y="shared")
+    )
+
+    return chart
+
+
+def _create_skull_layer(xy_encode):
+    """Create skull outline ellipse layer"""
+    skull_points = create_ellipse_points(0, 0, SKULL_WIDTH_MM, SKULL_LENGTH_MM)
+    skull_df = pd.DataFrame(skull_points)
+    return (
         alt.Chart(skull_df)
         .mark_line(color=SKULL_EDGE_COLOR, strokeWidth=2, opacity=0.5)
-        .encode(
-            x=alt.X("x:Q", scale=x_scale),
-            y=alt.Y("y:Q", scale=y_scale),
-            order="order:Q",
-        )
+        .encode(**xy_encode(), order="order:Q")
     )
 
-    # Grid lines data
-    grid_data = []
-    for ml in range(-6, 7, 2):
-        grid_data.append(
-            {"x": ml, "y": -13, "x2": ml, "y2": 13, "type": "vertical"}
-        )
-    for ap in range(-10, 11, 2):
-        grid_data.append(
-            {"x": -9, "y": ap, "x2": 9, "y2": ap, "type": "horizontal"}
-        )
-    grid_df = pd.DataFrame(grid_data)
 
-    # Grid layer
-    grid_layer = (
-        alt.Chart(grid_df)
-        .mark_rule(
-            strokeDash=[3, 3],
-            color=GRID_COLOR,
-            opacity=GRID_ALPHA,
-            strokeWidth=0.5,
-        )
-        .encode(
-            x=alt.X("x:Q", scale=x_scale),
-            y=alt.Y("y:Q", scale=y_scale),
-            x2="x2:Q",
-            y2="y2:Q",
-        )
-    )
-
-    # Reference points (Bregma and Lambda)
+def _create_reference_layers(xy_encode):
+    """Create Bregma and Lambda reference point layers (markers + labels)"""
+    # Reference point markers
     ref_points_df = pd.DataFrame(
         [
             {"x": 0, "y": 0, "label": "Bregma", "size": BREGMA_RADIUS * 200},
-            {
-                "x": 0,
-                "y": -4.0,
-                "label": "Lambda",
-                "size": LAMBDA_RADIUS * 200,
-            },
+            {"x": 0, "y": -4.0, "label": "Lambda", "size": LAMBDA_RADIUS * 200},
         ]
     )
-
     ref_layer = (
         alt.Chart(ref_points_df)
         .mark_circle(color=BREGMA_COLOR, stroke="black", strokeWidth=1.5)
-        .encode(
-            x=alt.X("x:Q", scale=x_scale),
-            y=alt.Y("y:Q", scale=y_scale),
-            size=alt.Size("size:Q", legend=None),
-        )
+        .encode(**xy_encode(), size=alt.Size("size:Q", legend=None))
     )
 
+    # Reference point labels
     ref_labels_df = pd.DataFrame(
         [
             {"x": 0, "y": -0.8, "label": "Bregma"},
             {"x": 0, "y": -4.6, "label": "Lambda"},
         ]
     )
-
     ref_text_layer = (
         alt.Chart(ref_labels_df)
         .mark_text(fontSize=REFERENCE_FONTSIZE, fontWeight="bold", dy=5)
-        .encode(
-            x=alt.X("x:Q", scale=x_scale),
-            y=alt.Y("y:Q", scale=y_scale),
-            text="label:N",
-        )
+        .encode(**xy_encode(), text="label:N")
     )
 
-    # Fiber points
+    return ref_layer, ref_text_layer
+
+
+def _create_fiber_layers(sorted_fibers, xy_encode):
+    """Create fiber marker and label layers"""
+    # Build fiber data for markers and labels
     fiber_data = []
     fiber_label_data = []
     for idx, fiber in enumerate(sorted_fibers):
@@ -394,13 +403,9 @@ def create_schematic(fibers, subject_id):
             }
         )
 
-        # Smart label positioning: left side fibers get right-aligned labels,
-        # right side fibers get left-aligned labels
+        # Smart label positioning: left side gets right-aligned, right side gets left-aligned
         label_offset = 0.9
-        if ml < 0:  # Left side - align right
-            align = "right"
-        else:  # Right side - align left
-            align = "left"
+        align = "right" if ml < 0 else "left"
 
         fiber_label_data.append(
             {
@@ -415,151 +420,101 @@ def create_schematic(fibers, subject_id):
     fiber_df = pd.DataFrame(fiber_data)
     fiber_labels_df = pd.DataFrame(fiber_label_data)
 
-    # Fiber points layer
+    # Fiber markers layer
     fiber_layer = (
         alt.Chart(fiber_df)
         .mark_circle(stroke="black", strokeWidth=2)
         .encode(
-            x=alt.X("ml:Q", scale=x_scale),
-            y=alt.Y("ap:Q", scale=y_scale),
+            **xy_encode("ml", "ap"),
             color=alt.Color("color:N", scale=None),
             size=alt.Size("size:Q", legend=None),
         )
     )
 
-    # Split labels into left and right for different alignments
-    left_labels_df = fiber_labels_df[fiber_labels_df["align"] == "right"]
-    right_labels_df = fiber_labels_df[fiber_labels_df["align"] == "left"]
+    # Helper to create label layer with alignment
+    def create_label_layer(labels_df, alignment):
+        return (
+            alt.Chart(labels_df)
+            .mark_text(
+                fontSize=FIBER_LABEL_FONTSIZE,
+                fontWeight="bold",
+                dy=-8,
+                align=alignment,
+            )
+            .encode(
+                **xy_encode("ml", "ap"),
+                text="name:N",
+                color=alt.Color("color:N", scale=None),
+            )
+        )
 
-    # Left-side fiber labels (right-aligned)
-    left_text_layer = (
-        alt.Chart(left_labels_df)
-        .mark_text(
-            fontSize=FIBER_LABEL_FONTSIZE,
-            fontWeight="bold",
-            dy=-8,
-            align="right",
-        )
-        .encode(
-            x=alt.X("ml:Q", scale=x_scale),
-            y=alt.Y("ap:Q", scale=y_scale),
-            text="name:N",
-            color=alt.Color("color:N", scale=None),
-        )
+    # Create separate layers for left and right aligned labels
+    left_text_layer = create_label_layer(
+        fiber_labels_df[fiber_labels_df["align"] == "right"], "right"
+    )
+    right_text_layer = create_label_layer(
+        fiber_labels_df[fiber_labels_df["align"] == "left"], "left"
     )
 
-    # Right-side fiber labels (left-aligned)
-    right_text_layer = (
-        alt.Chart(right_labels_df)
-        .mark_text(
-            fontSize=FIBER_LABEL_FONTSIZE,
-            fontWeight="bold",
-            dy=-8,
-            align="left",
-        )
-        .encode(
-            x=alt.X("ml:Q", scale=x_scale),
-            y=alt.Y("ap:Q", scale=y_scale),
-            text="name:N",
-            color=alt.Color("color:N", scale=None),
-        )
-    )
+    return fiber_layer, left_text_layer, right_text_layer
 
-    # Orientation arrow (simplified - just text labels)
+
+def _create_orientation_layer(xy_encode):
+    """Create anterior/posterior orientation indicators"""
     arrow_x = -SKULL_WIDTH_MM / 2 - 1.5
     orientation_df = pd.DataFrame(
         [
-            {
-                "x": arrow_x,
-                "y": 10,
-                "label": "anterior",
-                "size": REFERENCE_FONTSIZE,
-            },
-            {
-                "x": arrow_x,
-                "y": -10,
-                "label": "posterior",
-                "size": REFERENCE_FONTSIZE,
-            },
-            {
-                "x": arrow_x,
-                "y": 7,
-                "label": "↑",
-                "size": REFERENCE_FONTSIZE * 2,
-            },
-            {
-                "x": arrow_x,
-                "y": -7,
-                "label": "↓",
-                "size": REFERENCE_FONTSIZE * 2,
-            },
+            {"x": arrow_x, "y": 10, "label": "anterior", "size": REFERENCE_FONTSIZE},
+            {"x": arrow_x, "y": -10, "label": "posterior", "size": REFERENCE_FONTSIZE},
+            {"x": arrow_x, "y": 7, "label": "↑", "size": REFERENCE_FONTSIZE * 2},
+            {"x": arrow_x, "y": -7, "label": "↓", "size": REFERENCE_FONTSIZE * 2},
         ]
     )
-
-    orientation_layer = (
+    return (
         alt.Chart(orientation_df)
         .mark_text(fontWeight="bold")
-        .encode(
-            x=alt.X("x:Q", scale=x_scale),
-            y=alt.Y("y:Q", scale=y_scale),
-            text="label:N",
-            size=alt.Size("size:Q", legend=None),
-        )
+        .encode(**xy_encode(), text="label:N", size=alt.Size("size:Q", legend=None))
     )
 
-    # Scale bar
+
+def _create_scale_layers(xy_encode):
+    """Create scale bar and label layers"""
     scale_bar_x = -SKULL_WIDTH_MM / 2 - 1.5
     scale_bar_y = -SKULL_LENGTH_MM / 2 - 1
-    scale_bar_df = pd.DataFrame(
-        [
-            {
-                "x": scale_bar_x,
-                "y": scale_bar_y,
-                "x2": scale_bar_x + 5,
-                "y2": scale_bar_y,
-            }
-        ]
-    )
 
+    # Scale bar line
+    scale_bar_df = pd.DataFrame(
+        [{"x": scale_bar_x, "y": scale_bar_y, "x2": scale_bar_x + 5, "y2": scale_bar_y}]
+    )
     scale_bar_layer = (
         alt.Chart(scale_bar_df)
         .mark_rule(color="black", strokeWidth=3)
-        .encode(
-            x=alt.X("x:Q", scale=x_scale),
-            y=alt.Y("y:Q", scale=y_scale),
-            x2="x2:Q",
-            y2="y2:Q",
-        )
+        .encode(**xy_encode(), x2="x2:Q", y2="y2:Q")
     )
 
+    # Scale bar label
     scale_text_df = pd.DataFrame(
         [{"x": scale_bar_x + 2.5, "y": scale_bar_y + 0.5, "label": "5 mm"}]
     )
-
     scale_text_layer = (
         alt.Chart(scale_text_df)
         .mark_text(fontSize=REFERENCE_FONTSIZE, fontWeight="bold")
-        .encode(
-            x=alt.X("x:Q", scale=x_scale),
-            y=alt.Y("y:Q", scale=y_scale),
-            text="label:N",
-        )
+        .encode(**xy_encode(), text="label:N")
     )
 
-    # Legend text (positioned on right side)
+    return scale_bar_layer, scale_text_layer
+
+
+def _create_legend_layer(sorted_fibers, xy_encode):
+    """Create legend with fiber coordinates and targeted structures"""
     legend_data = []
     legend_x = 9.5  # Position on right side
     legend_y_start = 11
-    within_fiber_spacing = 0.6  # Small spacing between coord and target lines
-    between_fiber_spacing = 1.5  # Larger spacing between different fibers
+    within_fiber_spacing = 0.6  # Spacing between coord and target lines
+    between_fiber_spacing = 1.5  # Spacing between different fibers
 
     legend_data.append(
-        {
-            "x": legend_x,
-            "y": legend_y_start,
-            "text": "Fiber Details:",
-            "color": "black",
-        }
+        {"x": legend_x, "y": legend_y_start, "text": "Fiber Details:", "color": "black"}
     )
 
     current_y = legend_y_start - 1.2
@@ -570,6 +525,7 @@ def create_schematic(fibers, subject_id):
         dv = fiber.get("dv")
         name = fiber.get("name", "Unknown")
 
+        # Coordinate line
         if dv is not None:
             text = f"{name}: AP={ap:.2f}, ML={ml:.2f}, DV={dv:.2f} mm"
         else:
@@ -579,40 +535,28 @@ def create_schematic(fibers, subject_id):
         if abs(angle) > 1:
             text += f" ∠{angle}°"
 
-        # Add coordinate line
-        legend_data.append(
-            {"x": legend_x, "y": current_y, "text": text, "color": color}
-        )
-        current_y -= within_fiber_spacing  # Small spacing to target line
+        legend_data.append({"x": legend_x, "y": current_y, "text": text, "color": color})
+        current_y -= within_fiber_spacing
 
-        # Add target line
+        # Target line
         target = fiber.get("targeted_structure", "Unknown")
         if not target or target == "" or target.lower() == "root":
             target = "Not specified in surgical request form"
         legend_data.append(
-            {
-                "x": legend_x,
-                "y": current_y,
-                "text": f"Target: {target}",
-                "color": color,
-            }
+            {"x": legend_x, "y": current_y, "text": f"Target: {target}", "color": color}
         )
-        current_y -= between_fiber_spacing  # Larger spacing to next fiber
+        current_y -= between_fiber_spacing
 
     legend_df = pd.DataFrame(legend_data)
-
-    legend_layer = (
+    return (
         alt.Chart(legend_df)
         .mark_text(fontSize=LEGEND_FONTSIZE, align="left", fontWeight="normal")
-        .encode(
-            x=alt.X("x:Q", scale=x_scale),
-            y=alt.Y("y:Q", scale=y_scale),
-            text="text:N",
-            color=alt.Color("color:N", scale=None),
-        )
+        .encode(**xy_encode(), text="text:N", color=alt.Color("color:N", scale=None))
     )
 
-    # Title positioned at skull's left edge
+
+def _create_title_layer(subject_id, xy_encode):
+    """Create title layer"""
     title_df = pd.DataFrame(
         [
             {
@@ -622,49 +566,12 @@ def create_schematic(fibers, subject_id):
             }
         ]
     )
-
-    title_layer = (
+    return (
         alt.Chart(title_df)
         .mark_text(fontSize=TITLE_FONTSIZE, align="left", fontWeight="bold")
-        .encode(
-            x=alt.X("x:Q", scale=x_scale),
-            y=alt.Y("y:Q", scale=y_scale),
-            text="text:N",
-        )
+        .encode(**xy_encode(), text="text:N")
     )
 
-    # Combine all layers
-    chart = (
-        alt.layer(
-            grid_layer,
-            skull_layer,
-            ref_layer,
-            ref_text_layer,
-            fiber_layer,
-            left_text_layer,
-            right_text_layer,
-            orientation_layer,
-            scale_bar_layer,
-            scale_text_layer,
-            legend_layer,
-            title_layer,
-        )
-        .properties(
-            width=1400,
-            height=700,
-        )
-        .configure_view(strokeWidth=0)
-        .configure_axis(
-            grid=False,
-            domain=False,
-            labels=False,
-            ticks=False,
-            title=None,
-        )
-        .resolve_scale(x="shared", y="shared")
-    )
-
-    return chart
 
 
 def save_chart_to_base64(chart):
@@ -675,8 +582,7 @@ def save_chart_to_base64(chart):
 
         # Use vl-convert to convert to PNG
         png_data = vlc.vegalite_to_png(
-            vl_spec=vega_spec,
-            scale=2.0  # Higher resolution (2x DPI)
+            vl_spec=vega_spec, scale=2.0  # Higher resolution (2x DPI)
         )
 
         # Encode to base64
@@ -686,6 +592,98 @@ def save_chart_to_base64(chart):
         print(f"Error saving chart to PNG: {e}")
         # Fallback: return None if PNG conversion fails
         return None
+
+
+# Styling helpers
+def create_styled_pane(message: str, style_type: str, details: str = None):
+    """
+    Create a styled pane for displaying messages.
+
+    Args:
+        message: The message text (supports markdown)
+        style_type: One of 'error', 'warning', 'success'
+        details: Optional detailed information (shown in expandable section)
+
+    Returns:
+        Panel Markdown pane with appropriate styling
+    """
+    styles = {
+        "error": {
+            "background": "#fff5f5",
+            "border-left": f"4px solid {AIND_COLORS['red']}",
+            "padding": "10px",
+            "border-radius": "5px",
+        },
+        "warning": {
+            "background": "#fff8e1",
+            "border-left": f"4px solid {AIND_COLORS['yellow']}",
+            "padding": "10px",
+            "border-radius": "5px",
+        },
+        "success": {
+            "background": "#e8f5e9",
+            "border-left": "4px solid #4caf50",
+            "padding": "10px",
+            "border-radius": "5px",
+        },
+    }
+
+    if details:
+        # Add expandable details section
+        content = f"""{message}
+
+<details>
+<summary><b>Click to expand error details</b></summary>
+
+```
+{details}
+```
+</details>"""
+    else:
+        content = message
+
+    return pn.pane.Markdown(content, styles=styles[style_type])
+
+
+def render_fiber_visualization(subject_id: str, data: dict):
+    """
+    Core rendering logic for fiber visualization.
+
+    Takes processed fiber data and generates the appropriate display panes.
+
+    Args:
+        subject_id: Subject identifier
+        data: Processed data dict with keys: fibers, fiber_count
+
+    Returns:
+        tuple: (
+            panes_list: List of panes to display,
+            chart_data: Dict with chart, base64, subject_id keys,
+            enable_buttons: Boolean indicating if download buttons should be enabled
+        )
+    """
+    fibers = data.get("fibers", [])
+    fiber_count = data.get("fiber_count", 0)
+
+    if fiber_count == 0:
+        pane = create_styled_pane(
+            f"**No fiber implants found for subject {subject_id}**", "warning"
+        )
+        return (
+            [pane],
+            {"chart": None, "base64": None, "subject_id": None},
+            False,
+        )
+
+    # Generate schematic
+    chart = create_schematic(fibers, subject_id)
+    chart_data = {
+        "chart": chart,
+        "base64": save_chart_to_base64(chart),
+        "subject_id": subject_id,
+    }
+
+    return [pn.pane.Vega(chart)], chart_data, True
 
 
 class MetadataFetcher(pn.reactive.ReactiveHTML):
@@ -700,47 +698,63 @@ class MetadataFetcher(pn.reactive.ReactiveHTML):
     subject_id = param.String(default="")
     data = param.Dict(default={})
     error = param.String(default="")
+    error_details = param.String(default="")
 
     _template = """
     <div id="fetcher" style="display: none;"></div>
     """
 
-    script = f"""
-// This method is called automatically when subject_id changes
-if (data.subject_id && data.subject_id.trim() !== '') {{
+    _scripts = {
+        "subject_id": f"""
+if (data.subject_id && data.subject_id.trim()) {{
     const subjectId = data.subject_id.trim();
+    const url = `{METADATA_SERVICE_URL}/api/v2/procedures/${{subjectId}}`;
 
     data.error = "";
+    data.error_details = "";
     data.data = {{}};
-
-    const url = `{METADATA_SERVICE_URL}/api/v2/procedures/${{subjectId}}`;
 
     fetch(url)
         .then(response => {{
-            if (response.status === 404) {{
-                throw new Error(`No procedures found for subject ID: ${{subjectId}}`);
-            }}
-            if (!response.ok) {{
-                // Try to parse even if status is not OK (metadata service may return 400 with valid data)
-                return response.json().catch(() => {{
-                    throw new Error(`Metadata service returned status ${{response.status}}`);
-                }});
-            }}
-            return response.json();
+            const status = response.status;
+            const statusText = response.statusText;
+
+            // Try to get response body for error details
+            return response.text().then(body => {{
+                if (status === 404) {{
+                    const details = `URL: ${{url}}\\nStatus: ${{status}} ${{statusText}}\\nResponse: ${{body}}`;
+                    data.error_details = details;
+                    throw new Error(`No procedures found for subject ID: ${{subjectId}}`);
+                }}
+                if (!response.ok) {{
+                    const details = `URL: ${{url}}\\nStatus: ${{status}} ${{statusText}}\\nResponse: ${{body}}`;
+                    data.error_details = details;
+                    throw new Error(`Metadata service returned status ${{status}}`);
+                }}
+                // Parse successful response
+                try {{
+                    return JSON.parse(body);
+                }} catch (e) {{
+                    const details = `URL: ${{url}}\\nStatus: ${{status}} ${{statusText}}\\nResponse: ${{body}}\\nParse error: ${{e.message}}`;
+                    data.error_details = details;
+                    throw new Error('Invalid JSON response from metadata service');
+                }}
+            }});
         }})
         .then(json => {{
             data.data = json;
             data.error = "";
+            data.error_details = "";
         }})
         .catch(err => {{
             data.error = err.message || "Failed to fetch procedures data";
+            if (!data.error_details) {{
+                data.error_details = `URL: ${{url}}\\nError: ${{err.stack || err.message}}`;
+            }}
             data.data = {{}};
         }});
 }}
 """
-
-    _scripts = {
-        'subject_id': script
     }
 
 
@@ -799,93 +813,67 @@ def build_panel_app():
     # Create metadata fetcher (client-side)
     fetcher = MetadataFetcher()
 
+    # Helper to render and update all UI elements
+    def render_and_update_ui(subject_id, data):
+        """Render visualization and update all UI state"""
+        panes, chart_data, enable_buttons = render_fiber_visualization(
+            subject_id, data
+        )
+        output_col[:] = panes
+        current_chart_data.update(chart_data)
+        download_button.disabled = not enable_buttons
+        copy_url_button.disabled = not enable_buttons
+
     # Watch for data changes from the fetcher
-    def process_fetched_data(event):
+    def process_fetched_data(_event):
         """Process data that was fetched by the client-side JavaScript"""
         if not fetcher.data or not fetcher.data.get("subject_procedures"):
             return
 
         subject_id = text_input.value.strip()
-
         try:
-            # Process the client-provided data
             data = get_procedures_data_from_cache_or_client(
                 subject_id, fetcher.data
             )
-
-            fibers = data.get("fibers", [])
-            fiber_count = data.get("fiber_count", 0)
-
-            if fiber_count == 0:
-                output_col[:] = [
-                    pn.pane.Markdown(
-                        f"**No fiber implants found for subject {subject_id}**",
-                        styles={
-                            "background": "#fff8e1",
-                            "border-left": f"4px solid {AIND_COLORS['yellow']}",
-                            "padding": "10px",
-                            "border-radius": "5px",
-                        },
-                    )
-                ]
-            else:
-                # Generate schematic
-                chart = create_schematic(fibers, subject_id)
-
-                # Save chart data for download
-                current_chart_data["chart"] = chart
-                current_chart_data["base64"] = save_chart_to_base64(chart)
-                current_chart_data["subject_id"] = subject_id
-
-                # Display Altair chart (no sizing_mode to preserve aspect ratio)
-                output_col[:] = [
-                    pn.pane.Vega(chart),
-                ]
-
-                # Enable download and copy URL buttons
-                download_button.disabled = False
-                copy_url_button.disabled = False
+            render_and_update_ui(subject_id, data)
         except Exception as e:
+            tb = traceback.format_exc()
             output_col[:] = [
-                pn.pane.Markdown(
-                    f"**Error:** {str(e)}",
-                    styles={
-                        "background": "#fff5f5",
-                        "border-left": f"4px solid {AIND_COLORS['red']}",
-                        "padding": "10px",
-                        "border-radius": "5px",
-                    },
+                create_styled_pane(
+                    f"**Error processing data:** {str(e)}", "error", details=tb
                 )
             ]
         finally:
             output_col.loading = False
 
-    def handle_fetch_error(event):
+    def handle_fetch_error(_event):
         """Handle errors from the client-side fetch"""
         if fetcher.error:
             output_col[:] = [
-                pn.pane.Markdown(
+                create_styled_pane(
                     f"**Error:** {fetcher.error}",
-                    styles={
-                        "background": "#fff5f5",
-                        "border-left": f"4px solid {AIND_COLORS['red']}",
-                        "padding": "10px",
-                        "border-radius": "5px",
-                    },
+                    "error",
+                    details=(
+                        fetcher.error_details
+                        if fetcher.error_details
+                        else None
+                    ),
                 )
             ]
             output_col.loading = False
 
     # Watch for data and error changes
-    fetcher.param.watch(process_fetched_data, 'data')
-    fetcher.param.watch(handle_fetch_error, 'error')
+    fetcher.param.watch(process_fetched_data, "data")
+    fetcher.param.watch(handle_fetch_error, "error")
 
     # Button callback - trigger client-side fetch or use cache
-    async def generate_callback(event):
+    async def generate_callback(_event):
         subject_id = text_input.value.strip()
         if not subject_id:
             output_col[:] = [
-                pn.pane.Markdown("**Error:** Please enter a subject ID.")
+                create_styled_pane(
+                    "**Error:** Please enter a subject ID.", "error"
+                )
             ]
             return
 
@@ -896,49 +884,12 @@ def build_panel_app():
             output_col.loading = True
             try:
                 data = get_procedures_data_from_cache_or_client(subject_id)
-
-                fibers = data.get("fibers", [])
-                fiber_count = data.get("fiber_count", 0)
-
-                if fiber_count == 0:
-                    output_col[:] = [
-                        pn.pane.Markdown(
-                            f"**No fiber implants found for subject {subject_id}**",
-                            styles={
-                                "background": "#fff8e1",
-                                "border-left": f"4px solid {AIND_COLORS['yellow']}",
-                                "padding": "10px",
-                                "border-radius": "5px",
-                            },
-                        )
-                    ]
-                else:
-                    # Generate schematic
-                    chart = create_schematic(fibers, subject_id)
-
-                    # Save chart data for download
-                    current_chart_data["chart"] = chart
-                    current_chart_data["base64"] = save_chart_to_base64(chart)
-                    current_chart_data["subject_id"] = subject_id
-
-                    # Display Altair chart (no sizing_mode to preserve aspect ratio)
-                    output_col[:] = [
-                        pn.pane.Vega(chart),
-                    ]
-
-                    # Enable download and copy URL buttons
-                    download_button.disabled = False
-                    copy_url_button.disabled = False
+                render_and_update_ui(subject_id, data)
             except Exception as e:
+                tb = traceback.format_exc()
                 output_col[:] = [
-                    pn.pane.Markdown(
-                        f"**Error:** {str(e)}",
-                        styles={
-                            "background": "#fff5f5",
-                            "border-left": f"4px solid {AIND_COLORS['red']}",
-                            "padding": "10px",
-                            "border-radius": "5px",
-                        },
+                    create_styled_pane(
+                        f"**Error:** {str(e)}", "error", details=tb
                     )
                 ]
             finally:
@@ -959,7 +910,7 @@ def build_panel_app():
             # Trigger the fetch by setting subject_id
             fetcher.subject_id = subject_id
 
-    def download_callback(event):
+    def download_callback(_event):
         """Download the current schematic as PNG."""
         if current_chart_data["base64"] is None:
             return
@@ -994,7 +945,7 @@ def build_panel_app():
         js_pane.object = ""
         js_pane.object = f"<script>{js_code}</script>"
 
-    def copy_url_callback(event):
+    def copy_url_callback(_event):
         """Copy current URL to clipboard."""
         js_code = """
             var url = window.location.href;
@@ -1028,15 +979,10 @@ def build_panel_app():
                 for cache_file in cache_files:
                     cache_file.unlink()
                 output_col[:] = [
-                    pn.pane.Markdown(
+                    create_styled_pane(
                         f"**Cache cleared:** Deleted {count} cached procedure file(s). "
                         f"All subsequent queries will fetch fresh data from metadata service.",
-                        styles={
-                            "background": "#e8f5e9",
-                            "border-left": "4px solid #4caf50",
-                            "padding": "10px",
-                            "border-radius": "5px",
-                        },
+                        "success",
                     )
                 ]
             else:
@@ -1046,39 +992,24 @@ def build_panel_app():
                 if cache_file.exists():
                     cache_file.unlink()
                     output_col[:] = [
-                        pn.pane.Markdown(
+                        create_styled_pane(
                             f"**Cache cleared:** Deleted cached data for subject {subject_id}. "
                             f"Next query will fetch fresh data from metadata service.",
-                            styles={
-                                "background": "#e8f5e9",
-                                "border-left": "4px solid #4caf50",
-                                "padding": "10px",
-                                "border-radius": "5px",
-                            },
+                            "success",
                         )
                     ]
                 else:
                     output_col[:] = [
-                        pn.pane.Markdown(
+                        create_styled_pane(
                             f"**No cache found:** Subject {subject_id} has no cached data.",
-                            styles={
-                                "background": "#fff8e1",
-                                "border-left": "4px solid #ff9800",
-                                "padding": "10px",
-                                "border-radius": "5px",
-                            },
+                            "warning",
                         )
                     ]
         except Exception as e:
+            tb = traceback.format_exc()
             output_col[:] = [
-                pn.pane.Markdown(
-                    f"**Error clearing cache:** {str(e)}",
-                    styles={
-                        "background": "#fff5f5",
-                        "border-left": "4px solid #f44336",
-                        "padding": "10px",
-                        "border-radius": "5px",
-                    },
+                create_styled_pane(
+                    f"**Error clearing cache:** {str(e)}", "error", details=tb
                 )
             ]
 
@@ -1099,42 +1030,13 @@ def build_panel_app():
         if cached_data:
             # Use cached data for instant load
             try:
-                results = get_procedures_data_from_cache_or_client(subject_id)
-                fibers = results.get("fibers", [])
-                fiber_count = results.get("fiber_count", 0)
-
-                if fiber_count == 0:
-                    output_col[:] = [
-                        pn.pane.Markdown(
-                            f"**No fiber implants found for subject {subject_id}**",
-                            styles={
-                                "background": "#fff8e1",
-                                "border-left": f"4px solid {AIND_COLORS['yellow']}",
-                                "padding": "10px",
-                                "border-radius": "5px",
-                            },
-                        )
-                    ]
-                else:
-                    chart = create_schematic(fibers, subject_id)
-                    current_chart_data["chart"] = chart
-                    current_chart_data["base64"] = save_chart_to_base64(chart)
-                    current_chart_data["subject_id"] = subject_id
-                    output_col[:] = [
-                        pn.pane.Vega(chart),
-                    ]
-                    download_button.disabled = False
-                    copy_url_button.disabled = False
+                data = get_procedures_data_from_cache_or_client(subject_id)
+                render_and_update_ui(subject_id, data)
             except Exception as e:
+                tb = traceback.format_exc()
                 output_col[:] = [
-                    pn.pane.Markdown(
-                        f"**Error:** {str(e)}",
-                        styles={
-                            "background": "#fff5f5",
-                            "border-left": f"4px solid {AIND_COLORS['red']}",
-                            "padding": "10px",
-                            "border-radius": "5px",
-                        },
+                    create_styled_pane(
+                        f"**Error:** {str(e)}", "error", details=tb
                     )
                 ]
         else:
