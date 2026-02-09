@@ -705,40 +705,42 @@ class MetadataFetcher(pn.reactive.ReactiveHTML):
     <div id="fetcher" style="display: none;"></div>
     """
 
+    script = f"""
+// This method is called automatically when subject_id changes
+if (data.subject_id && data.subject_id.trim() !== '') {{
+    const subjectId = data.subject_id.trim();
+
+    data.error = "";
+    data.data = {{}};
+
+    const url = `{METADATA_SERVICE_URL}/api/v2/procedures/${{subjectId}}`;
+
+    fetch(url)
+        .then(response => {{
+            if (response.status === 404) {{
+                throw new Error(`No procedures found for subject ID: ${{subjectId}}`);
+            }}
+            if (!response.ok) {{
+                // Try to parse even if status is not OK (metadata service may return 400 with valid data)
+                return response.json().catch(() => {{
+                    throw new Error(`Metadata service returned status ${{response.status}}`);
+                }});
+            }}
+            return response.json();
+        }})
+        .then(json => {{
+            data.data = json;
+            data.error = "";
+        }})
+        .catch(err => {{
+            data.error = err.message || "Failed to fetch procedures data";
+            data.data = {{}};
+        }});
+}}
+"""
+
     _scripts = {
-        'subject_id': """
-            // This method is called automatically when subject_id changes
-            if (data.subject_id && data.subject_id.trim() !== '') {
-                const subjectId = data.subject_id.trim();
-
-                data.error = "";
-                data.data = {};
-
-                const url = `{METADATA_SERVICE_URL}/api/v2/procedures/${subjectId}`;
-
-                fetch(url)
-                    .then(response => {
-                        if (response.status === 404) {
-                            throw new Error(`No procedures found for subject ID: ${subjectId}`);
-                        }
-                        if (!response.ok) {
-                            // Try to parse even if status is not OK (metadata service may return 400 with valid data)
-                            return response.json().catch(() => {
-                                throw new Error(`Metadata service returned status ${response.status}`);
-                            });
-                        }
-                        return response.json();
-                    })
-                    .then(json => {
-                        data.data = json;
-                        data.error = "";
-                    })
-                    .catch(err => {
-                        data.error = err.message || "Failed to fetch procedures data";
-                        data.data = {};
-                    });
-            }
-        """
+        'subject_id': script
     }
 
 
