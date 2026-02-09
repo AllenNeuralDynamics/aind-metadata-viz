@@ -955,6 +955,7 @@ def build_panel_app():
         js_pane.object = f"<script>{js_code}</script>"
 
     generate_button.on_click(generate_callback)
+    text_input.param.watch(generate_callback, 'value')  # Trigger on Enter key
     download_button.on_click(download_callback)
     copy_url_button.on_click(copy_url_callback)
 
