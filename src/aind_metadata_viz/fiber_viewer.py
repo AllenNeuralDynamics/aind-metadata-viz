@@ -54,10 +54,6 @@ LAMBDA_RADIUS = 0.25
 SKULL_EDGE_COLOR = "#333333"
 SKULL_ALPHA = 0.3
 
-# Grid styling
-GRID_COLOR = "gray"
-GRID_ALPHA = 0.2
-
 # Font sizes (increased by 25% from original)
 TITLE_FONTSIZE = 21
 FIBER_LABEL_FONTSIZE = 15
@@ -89,8 +85,11 @@ def get_cached_procedures(subject_id: str):
 def save_to_cache(subject_id: str, procedures: dict):
     """Save procedures to cache"""
     try:
-        json.dump({"procedures": procedures},
-                  (CACHE_DIR / f"{subject_id}.json").open("w"), indent=2)
+        json.dump(
+            {"procedures": procedures},
+            (CACHE_DIR / f"{subject_id}.json").open("w"),
+            indent=2,
+        )
     except Exception as e:
         print(f"Error writing cache: {e}")
 
@@ -130,7 +129,9 @@ def extract_fiber_from_probe(device_config: dict) -> dict:
         "dv": dv,
         "angle": angle,
         "unit": "millimeter",
-        "reference": (device_config.get("coordinate_system") or {}).get("origin", "Bregma"),
+        "reference": (device_config.get("coordinate_system") or {}).get(
+            "origin", "Bregma"
+        ),
         "targeted_structure": target,
     }
 
@@ -156,7 +157,9 @@ def process_procedures_data(subject_id: str, procedures_data: dict) -> dict:
     }
 
 
-def get_procedures_data_from_cache_or_client(subject_id: str, client_data: dict = None) -> dict:
+def get_procedures_data_from_cache_or_client(
+    subject_id: str, client_data: dict = None
+) -> dict:
     """Get fiber procedures data from cache or client-provided data"""
     # Try cache first
     cached_data = get_cached_procedures(subject_id)
@@ -226,44 +229,18 @@ def create_schematic(fibers, subject_id):
     x_scale = alt.Scale(domain=[-8, 48])  # 56 units
     y_scale = alt.Scale(domain=[-14, 14])  # 28 units
 
+    # Helper for common x/y encoding with consistent scales
+    def xy_encode(x_col="x", y_col="y"):
+        return {
+            "x": alt.X(f"{x_col}:Q", scale=x_scale),
+            "y": alt.Y(f"{y_col}:Q", scale=y_scale),
+        }
+
     # Create skull outline layer
     skull_layer = (
         alt.Chart(skull_df)
         .mark_line(color=SKULL_EDGE_COLOR, strokeWidth=2, opacity=0.5)
-        .encode(
-            x=alt.X("x:Q", scale=x_scale),
-            y=alt.Y("y:Q", scale=y_scale),
-            order="order:Q",
-        )
-    )
-
-    # Grid lines data
-    grid_data = []
-    for ml in range(-6, 7, 2):
-        grid_data.append(
-            {"x": ml, "y": -13, "x2": ml, "y2": 13, "type": "vertical"}
-        )
-    for ap in range(-10, 11, 2):
-        grid_data.append(
-            {"x": -9, "y": ap, "x2": 9, "y2": ap, "type": "horizontal"}
-        )
-    grid_df = pd.DataFrame(grid_data)
-
-    # Grid layer
-    grid_layer = (
-        alt.Chart(grid_df)
-        .mark_rule(
-            strokeDash=[3, 3],
-            color=GRID_COLOR,
-            opacity=GRID_ALPHA,
-            strokeWidth=0.5,
-        )
-        .encode(
-            x=alt.X("x:Q", scale=x_scale),
-            y=alt.Y("y:Q", scale=y_scale),
-            x2="x2:Q",
-            y2="y2:Q",
-        )
+        .encode(**xy_encode(), order="order:Q")
     )
 
     # Reference points (Bregma and Lambda)
@@ -282,11 +259,7 @@ def create_schematic(fibers, subject_id):
     ref_layer = (
         alt.Chart(ref_points_df)
         .mark_circle(color=BREGMA_COLOR, stroke="black", strokeWidth=1.5)
-        .encode(
-            x=alt.X("x:Q", scale=x_scale),
-            y=alt.Y("y:Q", scale=y_scale),
-            size=alt.Size("size:Q", legend=None),
-        )
+        .encode(**xy_encode(), size=alt.Size("size:Q", legend=None))
     )
 
     ref_labels_df = pd.DataFrame(
@@ -299,11 +272,7 @@ def create_schematic(fibers, subject_id):
     ref_text_layer = (
         alt.Chart(ref_labels_df)
         .mark_text(fontSize=REFERENCE_FONTSIZE, fontWeight="bold", dy=5)
-        .encode(
-            x=alt.X("x:Q", scale=x_scale),
-            y=alt.Y("y:Q", scale=y_scale),
-            text="label:N",
-        )
+        .encode(**xy_encode(), text="label:N")
     )
 
     # Fiber points
@@ -351,49 +320,35 @@ def create_schematic(fibers, subject_id):
         alt.Chart(fiber_df)
         .mark_circle(stroke="black", strokeWidth=2)
         .encode(
-            x=alt.X("ml:Q", scale=x_scale),
-            y=alt.Y("ap:Q", scale=y_scale),
+            **xy_encode("ml", "ap"),
             color=alt.Color("color:N", scale=None),
             size=alt.Size("size:Q", legend=None),
         )
     )
 
-    # Split labels into left and right for different alignments
-    left_labels_df = fiber_labels_df[fiber_labels_df["align"] == "right"]
-    right_labels_df = fiber_labels_df[fiber_labels_df["align"] == "left"]
+    # Helper to create fiber label layer with specified alignment
+    def create_label_layer(labels_df, alignment):
+        return (
+            alt.Chart(labels_df)
+            .mark_text(
+                fontSize=FIBER_LABEL_FONTSIZE,
+                fontWeight="bold",
+                dy=-8,
+                align=alignment,
+            )
+            .encode(
+                **xy_encode("ml", "ap"),
+                text="name:N",
+                color=alt.Color("color:N", scale=None),
+            )
+        )
 
-    # Left-side fiber labels (right-aligned)
-    left_text_layer = (
-        alt.Chart(left_labels_df)
-        .mark_text(
-            fontSize=FIBER_LABEL_FONTSIZE,
-            fontWeight="bold",
-            dy=-8,
-            align="right",
-        )
-        .encode(
-            x=alt.X("ml:Q", scale=x_scale),
-            y=alt.Y("ap:Q", scale=y_scale),
-            text="name:N",
-            color=alt.Color("color:N", scale=None),
-        )
+    # Create label layers for left and right sides
+    left_text_layer = create_label_layer(
+        fiber_labels_df[fiber_labels_df["align"] == "right"], "right"
     )
-
-    # Right-side fiber labels (left-aligned)
-    right_text_layer = (
-        alt.Chart(right_labels_df)
-        .mark_text(
-            fontSize=FIBER_LABEL_FONTSIZE,
-            fontWeight="bold",
-            dy=-8,
-            align="left",
-        )
-        .encode(
-            x=alt.X("ml:Q", scale=x_scale),
-            y=alt.Y("ap:Q", scale=y_scale),
-            text="name:N",
-            color=alt.Color("color:N", scale=None),
-        )
+    right_text_layer = create_label_layer(
+        fiber_labels_df[fiber_labels_df["align"] == "left"], "left"
     )
 
     # Orientation arrow (simplified - just text labels)
@@ -431,10 +386,7 @@ def create_schematic(fibers, subject_id):
         alt.Chart(orientation_df)
         .mark_text(fontWeight="bold")
         .encode(
-            x=alt.X("x:Q", scale=x_scale),
-            y=alt.Y("y:Q", scale=y_scale),
-            text="label:N",
-            size=alt.Size("size:Q", legend=None),
+            **xy_encode(), text="label:N", size=alt.Size("size:Q", legend=None)
         )
     )
 
@@ -455,12 +407,7 @@ def create_schematic(fibers, subject_id):
     scale_bar_layer = (
         alt.Chart(scale_bar_df)
         .mark_rule(color="black", strokeWidth=3)
-        .encode(
-            x=alt.X("x:Q", scale=x_scale),
-            y=alt.Y("y:Q", scale=y_scale),
-            x2="x2:Q",
-            y2="y2:Q",
-        )
+        .encode(**xy_encode(), x2="x2:Q", y2="y2:Q")
     )
 
     scale_text_df = pd.DataFrame(
@@ -470,11 +417,7 @@ def create_schematic(fibers, subject_id):
     scale_text_layer = (
         alt.Chart(scale_text_df)
         .mark_text(fontSize=REFERENCE_FONTSIZE, fontWeight="bold")
-        .encode(
-            x=alt.X("x:Q", scale=x_scale),
-            y=alt.Y("y:Q", scale=y_scale),
-            text="label:N",
-        )
+        .encode(**xy_encode(), text="label:N")
     )
 
     # Legend text (positioned on right side)
@@ -536,8 +479,7 @@ def create_schematic(fibers, subject_id):
         alt.Chart(legend_df)
         .mark_text(fontSize=LEGEND_FONTSIZE, align="left", fontWeight="normal")
         .encode(
-            x=alt.X("x:Q", scale=x_scale),
-            y=alt.Y("y:Q", scale=y_scale),
+            **xy_encode(),
             text="text:N",
             color=alt.Color("color:N", scale=None),
         )
@@ -557,17 +499,12 @@ def create_schematic(fibers, subject_id):
     title_layer = (
         alt.Chart(title_df)
         .mark_text(fontSize=TITLE_FONTSIZE, align="left", fontWeight="bold")
-        .encode(
-            x=alt.X("x:Q", scale=x_scale),
-            y=alt.Y("y:Q", scale=y_scale),
-            text="text:N",
-        )
+        .encode(**xy_encode(), text="text:N")
     )
 
     # Combine all layers
     chart = (
         alt.layer(
-            grid_layer,
             skull_layer,
             ref_layer,
             ref_text_layer,
@@ -606,8 +543,7 @@ def save_chart_to_base64(chart):
 
         # Use vl-convert to convert to PNG
         png_data = vlc.vegalite_to_png(
-            vl_spec=vega_spec,
-            scale=2.0  # Higher resolution (2x DPI)
+            vl_spec=vega_spec, scale=2.0  # Higher resolution (2x DPI)
         )
 
         # Encode to base64
@@ -633,24 +569,24 @@ def create_styled_pane(message: str, style_type: str, details: str = None):
         Panel Markdown pane with appropriate styling
     """
     styles = {
-        'error': {
+        "error": {
             "background": "#fff5f5",
             "border-left": f"4px solid {AIND_COLORS['red']}",
             "padding": "10px",
             "border-radius": "5px",
         },
-        'warning': {
+        "warning": {
             "background": "#fff8e1",
             "border-left": f"4px solid {AIND_COLORS['yellow']}",
             "padding": "10px",
             "border-radius": "5px",
         },
-        'success': {
+        "success": {
             "background": "#e8f5e9",
             "border-left": "4px solid #4caf50",
             "padding": "10px",
             "border-radius": "5px",
-        }
+        },
     }
 
     if details:
@@ -692,17 +628,20 @@ def render_fiber_visualization(subject_id: str, data: dict):
 
     if fiber_count == 0:
         pane = create_styled_pane(
-            f"**No fiber implants found for subject {subject_id}**",
-            'warning'
+            f"**No fiber implants found for subject {subject_id}**", "warning"
         )
-        return [pane], {"chart": None, "base64": None, "subject_id": None}, False
+        return (
+            [pane],
+            {"chart": None, "base64": None, "subject_id": None},
+            False,
+        )
 
     # Generate schematic
     chart = create_schematic(fibers, subject_id)
     chart_data = {
         "chart": chart,
         "base64": save_chart_to_base64(chart),
-        "subject_id": subject_id
+        "subject_id": subject_id,
     }
 
     return [pn.pane.Vega(chart)], chart_data, True
@@ -727,7 +666,7 @@ class MetadataFetcher(pn.reactive.ReactiveHTML):
     """
 
     _scripts = {
-        'subject_id': f"""
+        "subject_id": f"""
 if (data.subject_id && data.subject_id.trim()) {{
     const subjectId = data.subject_id.trim();
     const url = `{METADATA_SERVICE_URL}/api/v2/procedures/${{subjectId}}`;
@@ -838,7 +777,9 @@ def build_panel_app():
     # Helper to render and update all UI elements
     def render_and_update_ui(subject_id, data):
         """Render visualization and update all UI state"""
-        panes, chart_data, enable_buttons = render_fiber_visualization(subject_id, data)
+        panes, chart_data, enable_buttons = render_fiber_visualization(
+            subject_id, data
+        )
         output_col[:] = panes
         current_chart_data.update(chart_data)
         download_button.disabled = not enable_buttons
@@ -852,37 +793,49 @@ def build_panel_app():
 
         subject_id = text_input.value.strip()
         try:
-            data = get_procedures_data_from_cache_or_client(subject_id, fetcher.data)
+            data = get_procedures_data_from_cache_or_client(
+                subject_id, fetcher.data
+            )
             render_and_update_ui(subject_id, data)
         except Exception as e:
             tb = traceback.format_exc()
-            output_col[:] = [create_styled_pane(
-                f"**Error processing data:** {str(e)}",
-                'error',
-                details=tb
-            )]
+            output_col[:] = [
+                create_styled_pane(
+                    f"**Error processing data:** {str(e)}", "error", details=tb
+                )
+            ]
         finally:
             output_col.loading = False
 
     def handle_fetch_error(_event):
         """Handle errors from the client-side fetch"""
         if fetcher.error:
-            output_col[:] = [create_styled_pane(
-                f"**Error:** {fetcher.error}",
-                'error',
-                details=fetcher.error_details if fetcher.error_details else None
-            )]
+            output_col[:] = [
+                create_styled_pane(
+                    f"**Error:** {fetcher.error}",
+                    "error",
+                    details=(
+                        fetcher.error_details
+                        if fetcher.error_details
+                        else None
+                    ),
+                )
+            ]
             output_col.loading = False
 
     # Watch for data and error changes
-    fetcher.param.watch(process_fetched_data, 'data')
-    fetcher.param.watch(handle_fetch_error, 'error')
+    fetcher.param.watch(process_fetched_data, "data")
+    fetcher.param.watch(handle_fetch_error, "error")
 
     # Button callback - trigger client-side fetch or use cache
     async def generate_callback(_event):
         subject_id = text_input.value.strip()
         if not subject_id:
-            output_col[:] = [create_styled_pane("**Error:** Please enter a subject ID.", 'error')]
+            output_col[:] = [
+                create_styled_pane(
+                    "**Error:** Please enter a subject ID.", "error"
+                )
+            ]
             return
 
         # Check cache first
@@ -895,11 +848,11 @@ def build_panel_app():
                 render_and_update_ui(subject_id, data)
             except Exception as e:
                 tb = traceback.format_exc()
-                output_col[:] = [create_styled_pane(
-                    f"**Error:** {str(e)}",
-                    'error',
-                    details=tb
-                )]
+                output_col[:] = [
+                    create_styled_pane(
+                        f"**Error:** {str(e)}", "error", details=tb
+                    )
+                ]
             finally:
                 output_col.loading = False
         else:
@@ -990,7 +943,7 @@ def build_panel_app():
                     create_styled_pane(
                         f"**Cache cleared:** Deleted {count} cached procedure file(s). "
                         f"All subsequent queries will fetch fresh data from metadata service.",
-                        'success'
+                        "success",
                     )
                 ]
             else:
@@ -1003,23 +956,23 @@ def build_panel_app():
                         create_styled_pane(
                             f"**Cache cleared:** Deleted cached data for subject {subject_id}. "
                             f"Next query will fetch fresh data from metadata service.",
-                            'success'
+                            "success",
                         )
                     ]
                 else:
                     output_col[:] = [
                         create_styled_pane(
                             f"**No cache found:** Subject {subject_id} has no cached data.",
-                            'warning'
+                            "warning",
                         )
                     ]
         except Exception as e:
             tb = traceback.format_exc()
-            output_col[:] = [create_styled_pane(
-                f"**Error clearing cache:** {str(e)}",
-                'error',
-                details=tb
-            )]
+            output_col[:] = [
+                create_styled_pane(
+                    f"**Error clearing cache:** {str(e)}", "error", details=tb
+                )
+            ]
 
     # Get subject_id from URL and set text input manually
     if pn.state.location:
@@ -1042,11 +995,11 @@ def build_panel_app():
                 render_and_update_ui(subject_id, data)
             except Exception as e:
                 tb = traceback.format_exc()
-                output_col[:] = [create_styled_pane(
-                    f"**Error:** {str(e)}",
-                    'error',
-                    details=tb
-                )]
+                output_col[:] = [
+                    create_styled_pane(
+                        f"**Error:** {str(e)}", "error", details=tb
+                    )
+                ]
         else:
             # No cache - show loading and trigger client-side fetch
             output_col[:] = [
