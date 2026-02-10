@@ -72,6 +72,9 @@ import panel as pn
 import param
 import vl_convert as vlc
 
+from io import BytesIO
+from PIL import Image
+
 from aind_metadata_viz.utils import AIND_COLORS
 
 pn.extension("vega")
@@ -84,6 +87,11 @@ CACHE_DIR.mkdir(parents=True, exist_ok=True)
 # Visualization configuration (skull and fiber dimensions)
 SKULL_LENGTH_MM = 25
 SKULL_WIDTH_MM = 15
+BREGMA_LAMBDA_DISTANCE_MM = 4.2  # Anatomical distance between Bregma and Lambda in mm
+SKULL_IMAGE_VERTICAL_OFFSET_MM = -2.5  # Negative shifts image down (posterior), positive shifts up (anterior)
+PATH_TO_SKULL_IMAGE = "src/aind_metadata_viz/assets/mouse_skull.png"
+BREGMA_PIXEL_COORDINATES = (412, 816)  # identified manually from image
+LAMBDA_PIXEL_COORDINATES = (412, 1020)  # identified manually from image
 
 # Fiber colors and marker sizes
 FIBER_COLORS = [
@@ -108,15 +116,24 @@ LAMBDA_COLOR = "#000000"
 LAMBDA_EDGE_COLOR = "#000000"
 LAMBDA_RADIUS = 0.25
 
-# Skull outline styling
-SKULL_EDGE_COLOR = "#333333"
-SKULL_ALPHA = 0.3
-
-# Font sizes (increased by 25% from original)
+# Font sizes
 TITLE_FONTSIZE = 21
 FIBER_LABEL_FONTSIZE = 15
-LEGEND_FONTSIZE = 13.5
+LEGEND_FONTSIZE = 16
 REFERENCE_FONTSIZE = 12
+
+# Legend positioning
+LEGEND_X = 7.5  # Horizontal position (left/right)
+LEGEND_Y_START = 11  # Vertical starting position (top)
+LEGEND_WITHIN_FIBER_SPACING = 0.8  # Spacing between coordinate and target lines
+LEGEND_BETWEEN_FIBER_SPACING = 1.5  # Spacing between different fibers
+
+# Orientation indicators (anterior/posterior labels and arrows)
+ORIENTATION_X_OFFSET = 1.5  # Distance from left edge of skull
+ORIENTATION_TEXT_Y = 9  # Y position for text labels (±this value for anterior/posterior)
+ORIENTATION_ARROW_Y = 7  # Y position for arrows (±this value for up/down arrows)
+ORIENTATION_TEXT_SIZE = 10  # Font size for "anterior"/"posterior" text
+ORIENTATION_ARROW_SIZE = 22  # Font size for arrow symbols
 
 # Figure output quality
 DPI = 300
@@ -187,9 +204,7 @@ def extract_fiber_metadata(device_config: dict) -> dict:
         "dv": dv,
         "angle": angle,
         "unit": "millimeter",
-        "reference": (device_config.get("coordinate_system") or {}).get(
-            "origin", "Bregma"
-        ),
+        "reference": (device_config.get("coordinate_system") or {}).get("origin", "Bregma"),
         "targeted_structure": target,
     }
 
@@ -215,9 +230,7 @@ def process_procedures_data(subject_id: str, procedures_data: dict) -> dict:
     }
 
 
-def get_procedures_data_from_cache_or_client(
-    subject_id: str, client_data: dict = None
-) -> dict:
+def get_procedures_data_from_cache_or_client(subject_id: str, client_data: dict = None) -> dict:
     """Get fiber procedures data from cache or client-provided data"""
     # Try cache first
     cached_data = get_cached_procedures(subject_id)
@@ -249,15 +262,86 @@ def safe_float(value, default=0.0):
         return default
 
 
-def create_ellipse_points(center_x, center_y, width, height, num_points=100):
-    """Generate points for an ellipse outline."""
-    points = []
-    for i in range(num_points + 1):
-        angle = 2 * math.pi * i / num_points
-        x = center_x + (width / 2) * math.cos(angle)
-        y = center_y + (height / 2) * math.sin(angle)
-        points.append({"x": x, "y": y, "order": i})
-    return points
+def create_skull_image_layer(
+    image_path: str,
+    bregma_px: tuple,
+    lambda_px: tuple,
+    bregma_lambda_distance_mm: float = 4.2,
+    vertical_offset_mm: float = 0.0,
+):
+    """
+    Load and position skull illustration image as background layer.
+
+    Transforms the skull image so that specified Bregma and Lambda pixel coordinates
+    align exactly with their positions in the schematic coordinate system
+    (Bregma at 0,0 and Lambda at 0,-bregma_lambda_distance_mm).
+
+    Args:
+        image_path: Path to skull illustration image file
+        bregma_px: (x, y) pixel coordinates of Bregma in source image
+        lambda_px: (x, y) pixel coordinates of Lambda in source image
+        bregma_lambda_distance_mm: Distance between Bregma and Lambda in mm
+        vertical_offset_mm: Vertical shift in mm (negative = down/posterior, positive = up/anterior)
+
+    Returns:
+        Altair chart layer with positioned and scaled skull image
+    """
+
+    # Load image
+    img = Image.open(image_path)
+    img_width_px, img_height_px = img.size
+
+    # Convert to base64 data URI for embedding
+    buffered = BytesIO()
+    img.save(buffered, format="PNG")
+    img_base64 = base64.b64encode(buffered.getvalue()).decode()
+    img_data_uri = f"data:image/png;base64,{img_base64}"
+
+    # Calculate pixel distance between landmarks
+    pixel_distance = math.sqrt((lambda_px[0] - bregma_px[0]) ** 2 + (lambda_px[1] - bregma_px[1]) ** 2)
+
+    # Calculate scale factor (mm per pixel)
+    scale_factor = bregma_lambda_distance_mm / pixel_distance
+
+    # Calculate image dimensions in mm (schematic units)
+    img_width_mm = img_width_px * scale_factor
+    img_height_mm = img_height_px * scale_factor
+
+    # Calculate Bregma position in mm relative to image top-left corner
+    bregma_x_from_left = bregma_px[0] * scale_factor
+    bregma_y_from_top = bregma_px[1] * scale_factor
+
+    # Calculate image extent in schematic coordinates
+    # Bregma should be at (0, 0) in schematic
+    # Image pixel coords: (0,0) at top-left, y increases downward
+    # Schematic coords: y increases upward (anterior is positive)
+    # So we flip y-axis when positioning
+
+    x_min = -bregma_x_from_left
+    x_max = x_min + img_width_mm
+
+    # Y-axis: flip image coordinate system
+    # Top of image is bregma_y_from_top above Bregma's y=0
+    # Bottom of image is (img_height_mm - bregma_y_from_top) below Bregma's y=0
+    # Apply vertical offset to shift entire image
+    y_max = bregma_y_from_top + vertical_offset_mm
+    y_min = y_max - img_height_mm
+
+    # Create dataframe for image layer
+    img_df = pd.DataFrame([{"url": img_data_uri, "x": x_min, "y": y_min, "x2": x_max, "y2": y_max}])
+
+    # Create image layer with specified extent
+    return (
+        alt.Chart(img_df)
+        .mark_image(opacity=0.6)
+        .encode(
+            url="url:N",
+            x=alt.X("x:Q", scale=alt.Scale(domain=[-8, 48])),
+            y=alt.Y("y:Q", scale=alt.Scale(domain=[-14, 14])),
+            x2="x2:Q",
+            y2="y2:Q",
+        )
+    )
 
 
 def create_schematic(fibers, subject_id):
@@ -291,33 +375,42 @@ def create_schematic(fibers, subject_id):
             "y": alt.Y(f"{y_col}:Q", scale=y_scale),
         }
 
-    # Step 1: Create skull outline
-    skull_layer = _create_skull_layer(xy_encode)
+    # Apply vertical offset to all anatomical elements
+    offset = SKULL_IMAGE_VERTICAL_OFFSET_MM
 
-    # Step 2: Create reference points (Bregma, Lambda)
-    ref_layer, ref_text_layer = _create_reference_layers(xy_encode)
-
-    # Step 3: Create fiber markers and labels
-    fiber_layer, left_text_layer, right_text_layer = _create_fiber_layers(
-        sorted_fibers, xy_encode
+    # Step 0: Create skull image layer (bottom-most layer)
+    skull_image_layer = create_skull_image_layer(
+        image_path=PATH_TO_SKULL_IMAGE,
+        bregma_px=BREGMA_PIXEL_COORDINATES,
+        lambda_px=LAMBDA_PIXEL_COORDINATES,
+        bregma_lambda_distance_mm=BREGMA_LAMBDA_DISTANCE_MM,
+        vertical_offset_mm=offset,
     )
 
-    # Step 4: Create orientation indicators
+    # Step 1: Create reference points (Bregma, Lambda)
+    ref_layer, ref_text_layer = _create_reference_layers(xy_encode, vertical_offset_mm=offset)
+
+    # Step 2: Create fiber markers and labels
+    fiber_layer, left_text_layer, right_text_layer = _create_fiber_layers(
+        sorted_fibers, xy_encode, vertical_offset_mm=offset
+    )
+
+    # Step 3: Create orientation indicators
     orientation_layer = _create_orientation_layer(xy_encode)
 
-    # Step 5: Create scale bar
+    # Step 4: Create scale bar
     scale_bar_layer, scale_text_layer = _create_scale_layers(xy_encode)
 
-    # Step 6: Create legend with fiber details
+    # Step 5: Create legend with fiber details
     legend_layer = _create_legend_layer(sorted_fibers, xy_encode)
 
-    # Step 7: Create title
+    # Step 6: Create title
     title_layer = _create_title_layer(subject_id, xy_encode)
 
-    # Step 8: Compose all layers into final chart
+    # Step 7: Compose all layers into final chart (skull image at bottom)
     chart = (
         alt.layer(
-            skull_layer,
+            skull_image_layer,
             ref_layer,
             ref_text_layer,
             fiber_layer,
@@ -331,33 +424,25 @@ def create_schematic(fibers, subject_id):
         )
         .properties(width=1400, height=700)
         .configure_view(strokeWidth=0)
-        .configure_axis(
-            grid=False, domain=False, labels=False, ticks=False, title=None
-        )
+        .configure_axis(grid=False, domain=False, labels=False, ticks=False, title=None)
         .resolve_scale(x="shared", y="shared")
     )
 
     return chart
 
 
-def _create_skull_layer(xy_encode):
-    """Create skull outline ellipse layer"""
-    skull_points = create_ellipse_points(0, 0, SKULL_WIDTH_MM, SKULL_LENGTH_MM)
-    skull_df = pd.DataFrame(skull_points)
-    return (
-        alt.Chart(skull_df)
-        .mark_line(color=SKULL_EDGE_COLOR, strokeWidth=2, opacity=0.5)
-        .encode(**xy_encode(), order="order:Q")
-    )
-
-
-def _create_reference_layers(xy_encode):
+def _create_reference_layers(xy_encode, vertical_offset_mm=0.0):
     """Create Bregma and Lambda reference point layers (markers + labels)"""
     # Reference point markers
     ref_points_df = pd.DataFrame(
         [
-            {"x": 0, "y": 0, "label": "Bregma", "size": BREGMA_RADIUS * 200},
-            {"x": 0, "y": -4.0, "label": "Lambda", "size": LAMBDA_RADIUS * 200},
+            {"x": 0, "y": 0 + vertical_offset_mm, "label": "Bregma", "size": BREGMA_RADIUS * 200},
+            {
+                "x": 0,
+                "y": -BREGMA_LAMBDA_DISTANCE_MM + vertical_offset_mm,
+                "label": "Lambda",
+                "size": LAMBDA_RADIUS * 200,
+            },
         ]
     )
     ref_layer = (
@@ -369,8 +454,8 @@ def _create_reference_layers(xy_encode):
     # Reference point labels
     ref_labels_df = pd.DataFrame(
         [
-            {"x": 0, "y": -0.8, "label": "Bregma"},
-            {"x": 0, "y": -4.6, "label": "Lambda"},
+            {"x": 0, "y": -0.8 + vertical_offset_mm, "label": "Bregma"},
+            {"x": 0, "y": -BREGMA_LAMBDA_DISTANCE_MM - 0.6 + vertical_offset_mm, "label": "Lambda"},
         ]
     )
     ref_text_layer = (
@@ -382,14 +467,14 @@ def _create_reference_layers(xy_encode):
     return ref_layer, ref_text_layer
 
 
-def _create_fiber_layers(sorted_fibers, xy_encode):
+def _create_fiber_layers(sorted_fibers, xy_encode, vertical_offset_mm=0.0):
     """Create fiber marker and label layers"""
     # Build fiber data for markers and labels
     fiber_data = []
     fiber_label_data = []
     for idx, fiber in enumerate(sorted_fibers):
         ml = safe_float(fiber.get("ml", 0))
-        ap = safe_float(fiber.get("ap", 0))
+        ap = safe_float(fiber.get("ap", 0)) + vertical_offset_mm
         name = fiber.get("name", "Unknown")
         color = FIBER_COLORS[idx % len(FIBER_COLORS)]
 
@@ -449,25 +534,21 @@ def _create_fiber_layers(sorted_fibers, xy_encode):
         )
 
     # Create separate layers for left and right aligned labels
-    left_text_layer = create_label_layer(
-        fiber_labels_df[fiber_labels_df["align"] == "right"], "right"
-    )
-    right_text_layer = create_label_layer(
-        fiber_labels_df[fiber_labels_df["align"] == "left"], "left"
-    )
+    left_text_layer = create_label_layer(fiber_labels_df[fiber_labels_df["align"] == "right"], "right")
+    right_text_layer = create_label_layer(fiber_labels_df[fiber_labels_df["align"] == "left"], "left")
 
     return fiber_layer, left_text_layer, right_text_layer
 
 
 def _create_orientation_layer(xy_encode):
     """Create anterior/posterior orientation indicators"""
-    arrow_x = -SKULL_WIDTH_MM / 2 - 1.5
+    arrow_x = -SKULL_WIDTH_MM / 2 - ORIENTATION_X_OFFSET
     orientation_df = pd.DataFrame(
         [
-            {"x": arrow_x, "y": 10, "label": "anterior", "size": REFERENCE_FONTSIZE},
-            {"x": arrow_x, "y": -10, "label": "posterior", "size": REFERENCE_FONTSIZE},
-            {"x": arrow_x, "y": 7, "label": "↑", "size": REFERENCE_FONTSIZE * 2},
-            {"x": arrow_x, "y": -7, "label": "↓", "size": REFERENCE_FONTSIZE * 2},
+            {"x": arrow_x, "y": ORIENTATION_TEXT_Y, "label": "anterior", "size": ORIENTATION_TEXT_SIZE},
+            {"x": arrow_x, "y": -ORIENTATION_TEXT_Y, "label": "posterior", "size": ORIENTATION_TEXT_SIZE},
+            {"x": arrow_x, "y": ORIENTATION_ARROW_Y, "label": "↑", "size": ORIENTATION_ARROW_SIZE},
+            {"x": arrow_x, "y": -ORIENTATION_ARROW_Y, "label": "↓", "size": ORIENTATION_ARROW_SIZE},
         ]
     )
     return (
@@ -483,19 +564,13 @@ def _create_scale_layers(xy_encode):
     scale_bar_y = -SKULL_LENGTH_MM / 2 - 1
 
     # Scale bar line
-    scale_bar_df = pd.DataFrame(
-        [{"x": scale_bar_x, "y": scale_bar_y, "x2": scale_bar_x + 5, "y2": scale_bar_y}]
-    )
+    scale_bar_df = pd.DataFrame([{"x": scale_bar_x, "y": scale_bar_y, "x2": scale_bar_x + 5, "y2": scale_bar_y}])
     scale_bar_layer = (
-        alt.Chart(scale_bar_df)
-        .mark_rule(color="black", strokeWidth=3)
-        .encode(**xy_encode(), x2="x2:Q", y2="y2:Q")
+        alt.Chart(scale_bar_df).mark_rule(color="black", strokeWidth=3).encode(**xy_encode(), x2="x2:Q", y2="y2:Q")
     )
 
     # Scale bar label
-    scale_text_df = pd.DataFrame(
-        [{"x": scale_bar_x + 2.5, "y": scale_bar_y + 0.5, "label": "5 mm"}]
-    )
+    scale_text_df = pd.DataFrame([{"x": scale_bar_x + 2.5, "y": scale_bar_y + 0.5, "label": "5 mm"}])
     scale_text_layer = (
         alt.Chart(scale_text_df)
         .mark_text(fontSize=REFERENCE_FONTSIZE, fontWeight="bold")
@@ -508,16 +583,10 @@ def _create_scale_layers(xy_encode):
 def _create_legend_layer(sorted_fibers, xy_encode):
     """Create legend with fiber coordinates and targeted structures"""
     legend_data = []
-    legend_x = 9.5  # Position on right side
-    legend_y_start = 11
-    within_fiber_spacing = 0.6  # Spacing between coord and target lines
-    between_fiber_spacing = 1.5  # Spacing between different fibers
 
-    legend_data.append(
-        {"x": legend_x, "y": legend_y_start, "text": "Fiber Details:", "color": "black"}
-    )
+    legend_data.append({"x": LEGEND_X, "y": LEGEND_Y_START, "text": "Fiber Details:", "color": "black"})
 
-    current_y = legend_y_start - 1.2
+    current_y = LEGEND_Y_START - 1.2
     for idx, fiber in enumerate(sorted_fibers):
         color = FIBER_COLORS[idx % len(FIBER_COLORS)]
         ap = safe_float(fiber.get("ap", 0))
@@ -535,17 +604,15 @@ def _create_legend_layer(sorted_fibers, xy_encode):
         if abs(angle) > 1:
             text += f" ∠{angle}°"
 
-        legend_data.append({"x": legend_x, "y": current_y, "text": text, "color": color})
-        current_y -= within_fiber_spacing
+        legend_data.append({"x": LEGEND_X, "y": current_y, "text": text, "color": color})
+        current_y -= LEGEND_WITHIN_FIBER_SPACING
 
         # Target line
         target = fiber.get("targeted_structure", "Unknown")
         if not target or target == "" or target.lower() == "root":
             target = "Not specified in surgical request form"
-        legend_data.append(
-            {"x": legend_x, "y": current_y, "text": f"Target: {target}", "color": color}
-        )
-        current_y -= between_fiber_spacing
+        legend_data.append({"x": LEGEND_X, "y": current_y, "text": f"Target: {target}", "color": color})
+        current_y -= LEGEND_BETWEEN_FIBER_SPACING
 
     legend_df = pd.DataFrame(legend_data)
     return (
@@ -573,7 +640,6 @@ def _create_title_layer(subject_id, xy_encode):
     )
 
 
-
 def save_chart_to_base64(chart):
     """Save Altair chart to base64-encoded PNG string."""
     try:
@@ -581,9 +647,7 @@ def save_chart_to_base64(chart):
         vega_spec = chart.to_dict()
 
         # Use vl-convert to convert to PNG
-        png_data = vlc.vegalite_to_png(
-            vl_spec=vega_spec, scale=2.0  # Higher resolution (2x DPI)
-        )
+        png_data = vlc.vegalite_to_png(vl_spec=vega_spec, scale=2.0)  # Higher resolution (2x DPI)
 
         # Encode to base64
         img_base64 = base64.b64encode(png_data).decode("utf-8")
@@ -666,9 +730,7 @@ def render_fiber_visualization(subject_id: str, data: dict):
     fiber_count = data.get("fiber_count", 0)
 
     if fiber_count == 0:
-        pane = create_styled_pane(
-            f"**No fiber implants found for subject {subject_id}**", "warning"
-        )
+        pane = create_styled_pane(f"**No fiber implants found for subject {subject_id}**", "warning")
         return (
             [pane],
             {"chart": None, "base64": None, "subject_id": None},
@@ -812,9 +874,7 @@ def build_panel_app():
     # Helper to render and update all UI elements
     def render_and_update_ui(subject_id, data):
         """Render visualization and update all UI state"""
-        panes, chart_data, enable_buttons = render_fiber_visualization(
-            subject_id, data
-        )
+        panes, chart_data, enable_buttons = render_fiber_visualization(subject_id, data)
         output_col[:] = panes
         current_chart_data.update(chart_data)
         download_button.disabled = not enable_buttons
@@ -828,17 +888,11 @@ def build_panel_app():
 
         subject_id = text_input.value.strip()
         try:
-            data = get_procedures_data_from_cache_or_client(
-                subject_id, fetcher.data
-            )
+            data = get_procedures_data_from_cache_or_client(subject_id, fetcher.data)
             render_and_update_ui(subject_id, data)
         except Exception as e:
             tb = traceback.format_exc()
-            output_col[:] = [
-                create_styled_pane(
-                    f"**Error processing data:** {str(e)}", "error", details=tb
-                )
-            ]
+            output_col[:] = [create_styled_pane(f"**Error processing data:** {str(e)}", "error", details=tb)]
         finally:
             output_col.loading = False
 
@@ -849,11 +903,7 @@ def build_panel_app():
                 create_styled_pane(
                     f"**Error:** {fetcher.error}",
                     "error",
-                    details=(
-                        fetcher.error_details
-                        if fetcher.error_details
-                        else None
-                    ),
+                    details=(fetcher.error_details if fetcher.error_details else None),
                 )
             ]
             output_col.loading = False
@@ -866,11 +916,7 @@ def build_panel_app():
     async def generate_callback(_event):
         subject_id = text_input.value.strip()
         if not subject_id:
-            output_col[:] = [
-                create_styled_pane(
-                    "**Error:** Please enter a subject ID.", "error"
-                )
-            ]
+            output_col[:] = [create_styled_pane("**Error:** Please enter a subject ID.", "error")]
             return
 
         # Check cache first
@@ -883,11 +929,7 @@ def build_panel_app():
                 render_and_update_ui(subject_id, data)
             except Exception as e:
                 tb = traceback.format_exc()
-                output_col[:] = [
-                    create_styled_pane(
-                        f"**Error:** {str(e)}", "error", details=tb
-                    )
-                ]
+                output_col[:] = [create_styled_pane(f"**Error:** {str(e)}", "error", details=tb)]
             finally:
                 output_col.loading = False
         else:
@@ -955,7 +997,7 @@ def build_panel_app():
         js_pane.object = f"<script>{js_code}</script>"
 
     generate_button.on_click(generate_callback)
-    text_input.param.watch(generate_callback, 'value')  # Trigger on Enter key
+    text_input.param.watch(generate_callback, "value")  # Trigger on Enter key
     download_button.on_click(download_callback)
     copy_url_button.on_click(copy_url_callback)
 
@@ -1004,11 +1046,7 @@ def build_panel_app():
                     ]
         except Exception as e:
             tb = traceback.format_exc()
-            output_col[:] = [
-                create_styled_pane(
-                    f"**Error clearing cache:** {str(e)}", "error", details=tb
-                )
-            ]
+            output_col[:] = [create_styled_pane(f"**Error clearing cache:** {str(e)}", "error", details=tb)]
 
     # Get subject_id from URL and set text input manually
     if pn.state.location:
@@ -1031,17 +1069,11 @@ def build_panel_app():
                 render_and_update_ui(subject_id, data)
             except Exception as e:
                 tb = traceback.format_exc()
-                output_col[:] = [
-                    create_styled_pane(
-                        f"**Error:** {str(e)}", "error", details=tb
-                    )
-                ]
+                output_col[:] = [create_styled_pane(f"**Error:** {str(e)}", "error", details=tb)]
         else:
             # No cache - show loading and trigger client-side fetch
             output_col[:] = [
-                pn.pane.Markdown(
-                    f"Loading data for subject_id {subject_id}..."
-                ),
+                pn.pane.Markdown(f"Loading data for subject_id {subject_id}..."),
             ]
             output_col.loading = True
             # Trigger client-side fetch
