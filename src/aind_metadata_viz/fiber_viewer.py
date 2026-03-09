@@ -822,7 +822,7 @@ if (data.subject_id && data.subject_id.trim()) {{
     const subjectId = data.subject_id.trim();
     const url = `{METADATA_SERVICE_URL}/api/v2/procedures/${{subjectId}}`;
     const MAX_RETRIES = 3;
-    const RETRY_DELAY_MS = 5000;
+    const RETRY_DELAY_MS = 1000;
 
     data.error = "";
     data.error_details = "";
