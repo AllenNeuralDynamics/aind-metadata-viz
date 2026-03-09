@@ -52,6 +52,13 @@ ERROR HANDLING:
     - Expandable details with full traceback/HTTP response
     - Client-side errors capture: URL, status code, response body
     - Python errors capture: full traceback
+    - Transient metadata service failures trigger up to 3 automatic retries (1s apart)
+    - User shown informative error message after all retries exhausted
+
+LOGGING:
+    - Structured JSON logs written to stdout
+    - Events logged: request_initiated, request_completed, fetch_retry, request_failed
+    - Each log includes timestamp, subject_id, duration, source (cache vs. service)
 
 URL PARAMETERS:
     - subject_id: Auto-load visualization for this subject
@@ -62,7 +69,9 @@ URL PARAMETERS:
 import asyncio
 import base64
 import json
+import logging
 import math
+import time
 import traceback
 from pathlib import Path
 
@@ -78,6 +87,46 @@ from PIL import Image
 from aind_metadata_viz.utils import AIND_COLORS
 
 pn.extension("vega")
+
+class _JsonFormatter(logging.Formatter):
+    """Format log records as JSON lines for structured logging."""
+
+    _BUILTIN_ATTRS = {
+        "args", "created", "exc_info", "exc_text", "filename", "funcName",
+        "levelname", "levelno", "lineno", "message", "module", "msecs",
+        "msg", "name", "pathname", "process", "processName",
+        "relativeCreated", "stack_info", "taskName", "thread", "threadName",
+    }
+
+    def format(self, record):
+        """Format a log record as a JSON string."""
+        log_data = {
+            "timestamp": self.formatTime(record, "%Y-%m-%dT%H:%M:%SZ"),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+        }
+        if record.exc_info:
+            log_data["traceback"] = self.formatException(record.exc_info)
+        for key, value in record.__dict__.items():
+            if key not in self._BUILTIN_ATTRS:
+                log_data[key] = value
+        return json.dumps(log_data)
+
+
+_handler = logging.StreamHandler()
+_handler.setFormatter(_JsonFormatter())
+logger = logging.getLogger("fiber_viewer")
+logger.setLevel(logging.INFO)
+logger.addHandler(_handler)
+logger.propagate = False
+
+
+def _log_event(event: str, **kwargs):
+    """Log a structured fiber viewer event to stdout."""
+    level = (logging.ERROR if event == "request_failed" else
+             logging.WARNING if event == "fetch_retry" else logging.INFO)
+    logger.log(level, event, extra={"event": event, **kwargs})
 
 # Metadata service and cache configuration
 METADATA_SERVICE_URL = "https://aind-metadata-service"
@@ -761,6 +810,7 @@ class MetadataFetcher(pn.reactive.ReactiveHTML):
     data = param.Dict(default={})
     error = param.String(default="")
     error_details = param.String(default="")
+    retry_info = param.String(default="")  # JSON: {attempt, max_retries, error, subject_id}
 
     _template = """
     <div id="fetcher" style="display: none;"></div>
@@ -771,46 +821,64 @@ class MetadataFetcher(pn.reactive.ReactiveHTML):
 if (data.subject_id && data.subject_id.trim()) {{
     const subjectId = data.subject_id.trim();
     const url = `{METADATA_SERVICE_URL}/api/v2/procedures/${{subjectId}}`;
+    const MAX_RETRIES = 3;
+    const RETRY_DELAY_MS = 1000;
 
     data.error = "";
     data.error_details = "";
     data.data = {{}};
+    data.retry_info = "";
 
-    fetch(url)
-        .then(response => {{
-            const status = response.status;
-            const statusText = response.statusText;
+    async function attemptFetch() {{
+        for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {{
+            try {{
+                const response = await fetch(url);
+                const status = response.status;
+                const statusText = response.statusText;
+                const body = await response.text();
 
-            // Try to get response body for error details
-            return response.text().then(body => {{
                 if (status === 404) {{
-                    const details = `URL: ${{url}}\\nStatus: ${{status}} ${{statusText}}\\nResponse: ${{body}}`;
-                    data.error_details = details;
-                    throw new Error(`No procedures found for subject ID: ${{subjectId}}`);
+                    // Not transient — don't retry
+                    data.error_details = `URL: ${{url}}\\nStatus: ${{status}} ${{statusText}}\\nResponse: ${{body}}`;
+                    data.error = `No procedures found for subject ID: ${{subjectId}}`;
+                    return;
                 }}
+
+                if (status >= 500) {{
+                    // Server error — treat as transient and retry
+                    throw new Error(`Server error ${{status}}: ${{statusText}}`);
+                }}
+
                 // Metadata service returns valid JSON even with 400/422 status codes
-                // Try to parse regardless of status (except 404)
                 try {{
-                    return JSON.parse(body);
+                    data.data = JSON.parse(body);
+                    data.error = "";
+                    data.error_details = "";
+                    return;
                 }} catch (e) {{
-                    const details = `URL: ${{url}}\\nStatus: ${{status}} ${{statusText}}\\nResponse: ${{body}}\\nParse error: ${{e.message}}`;
-                    data.error_details = details;
-                    throw new Error(`Invalid JSON response (status ${{status}}): ${{e.message}}`);
+                    data.error_details = `URL: ${{url}}\\nStatus: ${{status}} ${{statusText}}\\nResponse: ${{body}}\\nParse error: ${{e.message}}`;
+                    data.error = `Invalid JSON response (status ${{status}}): ${{e.message}}`;
+                    return;
                 }}
-            }});
-        }})
-        .then(json => {{
-            data.data = json;
-            data.error = "";
-            data.error_details = "";
-        }})
-        .catch(err => {{
-            data.error = err.message || "Failed to fetch procedures data";
-            if (!data.error_details) {{
-                data.error_details = `URL: ${{url}}\\nError: ${{err.stack || err.message}}`;
+            }} catch (err) {{
+                if (attempt < MAX_RETRIES) {{
+                    data.retry_info = JSON.stringify({{
+                        attempt: attempt,
+                        max_retries: MAX_RETRIES,
+                        error: err.message,
+                        subject_id: subjectId
+                    }});
+                    await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+                }} else {{
+                    data.error = "Could not reach the metadata service. If you are off-site, please connect to the VPN and try again. If you are on the AIND network, the service may be temporarily unavailable — please try again in a moment.";
+                    data.error_details = `URL: ${{url}}\\nFailed after ${{MAX_RETRIES}} attempts.\\nLast error: ${{err.stack || err.message}}`;
+                    data.data = {{}};
+                }}
             }}
-            data.data = {{}};
-        }});
+        }}
+    }}
+
+    attemptFetch();
 }}
 """
     }
@@ -868,6 +936,9 @@ def build_panel_app():
     # Store current chart data for download
     current_chart_data = {"chart": None, "base64": None, "subject_id": None}
 
+    # Track in-flight request timing for logging (not safe for concurrent requests)
+    request_state = {"start_time": None, "subject_id": None}
+
     # Create metadata fetcher (client-side)
     fetcher = MetadataFetcher()
 
@@ -890,8 +961,15 @@ def build_panel_app():
         try:
             data = get_procedures_data_from_cache_or_client(subject_id, fetcher.data)
             render_and_update_ui(subject_id, data)
+            duration = round(time.time() - request_state["start_time"], 2) if request_state["start_time"] else 0
+            _log_event("request_completed", subject_id=subject_id, duration_seconds=duration,
+                       fiber_count=data.get("fiber_count", 0),
+                       source="cache" if data.get("from_cache") else "metadata_service")
         except Exception as e:
             tb = traceback.format_exc()
+            duration = round(time.time() - request_state["start_time"], 2) if request_state["start_time"] else 0
+            _log_event("request_failed", subject_id=subject_id, duration_seconds=duration,
+                       error=str(e), traceback=tb)
             output_col[:] = [create_styled_pane(f"**Error processing data:** {str(e)}", "error", details=tb)]
         finally:
             output_col.loading = False
@@ -899,6 +977,10 @@ def build_panel_app():
     def handle_fetch_error(_event):
         """Handle errors from the client-side fetch"""
         if fetcher.error:
+            subject_id = text_input.value.strip()
+            duration = round(time.time() - request_state["start_time"], 2) if request_state["start_time"] else 0
+            _log_event("request_failed", subject_id=subject_id, duration_seconds=duration,
+                       error=fetcher.error, error_details=fetcher.error_details)
             output_col[:] = [
                 create_styled_pane(
                     f"**Error:** {fetcher.error}",
@@ -908,9 +990,36 @@ def build_panel_app():
             ]
             output_col.loading = False
 
-    # Watch for data and error changes
+    def handle_retry_info(_event):
+        """Log retry attempts signaled from the client-side JavaScript"""
+        if fetcher.retry_info:
+            try:
+                _log_event("fetch_retry", **json.loads(fetcher.retry_info))
+            except Exception:
+                logger.warning("Failed to parse retry_info: %s", fetcher.retry_info)
+
+    def load_from_cache(subject_id):
+        """Load and render from cache, with logging. Returns True on success."""
+        output_col.loading = True
+        try:
+            data = get_procedures_data_from_cache_or_client(subject_id)
+            render_and_update_ui(subject_id, data)
+            duration = round(time.time() - request_state["start_time"], 2)
+            _log_event("request_completed", subject_id=subject_id, duration_seconds=duration,
+                       fiber_count=data.get("fiber_count", 0), source="cache")
+        except Exception as e:
+            tb = traceback.format_exc()
+            duration = round(time.time() - request_state["start_time"], 2)
+            _log_event("request_failed", subject_id=subject_id, duration_seconds=duration,
+                       error=str(e), traceback=tb)
+            output_col[:] = [create_styled_pane(f"**Error:** {str(e)}", "error", details=tb)]
+        finally:
+            output_col.loading = False
+
+    # Watch for data, error, and retry changes
     fetcher.param.watch(process_fetched_data, "data")
     fetcher.param.watch(handle_fetch_error, "error")
+    fetcher.param.watch(handle_retry_info, "retry_info")
 
     # Button callback - trigger client-side fetch or use cache
     async def generate_callback(_event):
@@ -919,20 +1028,16 @@ def build_panel_app():
             output_col[:] = [create_styled_pane("**Error:** Please enter a subject ID.", "error")]
             return
 
+        request_state["start_time"] = time.time()
+        request_state["subject_id"] = subject_id
+
         # Check cache first
         cached_data = get_cached_procedures(subject_id)
         if cached_data:
-            # Use cached data directly
-            output_col.loading = True
-            try:
-                data = get_procedures_data_from_cache_or_client(subject_id)
-                render_and_update_ui(subject_id, data)
-            except Exception as e:
-                tb = traceback.format_exc()
-                output_col[:] = [create_styled_pane(f"**Error:** {str(e)}", "error", details=tb)]
-            finally:
-                output_col.loading = False
+            _log_event("request_initiated", subject_id=subject_id, source="cache")
+            load_from_cache(subject_id)
         else:
+            _log_event("request_initiated", subject_id=subject_id, source="metadata_service")
             # No cache - trigger client-side fetch
             output_col[:] = [
                 pn.pane.Markdown(
@@ -1061,16 +1166,14 @@ def build_panel_app():
     if text_input.value:
         subject_id = text_input.value.strip()
         cached_data = get_cached_procedures(subject_id)
+        request_state["start_time"] = time.time()
+        request_state["subject_id"] = subject_id
 
         if cached_data:
-            # Use cached data for instant load
-            try:
-                data = get_procedures_data_from_cache_or_client(subject_id)
-                render_and_update_ui(subject_id, data)
-            except Exception as e:
-                tb = traceback.format_exc()
-                output_col[:] = [create_styled_pane(f"**Error:** {str(e)}", "error", details=tb)]
+            _log_event("request_initiated", subject_id=subject_id, source="cache")
+            load_from_cache(subject_id)
         else:
+            _log_event("request_initiated", subject_id=subject_id, source="metadata_service")
             # No cache - show loading and trigger client-side fetch
             output_col[:] = [
                 pn.pane.Markdown(f"Loading data for subject_id {subject_id}..."),
