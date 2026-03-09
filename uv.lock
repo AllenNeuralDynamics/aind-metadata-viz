@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.10"
 resolution-markers = [
     "python_full_version >= '3.12'",
@@ -47,44 +47,44 @@ rds = [
 
 [[package]]
 name = "aind-data-schema"
-version = "2.6.0"
+version = "2.5.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aind-data-schema-models" },
     { name = "pydantic" },
     { name = "pydantic-extra-types" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/3e/04/fb661b20352d9768f1a777f5a26a4948ebeb40b49c6d0ddbe2004351aa97/aind_data_schema-2.6.0.tar.gz", hash = "sha256:921bf9e45a4d9671f883a79219119841de3d907928568c0f6f610d029ab2babf", size = 901339, upload-time = "2026-03-09T18:25:36.958Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/92/30/a90d1a367733db0a813a5f5bebbc3cd837b59b1b46e3bd222978476e7517/aind_data_schema-2.5.0.tar.gz", hash = "sha256:9676f1afc4ac213444c0fc205d912589dcea54f93d5a2edacd64ad0041b4b81a", size = 891196, upload-time = "2026-02-17T22:51:23.651Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a5/71/905924fa2483bb4bcc08218cc43119a790a859e695a1c28253711b11ec0d/aind_data_schema-2.6.0-py3-none-any.whl", hash = "sha256:dfc868930c9e2ee2fe8ca40ef3dc2d0502db59e44bd76c577fdecde77d73ac48", size = 92081, upload-time = "2026-03-09T18:25:35.332Z" },
+    { url = "https://files.pythonhosted.org/packages/d1/9e/af85e8cf319dd5822efa0cb33c5e7f7cae484b4c644dfb285c2a54f5ddfc/aind_data_schema-2.5.0-py3-none-any.whl", hash = "sha256:1e91fcf73b4b8625ba600bd76a2bfe261182b1279735e1df125ee7ed4c817b05", size = 90825, upload-time = "2026-02-17T22:51:21.962Z" },
 ]
 
 [[package]]
 name = "aind-data-schema-models"
-version = "5.4.1"
+version = "5.2.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "importlib-resources" },
     { name = "pydantic" },
     { name = "requests" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/06/83/ac795e044cc4a44da7e61e4ca1afbf12030cd723ce7f03d85f69977e3860/aind_data_schema_models-5.4.1.tar.gz", hash = "sha256:f6550a1fc945c1954ea2c074d09df880cc8b44755f000d5ebe13f8b2507aa08c", size = 340521, upload-time = "2026-03-09T18:20:52.334Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/4b/e7/b1c40e19bd3267e9c1d1099fb98c4b0d211bc25061fbedc8caafebc48399/aind_data_schema_models-5.2.2.tar.gz", hash = "sha256:962b1ecc52e38ea29fad9f126ff52c7fdb3296d7f23ef774f33987d2ccf61d06", size = 340495, upload-time = "2026-01-22T18:57:03.242Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/bc/d7/51e8abfd0919035f719ecc3d8223e6cca4de87f1a263da527fcda34df59f/aind_data_schema_models-5.4.1-py3-none-any.whl", hash = "sha256:2996e2856b04874019d336172b934bacbc7cb3c5079deed52cda09f063d3a856", size = 309923, upload-time = "2026-03-09T18:20:50.921Z" },
+    { url = "https://files.pythonhosted.org/packages/ee/2a/e3cb794c232e1b599bada18e383d2a29c74069d36f84408c5598f27c3253/aind_data_schema_models-5.2.2-py3-none-any.whl", hash = "sha256:271db7fd193392c811fd705da58950bc81357a7b2bc68dd1fe9eda53ce057d6a", size = 309917, upload-time = "2026-01-22T18:57:01.65Z" },
 ]
 
 [[package]]
 name = "aind-metadata-upgrader"
-version = "0.6.6"
+version = "0.6.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aind-data-access-api", extra = ["docdb"] },
     { name = "aind-data-schema" },
     { name = "packaging" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/4b/1d/b938f4673cd34dd857c403d9608b89369b08caf0190bcf2094df939cc5c2/aind_metadata_upgrader-0.6.6.tar.gz", hash = "sha256:5be40e90930ad3b3dd95785e4bd0af43e92910739dded928340ecf83e8f6f299", size = 5087937, upload-time = "2026-03-05T20:01:08.061Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d1/43/34e1cc0761090101187c3be571b13022534357409b8400a85f007e23ce39/aind_metadata_upgrader-0.6.3.tar.gz", hash = "sha256:2213840cf660cf6ada3a9807cbcba3c1cf47984ce507d80e0dc8f1551db9d359", size = 5077677, upload-time = "2026-02-03T21:54:08.74Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/4f/b5/9be5fa11eb10b6a196d3c4368131d88f0efa00963da8c644693385a54682/aind_metadata_upgrader-0.6.6-py3-none-any.whl", hash = "sha256:7fc963dbd13f314e85bb368121a524c51662531aef5cb63034ba3c860bf0b216", size = 77418, upload-time = "2026-03-05T20:01:06.739Z" },
+    { url = "https://files.pythonhosted.org/packages/aa/6c/065f73115a824d06819bd3fae2001b29c129ff57fcc5cc84853c9e7f85c4/aind_metadata_upgrader-0.6.3-py3-none-any.whl", hash = "sha256:ecf661f7ba33a12f017a69c3b6d0f6020793c8f39cb1b3217d4481364efd75cb", size = 76503, upload-time = "2026-02-03T21:54:07.332Z" },
 ]
 
 [[package]]
@@ -139,8 +139,8 @@ dev = [
 requires-dist = [
     { name = "aind-data-access-api", extras = ["docdb"] },
     { name = "aind-data-access-api", extras = ["rds"] },
-    { name = "aind-data-schema", specifier = ">=2.5.0,<3" },
-    { name = "aind-metadata-upgrader", specifier = ">=0.6.4,<1" },
+    { name = "aind-data-schema", specifier = ">=2.5.0" },
+    { name = "aind-metadata-upgrader", specifier = ">=0.6.3" },
     { name = "aind-metadata-validator", specifier = ">=0.11.1" },
     { name = "altair" },
     { name = "black", marker = "extra == 'dev'" },
