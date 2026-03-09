@@ -936,7 +936,7 @@ def build_panel_app():
     # Store current chart data for download
     current_chart_data = {"chart": None, "base64": None, "subject_id": None}
 
-    # Track in-flight request timing for logging
+    # Track in-flight request timing for logging (not safe for concurrent requests)
     request_state = {"start_time": None, "subject_id": None}
 
     # Create metadata fetcher (client-side)
@@ -961,13 +961,13 @@ def build_panel_app():
         try:
             data = get_procedures_data_from_cache_or_client(subject_id, fetcher.data)
             render_and_update_ui(subject_id, data)
-            duration = round(time.time() - (request_state["start_time"] or time.time()), 2)
+            duration = round(time.time() - request_state["start_time"], 2) if request_state["start_time"] else 0
             _log_event("request_completed", subject_id=subject_id, duration_seconds=duration,
                        fiber_count=data.get("fiber_count", 0),
                        source="cache" if data.get("from_cache") else "metadata_service")
         except Exception as e:
             tb = traceback.format_exc()
-            duration = round(time.time() - (request_state["start_time"] or time.time()), 2)
+            duration = round(time.time() - request_state["start_time"], 2) if request_state["start_time"] else 0
             _log_event("request_failed", subject_id=subject_id, duration_seconds=duration,
                        error=str(e), traceback=tb)
             output_col[:] = [create_styled_pane(f"**Error processing data:** {str(e)}", "error", details=tb)]
@@ -978,7 +978,7 @@ def build_panel_app():
         """Handle errors from the client-side fetch"""
         if fetcher.error:
             subject_id = text_input.value.strip()
-            duration = round(time.time() - (request_state["start_time"] or time.time()), 2)
+            duration = round(time.time() - request_state["start_time"], 2) if request_state["start_time"] else 0
             _log_event("request_failed", subject_id=subject_id, duration_seconds=duration,
                        error=fetcher.error, error_details=fetcher.error_details)
             output_col[:] = [
@@ -996,7 +996,7 @@ def build_panel_app():
             try:
                 _log_event("fetch_retry", **json.loads(fetcher.retry_info))
             except Exception:
-                pass
+                logger.warning("Failed to parse retry_info: %s", fetcher.retry_info)
 
     def load_from_cache(subject_id):
         """Load and render from cache, with logging. Returns True on success."""
