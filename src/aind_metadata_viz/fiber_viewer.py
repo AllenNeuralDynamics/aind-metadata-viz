@@ -57,7 +57,6 @@ ERROR HANDLING:
 
 LOGGING:
     - Structured JSON logs written to stdout
-    - On ECS, stdout is shipped to CloudWatch Logs via the awslogs driver
     - Events logged: request_initiated, request_completed, fetch_retry, request_failed
     - Each log includes timestamp, subject_id, duration, source (cache vs. service)
 
@@ -89,7 +88,6 @@ from aind_metadata_viz.utils import AIND_COLORS
 
 pn.extension("vega")
 
-# Structured JSON logger — on ECS, stdout is shipped to CloudWatch via awslogs driver
 class _JsonFormatter(logging.Formatter):
     """Format log records as JSON lines for structured logging."""
 
