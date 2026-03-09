@@ -121,6 +121,13 @@ logger.setLevel(logging.INFO)
 logger.addHandler(_handler)
 logger.propagate = False
 
+
+def _log_event(event: str, **kwargs):
+    """Log a structured fiber viewer event to stdout."""
+    level = (logging.ERROR if event == "request_failed" else
+             logging.WARNING if event == "fetch_retry" else logging.INFO)
+    logger.log(level, event, extra={"event": event, **kwargs})
+
 # Metadata service and cache configuration
 METADATA_SERVICE_URL = "https://aind-metadata-service"
 CACHE_DIR = Path(".cache/procedures")
@@ -955,29 +962,14 @@ def build_panel_app():
             data = get_procedures_data_from_cache_or_client(subject_id, fetcher.data)
             render_and_update_ui(subject_id, data)
             duration = round(time.time() - (request_state["start_time"] or time.time()), 2)
-            logger.info(
-                "request_completed",
-                extra={
-                    "event": "request_completed",
-                    "subject_id": subject_id,
-                    "duration_seconds": duration,
-                    "fiber_count": data.get("fiber_count", 0),
-                    "source": "cache" if data.get("from_cache") else "metadata_service",
-                },
-            )
+            _log_event("request_completed", subject_id=subject_id, duration_seconds=duration,
+                       fiber_count=data.get("fiber_count", 0),
+                       source="cache" if data.get("from_cache") else "metadata_service")
         except Exception as e:
             tb = traceback.format_exc()
             duration = round(time.time() - (request_state["start_time"] or time.time()), 2)
-            logger.error(
-                "request_failed",
-                extra={
-                    "event": "request_failed",
-                    "subject_id": subject_id,
-                    "duration_seconds": duration,
-                    "error": str(e),
-                    "traceback": tb,
-                },
-            )
+            _log_event("request_failed", subject_id=subject_id, duration_seconds=duration,
+                       error=str(e), traceback=tb)
             output_col[:] = [create_styled_pane(f"**Error processing data:** {str(e)}", "error", details=tb)]
         finally:
             output_col.loading = False
@@ -987,16 +979,8 @@ def build_panel_app():
         if fetcher.error:
             subject_id = text_input.value.strip()
             duration = round(time.time() - (request_state["start_time"] or time.time()), 2)
-            logger.error(
-                "request_failed",
-                extra={
-                    "event": "request_failed",
-                    "subject_id": subject_id,
-                    "duration_seconds": duration,
-                    "error": fetcher.error,
-                    "error_details": fetcher.error_details,
-                },
-            )
+            _log_event("request_failed", subject_id=subject_id, duration_seconds=duration,
+                       error=fetcher.error, error_details=fetcher.error_details)
             output_col[:] = [
                 create_styled_pane(
                     f"**Error:** {fetcher.error}",
@@ -1010,13 +994,27 @@ def build_panel_app():
         """Log retry attempts signaled from the client-side JavaScript"""
         if fetcher.retry_info:
             try:
-                info = json.loads(fetcher.retry_info)
-                logger.warning(
-                    "fetch_retry",
-                    extra={"event": "fetch_retry", **info},
-                )
+                _log_event("fetch_retry", **json.loads(fetcher.retry_info))
             except Exception:
                 pass
+
+    def load_from_cache(subject_id):
+        """Load and render from cache, with logging. Returns True on success."""
+        output_col.loading = True
+        try:
+            data = get_procedures_data_from_cache_or_client(subject_id)
+            render_and_update_ui(subject_id, data)
+            duration = round(time.time() - request_state["start_time"], 2)
+            _log_event("request_completed", subject_id=subject_id, duration_seconds=duration,
+                       fiber_count=data.get("fiber_count", 0), source="cache")
+        except Exception as e:
+            tb = traceback.format_exc()
+            duration = round(time.time() - request_state["start_time"], 2)
+            _log_event("request_failed", subject_id=subject_id, duration_seconds=duration,
+                       error=str(e), traceback=tb)
+            output_col[:] = [create_styled_pane(f"**Error:** {str(e)}", "error", details=tb)]
+        finally:
+            output_col.loading = False
 
     # Watch for data, error, and retry changes
     fetcher.param.watch(process_fetched_data, "data")
@@ -1036,46 +1034,10 @@ def build_panel_app():
         # Check cache first
         cached_data = get_cached_procedures(subject_id)
         if cached_data:
-            logger.info(
-                "request_initiated",
-                extra={"event": "request_initiated", "subject_id": subject_id, "source": "cache"},
-            )
-            output_col.loading = True
-            try:
-                data = get_procedures_data_from_cache_or_client(subject_id)
-                render_and_update_ui(subject_id, data)
-                duration = round(time.time() - request_state["start_time"], 2)
-                logger.info(
-                    "request_completed",
-                    extra={
-                        "event": "request_completed",
-                        "subject_id": subject_id,
-                        "duration_seconds": duration,
-                        "fiber_count": data.get("fiber_count", 0),
-                        "source": "cache",
-                    },
-                )
-            except Exception as e:
-                tb = traceback.format_exc()
-                duration = round(time.time() - request_state["start_time"], 2)
-                logger.error(
-                    "request_failed",
-                    extra={
-                        "event": "request_failed",
-                        "subject_id": subject_id,
-                        "duration_seconds": duration,
-                        "error": str(e),
-                        "traceback": tb,
-                    },
-                )
-                output_col[:] = [create_styled_pane(f"**Error:** {str(e)}", "error", details=tb)]
-            finally:
-                output_col.loading = False
+            _log_event("request_initiated", subject_id=subject_id, source="cache")
+            load_from_cache(subject_id)
         else:
-            logger.info(
-                "request_initiated",
-                extra={"event": "request_initiated", "subject_id": subject_id, "source": "metadata_service"},
-            )
+            _log_event("request_initiated", subject_id=subject_id, source="metadata_service")
             # No cache - trigger client-side fetch
             output_col[:] = [
                 pn.pane.Markdown(
@@ -1208,44 +1170,10 @@ def build_panel_app():
         request_state["subject_id"] = subject_id
 
         if cached_data:
-            logger.info(
-                "request_initiated",
-                extra={"event": "request_initiated", "subject_id": subject_id, "source": "cache"},
-            )
-            # Use cached data for instant load
-            try:
-                data = get_procedures_data_from_cache_or_client(subject_id)
-                render_and_update_ui(subject_id, data)
-                duration = round(time.time() - request_state["start_time"], 2)
-                logger.info(
-                    "request_completed",
-                    extra={
-                        "event": "request_completed",
-                        "subject_id": subject_id,
-                        "duration_seconds": duration,
-                        "fiber_count": data.get("fiber_count", 0),
-                        "source": "cache",
-                    },
-                )
-            except Exception as e:
-                tb = traceback.format_exc()
-                duration = round(time.time() - request_state["start_time"], 2)
-                logger.error(
-                    "request_failed",
-                    extra={
-                        "event": "request_failed",
-                        "subject_id": subject_id,
-                        "duration_seconds": duration,
-                        "error": str(e),
-                        "traceback": tb,
-                    },
-                )
-                output_col[:] = [create_styled_pane(f"**Error:** {str(e)}", "error", details=tb)]
+            _log_event("request_initiated", subject_id=subject_id, source="cache")
+            load_from_cache(subject_id)
         else:
-            logger.info(
-                "request_initiated",
-                extra={"event": "request_initiated", "subject_id": subject_id, "source": "metadata_service"},
-            )
+            _log_event("request_initiated", subject_id=subject_id, source="metadata_service")
             # No cache - show loading and trigger client-side fetch
             output_col[:] = [
                 pn.pane.Markdown(f"Loading data for subject_id {subject_id}..."),
