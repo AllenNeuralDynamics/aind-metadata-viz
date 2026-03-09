@@ -52,8 +52,8 @@ ERROR HANDLING:
     - Expandable details with full traceback/HTTP response
     - Client-side errors capture: URL, status code, response body
     - Python errors capture: full traceback
-    - Transient metadata service failures trigger up to 3 automatic retries (5s apart)
-    - User shown friendly "temporarily unavailable" message after all retries exhausted
+    - Transient metadata service failures trigger up to 3 automatic retries (1s apart)
+    - User shown informative error message after all retries exhausted
 
 LOGGING:
     - Structured JSON logs written to stdout
