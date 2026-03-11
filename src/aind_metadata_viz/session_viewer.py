@@ -268,8 +268,10 @@ def get_dts_jobs(date_from_iso: str, date_to_iso: str) -> tuple[list[dict], str 
 
 def build_session_table(
     dts_jobs: list[dict],
-    docdb_records: list[dict],
+    all_docdb_records: list[dict],
     job_types: dict[str, dict],
+    date_from: datetime,
+    date_to: datetime,
 ) -> pd.DataFrame:
     """
     Build a DataFrame with one row per session, joining DTS and DocDB by session name.
@@ -278,6 +280,10 @@ def build_session_table(
     Sessions whose job_type is not in job_types are excluded from the table.
     For pipelines not in a session's expected_pipelines, '—' is shown instead of ⬜.
     For sessions with no DTS job (>14 days), expected_pipelines is unknown and ⬜ is used.
+
+    all_docdb_records is the full unfiltered project record set. Date filtering is only
+    applied to DocDB-only sessions (those not present in DTS), so that sessions collected
+    one day before the range start but uploaded within the range still show their raw asset.
     """
     now_utc = datetime.now(tz=timezone.utc)
     cutoff_14d = now_utc - timedelta(days=DTS_MAX_LOOKBACK_DAYS)
@@ -289,11 +295,13 @@ def build_session_table(
         if j.get("job_type") in job_types
     }
 
-    # Index DocDB records by session name, split by raw vs derived
+    # Index ALL DocDB records by session name, split by raw vs derived.
+    # We index everything so that a DTS session whose name-date falls just outside
+    # the selected range can still find its DocDB record.
     raw_by_session: dict[str, dict] = {}
     derived_by_session: dict[str, list[dict]] = {}
 
-    for r in docdb_records:
+    for r in all_docdb_records:
         name = r.get("name", "")
         sname = get_session_name(name)
         data_level = r.get("data_description", {}).get("data_level", "")
@@ -305,8 +313,15 @@ def build_session_table(
         else:
             derived_by_session.setdefault(sname, []).append(r)
 
-    # Union of all session names from both sources
-    all_sessions = set(dts_by_name.keys()) | set(raw_by_session.keys())
+    # DTS sessions: date-filtered by execution_date via the API — include all.
+    # DocDB-only sessions: filter by the date encoded in the session name.
+    docdb_only: set[str] = set()
+    for sname in raw_by_session:
+        if sname not in dts_by_name:
+            d = session_date(sname)
+            if d is not None and date_from <= d <= date_to:
+                docdb_only.add(sname)
+    all_sessions = set(dts_by_name.keys()) | docdb_only
 
     rows = []
     for sname in sorted(all_sessions, reverse=True):
@@ -333,9 +348,12 @@ def build_session_table(
             )
             return asset_cell(record["name"] if record else None)
 
+        modalities = ", ".join(get_modalities(raw)) if raw else ""
+
         rows.append({
             "Subject": subject_id,
             "Session Date": dt_str,
+            "Modalities": modalities,
             "Session Name": sname,
             "DTS Upload": dts_cell(dts_job, within_14d),
             "Raw Asset": asset_cell(raw["name"] if raw else None),
@@ -345,7 +363,7 @@ def build_session_table(
 
     return pd.DataFrame(
         rows,
-        columns=["Subject", "Session Date", "Session Name", "DTS Upload",
+        columns=["Subject", "Session Date", "Modalities", "Session Name", "DTS Upload",
                  "Raw Asset", "Behavior Pipeline", "FIP Pipeline"],
     )
 
@@ -435,7 +453,7 @@ def build_panel_app():
             dts_jobs = [j for j in dts_jobs if subject in j.get("name", "")]
             records_in_range = [r for r in records_in_range if subject in r.get("name", "")]
 
-        df = build_session_table(dts_jobs, records_in_range, job_types)
+        df = build_session_table(dts_jobs, all_records, job_types, date_from, date_to)
 
         if df.empty:
             table_col[:] = [pn.pane.Markdown("_No sessions found for the selected filters._")]
