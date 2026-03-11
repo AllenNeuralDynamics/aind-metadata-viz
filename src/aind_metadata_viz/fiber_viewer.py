@@ -84,38 +84,12 @@ import vl_convert as vlc
 from io import BytesIO
 from PIL import Image
 
-from aind_metadata_viz.utils import AIND_COLORS
+from aind_metadata_viz.utils import AIND_COLORS, JsonFormatter
 
 pn.extension("vega")
 
-class _JsonFormatter(logging.Formatter):
-    """Format log records as JSON lines for structured logging."""
-
-    _BUILTIN_ATTRS = {
-        "args", "created", "exc_info", "exc_text", "filename", "funcName",
-        "levelname", "levelno", "lineno", "message", "module", "msecs",
-        "msg", "name", "pathname", "process", "processName",
-        "relativeCreated", "stack_info", "taskName", "thread", "threadName",
-    }
-
-    def format(self, record):
-        """Format a log record as a JSON string."""
-        log_data = {
-            "timestamp": self.formatTime(record, "%Y-%m-%dT%H:%M:%SZ"),
-            "level": record.levelname,
-            "logger": record.name,
-            "message": record.getMessage(),
-        }
-        if record.exc_info:
-            log_data["traceback"] = self.formatException(record.exc_info)
-        for key, value in record.__dict__.items():
-            if key not in self._BUILTIN_ATTRS:
-                log_data[key] = value
-        return json.dumps(log_data)
-
-
 _handler = logging.StreamHandler()
-_handler.setFormatter(_JsonFormatter())
+_handler.setFormatter(JsonFormatter())
 logger = logging.getLogger("fiber_viewer")
 logger.setLevel(logging.INFO)
 logger.addHandler(_handler)

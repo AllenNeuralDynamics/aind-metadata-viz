@@ -1,0 +1,510 @@
+"""
+Session Status Viewer
+
+Provides an end-to-end pipeline status view for data collection sessions.
+The project is selectable via dropdown; add entries to PROJECT_CONFIG to extend.
+
+ARCHITECTURE:
+    Both data sources are queried server-side:
+
+    - DocDB (via aind-data-access-api): asset registration records, cached 1hr.
+      No time limit; shows all sessions that made it to registration.
+
+    - DTS REST API (via requests): job status from http://aind-data-transfer-service.
+      The DTS is on the AIND internal network, so this app must be run from the AIND
+      network or VPN (locally or deployed on-prem). Cached 5min.
+
+    Note: the DTS API has no CORS headers, so client-side JS fetch cannot be used.
+    The server-side approach requires network access to http://aind-data-transfer-service.
+
+DATA FLOW:
+    1. User selects date range and clicks Load Sessions
+    2. Server queries DTS API (paginated) for all jobs in the date range
+    3. Server queries DocDB for project records in the date range (cached 1hr)
+    4. Both are joined by session name and rendered as a status table
+
+LIMITATIONS:
+    - DTS API enforces a 14-day lookback window. For sessions older than 14 days,
+      the DTS Status column shows "N/A (>14 days)".
+    - Sessions that failed before reaching the DTS are not visible (Phase 2 scope).
+    - Requires AIND network or VPN access for DTS data.
+
+URL PARAMETERS:
+    - subject: pre-fill subject ID filter (e.g. ?subject=822683)
+"""
+
+import logging
+from datetime import datetime, timedelta, timezone
+
+import requests as req
+import pandas as pd
+import panel as pn
+
+from urllib.parse import quote
+
+from aind_data_access_api.document_db import MetadataDbClient
+from aind_metadata_viz.utils import TTL_HOUR
+
+pn.extension("tabulator")
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+DTS_BASE_URL = "http://aind-data-transfer-service"
+METADATA_PORTAL_BASE = "https://metadata-portal.allenneuraldynamics-test.org"
+DTS_MAX_LOOKBACK_DAYS = 14
+
+# Maps project name (as it appears in DocDB) to per-job-type configuration.
+# expected_pipelines: which derived pipeline columns apply to sessions of this job type.
+# Add new projects or job types here to extend the viewer.
+PROJECT_CONFIG: dict[str, dict] = {
+    "Cognitive flexibility in patch foraging": {
+        "job_types": {
+            "vr_foraging_fiber": {"expected_pipelines": {"behavior", "fib"}},
+            "vr_foraging_v2":    {"expected_pipelines": {"behavior"}},
+        },
+    },
+}
+DTS_CACHE_TTL = 5 * 60  # 5 minutes — DTS data changes frequently
+
+# Suffixes that mark a derived (processed) asset name
+_DERIVED_MARKERS = ("_processed_", "_videoprocessed_", "_sorted_")
+
+docdb_client = MetadataDbClient(
+    host="api.allenneuraldynamics.org",
+    version="v2",
+)
+
+logger = logging.getLogger("session_viewer")
+
+# ---------------------------------------------------------------------------
+# Name parsing helpers
+# ---------------------------------------------------------------------------
+
+def get_session_name(asset_name: str) -> str:
+    """
+    Extract the canonical session key ({subject_id}_{date}_{time}) from any asset name.
+
+    Handles all naming conventions observed in DocDB:
+      New raw:     '822683_2026-02-26_16-59-38'                              → '822683_2026-02-26_16-59-38'
+      Old raw:     'behavior_789919_2025-07-11_19-48-01'                     → '789919_2025-07-11_19-48-01'
+      New derived: '822683_2026-02-26_16-59-38_processed_2026-02-27_...'     → '822683_2026-02-26_16-59-38'
+      Old derived: 'behavior_789919_2025-07-11_19-48-01_processed_2025-...'  → '789919_2025-07-11_19-48-01'
+    """
+    # Step 1: strip processing suffix
+    for marker in _DERIVED_MARKERS:
+        if marker in asset_name:
+            asset_name = asset_name.split(marker)[0]
+            break
+    # Step 2: strip modality prefix (non-numeric first component)
+    parts = asset_name.split("_")
+    if parts and not parts[0].isdigit():
+        return "_".join(parts[1:])
+    return asset_name
+
+
+def parse_session_name(session_name: str) -> tuple[str, str]:
+    """
+    Return (subject_id, display_datetime) from a session name.
+
+    '822683_2026-02-26_16-59-38' → ('822683', '2026-02-26 16:59:38')
+    """
+    parts = session_name.split("_")
+    subject_id = parts[0] if parts else session_name
+    if len(parts) >= 3:
+        dt_str = f"{parts[1]} {parts[2].replace('-', ':')}"
+    elif len(parts) >= 2:
+        dt_str = parts[1]
+    else:
+        dt_str = ""
+    return subject_id, dt_str
+
+
+def session_date(session_name: str) -> datetime | None:
+    """Parse the session date from a session name as a UTC datetime, or None."""
+    parts = session_name.split("_")
+    if len(parts) >= 2:
+        try:
+            return datetime.strptime(parts[1], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        except ValueError:
+            pass
+    return None
+
+
+def get_modalities(record: dict) -> list[str]:
+    """Return lowercased modality abbreviations from a DocDB record."""
+    try:
+        mods = record.get("data_description", {}).get("modalities", [])
+        return [m["abbreviation"].lower() for m in mods if isinstance(m, dict)]
+    except Exception:
+        return []
+
+
+# ---------------------------------------------------------------------------
+# HTML cell helpers
+# ---------------------------------------------------------------------------
+
+_DTS_ICONS = {
+    "success": "✅",
+    "failed": "❌",
+    "running": "⏳",
+    "queued": "⏳",
+    "up_for_retry": "⏳",
+}
+
+
+def dts_cell(job: dict | None, within_14_days: bool) -> str:
+    """Render the DTS status cell as an HTML string."""
+    if not within_14_days:
+        return '<span style="color:#888;">N/A (&gt;14 days)</span>'
+    if job is None:
+        return "⬜"
+    state = job.get("job_state", "unknown")
+    icon = _DTS_ICONS.get(state, "❓")
+    dag_run_id = job.get("job_id", "")
+    dag = job.get("dag_id", "transform_and_upload_v2")
+    if dag_run_id:
+        url = (
+            f"{DTS_BASE_URL}/job_tasks_table"
+            f"?dag_id={quote(dag)}&dag_run_id={quote(dag_run_id)}"
+        )
+        return f'<a href="{url}" target="_blank">{icon} {state}</a>'
+    return f"{icon} {state}"
+
+
+def asset_cell(name: str | None) -> str:
+    """Render an asset status cell as HTML, linking to the metadata portal."""
+    if not name:
+        return "⬜"
+    url = f"{METADATA_PORTAL_BASE}/view?name={quote(name)}"
+    return f'<a href="{url}" target="_blank">✅</a>'
+
+
+# ---------------------------------------------------------------------------
+# Data fetching — both server-side
+# ---------------------------------------------------------------------------
+
+@pn.cache(ttl=TTL_HOUR)
+def get_project_records(project_name: str) -> list[dict]:
+    """
+    Fetch all DocDB records for the project (raw + derived), cached for 1 hour.
+    Date filtering is done in Python to avoid timezone ambiguity.
+    """
+    logger.info("Querying DocDB for project records", extra={"project": project_name})
+    records = docdb_client.retrieve_docdb_records(
+        filter_query={"data_description.project_name": project_name},
+        projection={
+            "name": 1,
+            "_id": 1,
+            "data_description.data_level": 1,
+            "data_description.modalities": 1,
+        },
+        limit=0,
+        paginate_batch_size=500,
+    )
+    logger.info("DocDB query complete", extra={"count": len(records)})
+    return records
+
+
+def filter_records_by_date(
+    records: list[dict],
+    date_from: datetime,
+    date_to: datetime,
+) -> list[dict]:
+    """Filter records by the date encoded in the asset name."""
+    result = []
+    for r in records:
+        d = session_date(get_session_name(r.get("name", "")))
+        if d and date_from <= d <= date_to:
+            result.append(r)
+    return result
+
+
+@pn.cache(ttl=DTS_CACHE_TTL)
+def get_dts_jobs(date_from_iso: str, date_to_iso: str) -> tuple[list[dict], str | None]:
+    """
+    Fetch DTS jobs server-side, paginating as needed.
+
+    Returns (jobs_list, error_message_or_None).
+    Cached for 5 minutes since DTS data changes frequently.
+    """
+    all_jobs: list[dict] = []
+    offset = 0
+    page_limit = 500
+    total: int | None = None
+
+    try:
+        while total is None or len(all_jobs) < total:
+            params: dict = {
+                "execution_date_gte": date_from_iso,
+                "execution_date_lte": date_to_iso,
+                "page_limit": page_limit,
+                "page_offset": offset,
+                "order_by": "-execution_date",
+            }
+            resp = req.get(
+                f"{DTS_BASE_URL}/api/v1/get_job_status_list",
+                params=params,
+                timeout=30,
+            )
+            resp.raise_for_status()
+            data = resp.json().get("data", {})
+            jobs: list[dict] = data.get("job_status_list", [])
+            if total is None:
+                total = data.get("total_entries", 0)
+            all_jobs.extend(jobs)
+            offset += len(jobs)
+            if not jobs:
+                break
+        return all_jobs, None
+    except Exception as e:
+        return [], str(e)
+
+
+# ---------------------------------------------------------------------------
+# Table builder
+# ---------------------------------------------------------------------------
+
+def build_session_table(
+    dts_jobs: list[dict],
+    docdb_records: list[dict],
+    job_types: dict[str, dict],
+) -> pd.DataFrame:
+    """
+    Build a DataFrame with one row per session, joining DTS and DocDB by session name.
+
+    job_types maps job_type name → config dict with 'expected_pipelines'.
+    Sessions whose job_type is not in job_types are excluded from the table.
+    For pipelines not in a session's expected_pipelines, '—' is shown instead of ⬜.
+    For sessions with no DTS job (>14 days), expected_pipelines is unknown and ⬜ is used.
+    """
+    now_utc = datetime.now(tz=timezone.utc)
+    cutoff_14d = now_utc - timedelta(days=DTS_MAX_LOOKBACK_DAYS)
+
+    # Index DTS jobs by session name (filter to relevant job types)
+    dts_by_name: dict[str, dict] = {
+        j["name"]: j
+        for j in dts_jobs
+        if j.get("job_type") in job_types
+    }
+
+    # Index DocDB records by session name, split by raw vs derived
+    raw_by_session: dict[str, dict] = {}
+    derived_by_session: dict[str, list[dict]] = {}
+
+    for r in docdb_records:
+        name = r.get("name", "")
+        sname = get_session_name(name)
+        data_level = r.get("data_description", {}).get("data_level", "")
+        is_raw = data_level == "raw" or (
+            not data_level and not any(m in name for m in _DERIVED_MARKERS)
+        )
+        if is_raw:
+            raw_by_session[sname] = r
+        else:
+            derived_by_session.setdefault(sname, []).append(r)
+
+    # Union of all session names from both sources
+    all_sessions = set(dts_by_name.keys()) | set(raw_by_session.keys())
+
+    rows = []
+    for sname in sorted(all_sessions, reverse=True):
+        subject_id, dt_str = parse_session_name(sname)
+        d = session_date(sname)
+        within_14d = d is None or d >= cutoff_14d
+
+        dts_job = dts_by_name.get(sname)
+        raw = raw_by_session.get(sname)
+        derived = derived_by_session.get(sname, [])
+
+        # Determine which pipelines are expected for this session.
+        # Unknown (no DTS job) → None, meaning fall back to ⬜ for all pipelines.
+        job_type = dts_job.get("job_type") if dts_job else None
+        expected = job_types[job_type]["expected_pipelines"] if job_type else None
+
+        def pipeline_cell(modality_names: set[str]) -> str:
+            """Return asset cell, or '—' if this pipeline is not applicable."""
+            if expected is not None and not modality_names & expected:
+                return "—"
+            record = next(
+                (r for r in derived if modality_names & set(get_modalities(r))),
+                None,
+            )
+            return asset_cell(record["name"] if record else None)
+
+        rows.append({
+            "Subject": subject_id,
+            "Session Date": dt_str,
+            "Session Name": sname,
+            "DTS Upload": dts_cell(dts_job, within_14d),
+            "Raw Asset": asset_cell(raw["name"] if raw else None),
+            "Behavior Pipeline": pipeline_cell({"behavior"}),
+            "FIP Pipeline": pipeline_cell({"fib", "fiber"}),
+        })
+
+    return pd.DataFrame(
+        rows,
+        columns=["Subject", "Session Date", "Session Name", "DTS Upload",
+                 "Raw Asset", "Behavior Pipeline", "FIP Pipeline"],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Panel app
+# ---------------------------------------------------------------------------
+
+def build_panel_app():
+    today = datetime.now(tz=timezone.utc).date()
+    default_from = today - timedelta(days=7)
+
+    project_select = pn.widgets.Select(
+        name="Project",
+        options=list(PROJECT_CONFIG.keys()),
+        width=380,
+    )
+    date_from_picker = pn.widgets.DatePicker(name="From", value=default_from)
+    date_to_picker = pn.widgets.DatePicker(name="To", value=today)
+    subject_input = pn.widgets.TextInput(
+        name="Subject ID (optional)",
+        placeholder="e.g. 822683",
+        width=220,
+    )
+    load_button = pn.widgets.Button(name="Load Sessions", button_type="primary")
+    status_md = pn.pane.Markdown("", sizing_mode="stretch_width")
+    table_col = pn.Column(sizing_mode="stretch_width")
+
+    def on_load(_event=None):
+        if not date_from_picker.value or not date_to_picker.value:
+            status_md.object = "❌ Please select a date range."
+            return
+
+        project_name = project_select.value
+        job_types: dict[str, dict] = PROJECT_CONFIG[project_name]["job_types"]
+        job_type_names: set[str] = set(job_types.keys())
+
+        load_button.disabled = True
+        status_md.object = "⏳ Loading..."
+        table_col[:] = []
+
+        date_from = datetime(
+            date_from_picker.value.year,
+            date_from_picker.value.month,
+            date_from_picker.value.day,
+            tzinfo=timezone.utc,
+        )
+        date_to = datetime(
+            date_to_picker.value.year,
+            date_to_picker.value.month,
+            date_to_picker.value.day,
+            23, 59, 59,
+            tzinfo=timezone.utc,
+        )
+
+        # DTS — server-side
+        dts_jobs, dts_error = get_dts_jobs(date_from.isoformat(), date_to.isoformat())
+
+        # DocDB — server-side, cached per project
+        try:
+            all_records = get_project_records(project_name)
+        except Exception as exc:
+            status_md.object = f"❌ DocDB query failed: {exc}"
+            load_button.disabled = False
+            return
+
+        records_in_range = filter_records_by_date(all_records, date_from, date_to)
+
+        # Status line
+        if dts_error:
+            status_md.object = (
+                f"⚠️ **DTS unavailable** _(requires AIND network or VPN)_: {dts_error}\n\n"
+                f"Showing {len(records_in_range)} DocDB records only."
+            )
+        else:
+            n_dts = sum(1 for j in dts_jobs if j.get("job_type") in job_type_names)
+            status_md.object = (
+                f"**{n_dts} DTS jobs** · "
+                f"**{len(records_in_range)} DocDB records** · "
+                f"{date_from.date()} → {date_to.date()} · "
+                f"_DTS cache: 5min, DocDB cache: 1hr_"
+            )
+
+        # Optional subject filter
+        subject = subject_input.value.strip()
+        if subject:
+            dts_jobs = [j for j in dts_jobs if subject in j.get("name", "")]
+            records_in_range = [r for r in records_in_range if subject in r.get("name", "")]
+
+        df = build_session_table(dts_jobs, records_in_range, job_types)
+
+        if df.empty:
+            table_col[:] = [pn.pane.Markdown("_No sessions found for the selected filters._")]
+            load_button.disabled = False
+            return
+
+        html_cols = ["DTS Upload", "Raw Asset", "Behavior Pipeline", "FIP Pipeline"]
+        tab = pn.widgets.Tabulator(
+            df,
+            formatters={c: {"type": "html"} for c in html_cols},
+            sizing_mode="stretch_width",
+            show_index=False,
+            disabled=True,
+            header_filters=True,
+            page_size=50,
+        )
+        table_col[:] = [tab]
+        load_button.disabled = False
+
+    load_button.on_click(on_load)
+
+    if pn.state.location:
+        pn.state.location.sync(subject_input, {"value": "subject"})
+
+    header = pn.pane.Markdown(
+        "# Session Status Viewer\n\n"
+        "Joins DTS job status with DocDB asset records. "
+        "_Requires AIND network or VPN._",
+        sizing_mode="stretch_width",
+    )
+
+    legend = pn.pane.Markdown(
+        "**Status:** ✅ complete/registered &nbsp;&nbsp; "
+        "❌ failed &nbsp;&nbsp; "
+        "⏳ running/queued &nbsp;&nbsp; "
+        "⬜ not yet reached &nbsp;&nbsp; "
+        "_DTS cells link to the task drill-down. Asset cells link to the metadata portal._",
+        styles={
+            "background": "#f0f4ff",
+            "padding": "8px 12px",
+            "border-radius": "5px",
+            "font-size": "0.9em",
+        },
+        sizing_mode="stretch_width",
+    )
+
+    controls = pn.Row(
+        pn.Column("**Project**", project_select),
+        pn.Spacer(width=20),
+        pn.Column("**Date range**", pn.Row(date_from_picker, date_to_picker)),
+        pn.Spacer(width=20),
+        pn.Column(pn.Spacer(height=2), subject_input),
+        pn.Spacer(width=20),
+        pn.Column(pn.Spacer(height=18), load_button),
+        align="start",
+    )
+
+    return pn.Column(
+        header,
+        legend,
+        pn.layout.Divider(),
+        controls,
+        pn.Spacer(height=8),
+        status_md,
+        table_col,
+        sizing_mode="stretch_width",
+        min_width=900,
+    )
+
+
+app = build_panel_app()
+app.servable(title="Session Status")

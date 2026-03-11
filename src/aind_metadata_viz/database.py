@@ -17,7 +17,7 @@ from aind_data_schema_models.modalities import (
 from aind_metadata_validator.mappings import (
     SECOND_LAYER_MAPPING,
 )
-from aind_metadata_viz.utils import METASTATE_MAP, hd_style
+from aind_metadata_viz.utils import METASTATE_MAP, hd_style, CACHE_RESET_DAY, CACHE_RESET_HOUR
 
 DEV_OR_PROD = "prod"
 REDSHIFT_SECRETS = f"/aind/{DEV_OR_PROD}/redshift/credentials/readonly"
@@ -37,10 +37,6 @@ docdb_api_client = MetadataDbClient(
 
 # These are the fields that need to be dropped from that data frame when building charts
 EXTRA_FIELDS = ["modalities", "derived", "name", "_id", "location"]
-
-# reset cache every 24 hours
-CACHE_RESET_DAY = 24 * 60 * 60
-CACHE_RESET_HOUR = 60 * 60
 
 MODALITIES = [mod().abbreviation for mod in Modality.ALL]
 
