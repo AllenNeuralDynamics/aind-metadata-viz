@@ -42,7 +42,6 @@ URL PARAMETERS:
 """
 
 import logging
-import threading
 from datetime import datetime, timedelta, timezone
 
 import requests as req
@@ -114,7 +113,6 @@ PROJECT_CONFIG: dict[str, dict] = {
         "docdb_project_names": [],
         "docdb_name_regex": "^behavior_",
         "docdb_versions": ["v1", "v2"],
-        "two_phase_loading": True,
         "derived_columns": [
             {"label": "Behavior Asset", "modalities": {"behavior"}},
             {"label": "Video Asset",    "modalities": {"behavior-videos"}},
@@ -639,23 +637,6 @@ def build_panel_app():
     load_button = pn.widgets.Button(name="Load Sessions", button_type="primary")
     status_md = pn.pane.Markdown("", sizing_mode="stretch_width")
     table_col = pn.Column(sizing_mode="stretch_width")
-    _load_gen = [0]  # incremented on each Load click; used to discard stale Phase 2 updates
-
-    def _make_tabulator(df: pd.DataFrame, derived_cols: list[dict]) -> pn.widgets.Tabulator:
-        html_cols = ["DTS Upload", "Raw Asset"] + [c["label"] for c in derived_cols]
-        return pn.widgets.Tabulator(
-            df,
-            formatters={c: {"type": "html"} for c in html_cols if c in df.columns},
-            sizing_mode="stretch_width",
-            show_index=False,
-            disabled=True,
-            header_filters=True,
-            page_size=50,
-            stylesheets=["""
-                .tabulator-row:nth-child(even) { background-color: #f5f5f5 !important; }
-                .tabulator-row:nth-child(even):hover { background-color: #e8e8e8 !important; }
-            """],
-        )
 
     def on_load(_event=None):
         if not date_from_picker.value or not date_to_picker.value:
@@ -670,10 +651,6 @@ def build_panel_app():
         docdb_versions: tuple[str, ...] = tuple(cfg["docdb_versions"])
         docdb_name_regex: str = cfg.get("docdb_name_regex", "")
         derived_columns: list[dict] = cfg["derived_columns"]
-        two_phase: bool = cfg.get("two_phase_loading", False)
-
-        _load_gen[0] += 1
-        gen = _load_gen[0]
 
         load_button.disabled = True
         status_md.object = "⏳ Loading..."
@@ -695,161 +672,72 @@ def build_panel_app():
 
         subject = subject_input.value.strip()
 
-        # DTS — server-side, always Phase 1
+        # DTS — server-side
         dts_jobs, dts_error = get_dts_jobs(date_from.isoformat(), date_to.isoformat())
 
-        if two_phase:
-            # ----------------------------------------------------------------
-            # TWO-PHASE LOADING (Dynamic Foraging and other large projects)
-            #
-            # Phase 1: fetch raw records via fast $in on DTS job names.
-            #          Show the table immediately (~1-2s total).
-            # Phase 2: fetch derived records by created date range in a
-            #          background thread; rebuild the table when done (~8-10s).
-            # ----------------------------------------------------------------
-
-            # Collect DTS job names for the relevant job types as the $in keys.
-            # For Dynamic Foraging, DTS job names equal DocDB raw asset names.
-            dts_names = tuple(
-                j["name"] for j in dts_jobs if j.get("job_type") in job_type_names
-            )
-
-            try:
+        # DocDB — strategy depends on project config
+        try:
+            if docdb_name_regex:
+                # Dynamic Foraging: sessions span many project names, so we can't
+                # filter by project_name.  Instead we use the DTS job names (which
+                # equal raw DocDB asset names) for a fast $in raw lookup, then
+                # query derived records by input_data_name $in.
+                dts_names = tuple(
+                    j["name"] for j in dts_jobs if j.get("job_type") in job_type_names
+                )
                 raw_records = get_raw_records_by_names(dts_names, docdb_versions)
-            except Exception as exc:
-                status_md.object = f"❌ DocDB query failed: {exc}"
-                load_button.disabled = False
-                return
-
-            # Subject filter
-            dts_phase1 = dts_jobs
-            raw_phase1 = raw_records
-            if subject:
-                dts_phase1 = [j for j in dts_jobs if subject in j.get("name", "")]
-                raw_phase1 = [r for r in raw_records if subject in r.get("name", "")]
-
-            records_in_range = filter_records_by_date(raw_phase1, date_from, date_to)
-            n_dts = sum(1 for j in dts_phase1 if j.get("job_type") in job_type_names)
-
-            if dts_error:
-                status_md.object = (
-                    f"⚠️ **DTS unavailable** _(requires AIND network or VPN)_: {dts_error}\n\n"
-                    f"Showing {len(records_in_range)} DocDB records only."
-                )
+                derived_records = get_derived_records_by_input_names(dts_names, docdb_versions)
+                all_records = raw_records + derived_records
             else:
-                status_md.object = (
-                    f"**{n_dts} DTS jobs** · "
-                    f"**{len(records_in_range)} raw DocDB records** · "
-                    f"{date_from.date()} → {date_to.date()} · "
-                    f"⏳ _Loading derived records…_"
-                )
-
-            df1 = build_session_table(
-                dts_phase1, raw_phase1, job_types, derived_columns, date_from, date_to
-            )
-            if df1.empty:
-                table_col[:] = [pn.pane.Markdown("_No sessions found for the selected filters._")]
-            else:
-                table_col[:] = [_make_tabulator(df1, derived_columns)]
-            load_button.disabled = False  # allow re-run while Phase 2 works
-
-            # Phase 2: background thread — fetch derived records and rebuild table
-            # Use input_data_name $in [raw_names] — more precise than a date range
-            # and avoids the need to filter results afterwards.
-            # DTS job names == raw asset names for Dynamic Foraging.
-            doc = pn.state.curdoc()
-
-            def _phase2():
-                if _load_gen[0] != gen:
-                    return  # user already clicked Load again — discard
-                try:
-                    derived_records = get_derived_records_by_input_names(
-                        dts_names, docdb_versions
-                    )
-                except Exception:
-                    return  # silently leave Phase 1 table in place
-                if _load_gen[0] != gen:
-                    return
-
-                dts_p2 = dts_jobs
-                combined = list(raw_records) + derived_records
-                if subject:
-                    dts_p2 = [j for j in dts_jobs if subject in j.get("name", "")]
-                    combined = [r for r in combined if subject in r.get("name", "")]
-
-                def _update():
-                    if _load_gen[0] != gen:
-                        return
-                    df2 = build_session_table(
-                        dts_p2, combined, job_types, derived_columns, date_from, date_to
-                    )
-                    n_raw = len(filter_records_by_date(
-                        [r for r in combined if r.get("data_description", {}).get("data_level") == "raw" or not any(m in r.get("name","") for m in _DERIVED_MARKERS)],
-                        date_from, date_to,
-                    ))
-                    n_der = len(derived_records)
-                    if dts_error:
-                        status_md.object = (
-                            f"⚠️ **DTS unavailable**: {dts_error} · "
-                            f"{n_raw} raw, {n_der} derived DocDB records."
-                        )
-                    else:
-                        status_md.object = (
-                            f"**{n_dts} DTS jobs** · "
-                            f"**{n_raw} raw + {n_der} derived DocDB records** · "
-                            f"{date_from.date()} → {date_to.date()} · "
-                            f"_DTS cache: 5min, DocDB cache: 1hr_"
-                        )
-                    if df2.empty:
-                        table_col[:] = [pn.pane.Markdown("_No sessions found for the selected filters._")]
-                    else:
-                        table_col[:] = [_make_tabulator(df2, derived_columns)]
-
-                doc.add_next_tick_callback(_update)
-
-            threading.Thread(target=_phase2, daemon=True).start()
-
-        else:
-            # ----------------------------------------------------------------
-            # SINGLE-PHASE LOADING (small projects — VR Foraging, etc.)
-            # ----------------------------------------------------------------
-
-            try:
-                all_records = get_project_records(docdb_project_names, docdb_versions, docdb_name_regex)
-            except Exception as exc:
-                status_md.object = f"❌ DocDB query failed: {exc}"
-                load_button.disabled = False
-                return
-
-            records_in_range = filter_records_by_date(all_records, date_from, date_to)
-
-            if dts_error:
-                status_md.object = (
-                    f"⚠️ **DTS unavailable** _(requires AIND network or VPN)_: {dts_error}\n\n"
-                    f"Showing {len(records_in_range)} DocDB records only."
-                )
-            else:
-                n_dts = sum(1 for j in dts_jobs if j.get("job_type") in job_type_names)
-                status_md.object = (
-                    f"**{n_dts} DTS jobs** · "
-                    f"**{len(records_in_range)} DocDB records** · "
-                    f"{date_from.date()} → {date_to.date()} · "
-                    f"_DTS cache: 5min, DocDB cache: 1hr_"
-                )
-
-            if subject:
-                dts_jobs = [j for j in dts_jobs if subject in j.get("name", "")]
-                all_records = [r for r in all_records if subject in r.get("name", "")]
-
-            df = build_session_table(
-                dts_jobs, all_records, job_types, derived_columns, date_from, date_to
-            )
-
-            if df.empty:
-                table_col[:] = [pn.pane.Markdown("_No sessions found for the selected filters._")]
-            else:
-                table_col[:] = [_make_tabulator(df, derived_columns)]
+                all_records = get_project_records(docdb_project_names, docdb_versions)
+        except Exception as exc:
+            status_md.object = f"❌ DocDB query failed: {exc}"
             load_button.disabled = False
+            return
+
+        records_in_range = filter_records_by_date(all_records, date_from, date_to)
+
+        if dts_error:
+            status_md.object = (
+                f"⚠️ **DTS unavailable** _(requires AIND network or VPN)_: {dts_error}\n\n"
+                f"Showing {len(records_in_range)} DocDB records only."
+            )
+        else:
+            n_dts = sum(1 for j in dts_jobs if j.get("job_type") in job_type_names)
+            status_md.object = (
+                f"**{n_dts} DTS jobs** · "
+                f"**{len(records_in_range)} DocDB records** · "
+                f"{date_from.date()} → {date_to.date()} · "
+                f"_DTS cache: 5min, DocDB cache: 1hr_"
+            )
+
+        if subject:
+            dts_jobs = [j for j in dts_jobs if subject in j.get("name", "")]
+            all_records = [r for r in all_records if subject in r.get("name", "")]
+
+        df = build_session_table(
+            dts_jobs, all_records, job_types, derived_columns, date_from, date_to
+        )
+
+        if df.empty:
+            table_col[:] = [pn.pane.Markdown("_No sessions found for the selected filters._")]
+        else:
+            html_cols = ["DTS Upload", "Raw Asset"] + [c["label"] for c in derived_columns]
+            tab = pn.widgets.Tabulator(
+                df,
+                formatters={c: {"type": "html"} for c in html_cols if c in df.columns},
+                sizing_mode="stretch_width",
+                show_index=False,
+                disabled=True,
+                header_filters=True,
+                page_size=50,
+                stylesheets=["""
+                    .tabulator-row:nth-child(even) { background-color: #f5f5f5 !important; }
+                    .tabulator-row:nth-child(even):hover { background-color: #e8e8e8 !important; }
+                """],
+            )
+            table_col[:] = [tab]
+        load_button.disabled = False
 
     load_button.on_click(on_load)
 
