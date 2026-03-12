@@ -237,6 +237,19 @@ def session_date(session_name: str) -> datetime | None:
     return None
 
 
+def session_datetime(session_name: str) -> datetime | None:
+    """Parse full acquisition datetime (date + time) from a session name, or None."""
+    parts = session_name.split("_")
+    if len(parts) >= 3:
+        try:
+            return datetime.strptime(
+                f"{parts[1]} {parts[2]}", "%Y-%m-%d %H-%M-%S"
+            ).replace(tzinfo=timezone.utc)
+        except ValueError:
+            pass
+    return session_date(session_name)
+
+
 def get_modalities(record: dict) -> list[str]:
     """
     Return lowercased modality abbreviations from a DocDB record.
@@ -582,7 +595,7 @@ def build_session_table(
     rows = []
     for sname in sorted(
         all_sessions,
-        key=lambda s: (session_date(s) or _epoch, s),
+        key=lambda s: session_datetime(s) or _epoch,
         reverse=True,
     ):
         subject_id, dt_str = parse_session_name(sname)
