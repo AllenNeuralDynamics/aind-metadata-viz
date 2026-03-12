@@ -858,6 +858,14 @@ def build_panel_app():
 
     load_button.on_click(on_load)
 
+    def _on_input_change(_event=None):
+        if table_col.objects:  # only clear if results are currently shown
+            table_col[:] = []
+            status_md.object = ""
+
+    for widget in (project_select, date_from_picker, date_to_picker, subject_input):
+        widget.param.watch(_on_input_change, "value")
+
     if pn.state.location:
         # Keep sync so URL stays updated when the user changes widgets and re-runs.
         pn.state.location.sync(project_select, {"value": "project"})
