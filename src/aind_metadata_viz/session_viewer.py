@@ -265,12 +265,16 @@ _DTS_ICONS = {
 }
 
 
-def dts_cell(job: dict | None, within_14_days: bool) -> str:
-    """Render the DTS status cell as an HTML string."""
+def dts_cell(job: dict | None, within_14_days: bool) -> tuple[str, str]:
+    """
+    Render the DTS status cell as an HTML string, and return the DTS URL (or "").
+
+    Returns (html, url) — url is non-empty only when a task drill-down is available.
+    """
     if not within_14_days:
-        return '<span style="color:#888;">N/A (&gt;14 days)</span>'
+        return '<span style="color:#888;">N/A (&gt;14 days)</span>', ""
     if job is None:
-        return "⬜"
+        return "⬜", ""
     state = job.get("job_state", "unknown")
     icon = _DTS_ICONS.get(state, "❓")
     dag_run_id = job.get("job_id", "")
@@ -280,8 +284,9 @@ def dts_cell(job: dict | None, within_14_days: bool) -> str:
             f"{DTS_BASE_URL}/job_tasks_table"
             f"?dag_id={quote(dag)}&dag_run_id={quote(dag_run_id)}"
         )
-        return f'<a href="{url}" target="_blank">{icon} view tasks/logs</a>'
-    return f"{icon} {state}"
+        html = f'<span style="cursor:pointer;color:#1a73e8;text-decoration:underline">{icon} view tasks/logs</span>'
+        return html, url
+    return f"{icon} {state}", ""
 
 
 def asset_cell(name: str | None) -> str:
@@ -606,12 +611,14 @@ def build_session_table(
         display_name = raw["name"] if raw else (dts_job["name"] if dts_job else sname)
 
         raw_name = raw["name"] if raw else ""
+        dts_html, dts_url = dts_cell(dts_job, within_14d)
         row: dict = {
             "Subject": subject_id,
             "Session Date": dt_str,
             "Modalities": modalities,
             "Session Name": display_name,
-            "DTS Upload": dts_cell(dts_job, within_14d),
+            "DTS Upload": dts_html,
+            "_dts_url": dts_url,
             "Raw Asset": asset_cell(raw_name or None),
             "_name_Raw Asset": raw_name,
         }
@@ -633,8 +640,8 @@ def build_session_table(
     fixed_cols = ["Subject", "Session Date", "Modalities", "Session Name",
                   "DTS Upload", "Raw Asset"]
     derived_col_labels = [c["label"] for c in derived_columns]
-    name_cols = ["_name_Raw Asset"] + [f"_name_{c['label']}" for c in derived_columns]
-    return pd.DataFrame(rows, columns=fixed_cols + derived_col_labels + name_cols)
+    hidden_cols = ["_dts_url", "_name_Raw Asset"] + [f"_name_{c['label']}" for c in derived_columns]
+    return pd.DataFrame(rows, columns=fixed_cols + derived_col_labels + hidden_cols)
 
 
 # ---------------------------------------------------------------------------
@@ -660,19 +667,23 @@ def build_panel_app():
     status_md = pn.pane.Markdown("", sizing_mode="stretch_width")
     table_col = pn.Column(sizing_mode="stretch_width")
 
-    # Metadata inspector modal — hidden until an asset cell is clicked
-    _inspector_title = pn.pane.Markdown("", styles={"font-weight": "bold", "margin-bottom": "6px"})
-    _inspector_json = pn.pane.JSON({}, depth=1, sizing_mode="stretch_width",
-                                   styles={"overflow": "auto", "max-height": "60vh"})
+    # Inspector modal — hidden until a cell is clicked; body content is swapped per click
+    _modal_body = pn.Column(sizing_mode="stretch_both")
     _inspector_modal = pn.layout.Modal(
-        pn.Column(
-            _inspector_title,
-            _inspector_json,
-            min_width=700,
-            sizing_mode="stretch_width",
-        ),
+        _modal_body,
         show_close_button=True,
         background_close=True,
+        stylesheets=["""
+            .dialog-content {
+                width: 95vw !important;
+                height: 95vh !important;
+                max-width: 95vw !important;
+                max-height: 95vh !important;
+                overflow: auto;
+                display: flex;
+                flex-direction: column;
+            }
+        """],
     )
 
     def on_load(_event=None):
@@ -760,11 +771,11 @@ def build_panel_app():
             table_col[:] = [pn.pane.Markdown("_No sessions found for the selected filters._")]
         else:
             html_cols = ["DTS Upload", "Raw Asset"] + [c["label"] for c in derived_columns]
-            name_cols = ["_name_Raw Asset"] + [f"_name_{c['label']}" for c in derived_columns]
+            hidden_cols = ["_dts_url", "_name_Raw Asset"] + [f"_name_{c['label']}" for c in derived_columns]
             tab = pn.widgets.Tabulator(
                 df,
                 formatters={c: {"type": "html"} for c in html_cols if c in df.columns},
-                hidden_columns=name_cols,
+                hidden_columns=hidden_cols,
                 sizing_mode="stretch_width",
                 show_index=False,
                 disabled=True,
@@ -777,20 +788,38 @@ def build_panel_app():
             )
 
             def on_cell_click(event, _df=df):
-                name_col = f"_name_{event.column}"
+                row = _df.iloc[event.row]
+                col = event.column
+
+                if col == "DTS Upload":
+                    url = str(row.get("_dts_url", ""))
+                    if not url:
+                        return
+                    _modal_body[:] = [pn.pane.HTML(
+                        f'<iframe src="{url}" style="width:100%;height:100%;min-height:85vh;border:none;flex:1;"></iframe>',
+                        sizing_mode="stretch_both",
+                    )]
+                    _inspector_modal.show()
+                    return
+
+                name_col = f"_name_{col}"
                 if name_col not in _df.columns:
                     return
-                asset_name = str(_df.iloc[event.row].get(name_col, ""))
+                asset_name = str(row.get(name_col, ""))
                 if not asset_name:
                     return
-                _inspector_title.object = f"**{asset_name}**"
-                _inspector_json.object = {"loading": "fetching record…"}
+                title = pn.pane.Markdown(f"**{asset_name}**",
+                                         styles={"font-weight": "bold", "margin-bottom": "6px"})
+                json_pane = pn.pane.JSON({"loading": "fetching record…"}, depth=1,
+                                         sizing_mode="stretch_width",
+                                         styles={"overflow": "auto", "max-height": "88vh"})
+                _modal_body[:] = [title, json_pane]
                 _inspector_modal.show()
                 record = get_full_record(asset_name)
-                if record:
-                    _inspector_json.object = json.loads(json.dumps(record, default=str))
-                else:
-                    _inspector_json.object = {"error": f"Record not found: {asset_name}"}
+                json_pane.object = (
+                    json.loads(json.dumps(record, default=str)) if record
+                    else {"error": f"Record not found: {asset_name}"}
+                )
 
             tab.on_click(on_cell_click)
             table_col[:] = [tab]
