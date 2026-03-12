@@ -266,6 +266,23 @@ def get_modalities(record: dict) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# JSON display helpers
+# ---------------------------------------------------------------------------
+
+def sort_record_for_display(obj: object) -> object:
+    """
+    Recursively reorder dict keys: flat (non-dict, non-list) values first
+    (alphabetical), then nested values (alphabetical).  Makes the JSON modal
+    easier to scan — important metadata floats to the top of each level.
+    """
+    if not isinstance(obj, dict):
+        return obj
+    flat = {k: obj[k] for k in sorted(obj) if not isinstance(obj[k], (dict, list))}
+    nested = {k: sort_record_for_display(obj[k]) for k in sorted(obj) if isinstance(obj[k], (dict, list))}
+    return {**flat, **nested}
+
+
+# ---------------------------------------------------------------------------
 # HTML cell helpers
 # ---------------------------------------------------------------------------
 
@@ -830,8 +847,8 @@ def build_panel_app():
                 _inspector_modal.show()
                 record = get_full_record(asset_name)
                 json_pane.object = (
-                    json.loads(json.dumps(record, default=str)) if record
-                    else {"error": f"Record not found: {asset_name}"}
+                    sort_record_for_display(json.loads(json.dumps(record, default=str)))
+                    if record else {"error": f"Record not found: {asset_name}"}
                 )
 
             tab.on_click(on_cell_click)
