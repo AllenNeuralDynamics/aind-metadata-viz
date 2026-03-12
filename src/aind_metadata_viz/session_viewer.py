@@ -169,7 +169,7 @@ def dts_cell(job: dict | None, within_14_days: bool) -> str:
             f"{DTS_BASE_URL}/job_tasks_table"
             f"?dag_id={quote(dag)}&dag_run_id={quote(dag_run_id)}"
         )
-        return f'<a href="{url}" target="_blank">{icon} {state}</a>'
+        return f'<a href="{url}" target="_blank">{icon} view tasks/logs</a>'
     return f"{icon} {state}"
 
 
@@ -178,7 +178,7 @@ def asset_cell(name: str | None) -> str:
     if not name:
         return "⬜"
     url = f"{METADATA_PORTAL_BASE}/view?name={quote(name)}"
-    return f'<a href="{url}" target="_blank">✅</a>'
+    return f'<a href="{url}" target="_blank">✅ view docdb record</a>'
 
 
 # ---------------------------------------------------------------------------
@@ -357,14 +357,14 @@ def build_session_table(
             "Session Name": sname,
             "DTS Upload": dts_cell(dts_job, within_14d),
             "Raw Asset": asset_cell(raw["name"] if raw else None),
-            "Behavior Pipeline": pipeline_cell({"behavior"}),
-            "FIP Pipeline": pipeline_cell({"fib", "fiber"}),
+            "Behavior Asset": pipeline_cell({"behavior"}),
+            "FIP Asset": pipeline_cell({"fib", "fiber"}),
         })
 
     return pd.DataFrame(
         rows,
         columns=["Subject", "Session Date", "Modalities", "Session Name", "DTS Upload",
-                 "Raw Asset", "Behavior Pipeline", "FIP Pipeline"],
+                 "Raw Asset", "Behavior Asset", "FIP Asset"],
     )
 
 
@@ -377,14 +377,13 @@ def build_panel_app():
     default_from = today - timedelta(days=7)
 
     project_select = pn.widgets.Select(
-        name="Project",
+        name="",
         options=list(PROJECT_CONFIG.keys()),
         width=380,
     )
-    date_from_picker = pn.widgets.DatePicker(name="From", value=default_from)
-    date_to_picker = pn.widgets.DatePicker(name="To", value=today)
+    date_from_picker = pn.widgets.DatePicker(name="", value=default_from)
+    date_to_picker = pn.widgets.DatePicker(name="", value=today)
     subject_input = pn.widgets.TextInput(
-        name="Subject ID (optional)",
         placeholder="e.g. 822683",
         width=220,
     )
@@ -447,11 +446,11 @@ def build_panel_app():
                 f"_DTS cache: 5min, DocDB cache: 1hr_"
             )
 
-        # Optional subject filter
+        # Optional subject filter — applied to both DTS and DocDB before table build
         subject = subject_input.value.strip()
         if subject:
             dts_jobs = [j for j in dts_jobs if subject in j.get("name", "")]
-            records_in_range = [r for r in records_in_range if subject in r.get("name", "")]
+            all_records = [r for r in all_records if subject in r.get("name", "")]
 
         df = build_session_table(dts_jobs, all_records, job_types, date_from, date_to)
 
@@ -460,7 +459,7 @@ def build_panel_app():
             load_button.disabled = False
             return
 
-        html_cols = ["DTS Upload", "Raw Asset", "Behavior Pipeline", "FIP Pipeline"]
+        html_cols = ["DTS Upload", "Raw Asset", "Behavior Asset", "FIP Asset"]
         tab = pn.widgets.Tabulator(
             df,
             formatters={c: {"type": "html"} for c in html_cols},
@@ -476,7 +475,42 @@ def build_panel_app():
     load_button.on_click(on_load)
 
     if pn.state.location:
+        # Keep sync so URL stays updated when the user changes widgets and re-runs.
         pn.state.location.sync(subject_input, {"value": "subject"})
+        pn.state.location.sync(date_from_picker, {"value": "date_from"})
+        pn.state.location.sync(date_to_picker, {"value": "date_to"})
+
+        # Auto-run when URL params arrive from the browser.  pn.state.onload fires
+        # before the browser sends location data, so we watch location.search instead.
+        _initial_load_done = [False]
+
+        def _on_search_arrive(event):
+            if _initial_load_done[0] or not event.new:
+                return
+            _initial_load_done[0] = True
+            from urllib.parse import parse_qs
+            params = parse_qs(event.new.lstrip("?"))
+            if not params:
+                return
+            if "subject" in params:
+                subject_input.value = params["subject"][0]
+            if "date_from" in params:
+                try:
+                    date_from_picker.value = datetime.strptime(
+                        params["date_from"][0], "%Y-%m-%d"
+                    ).date()
+                except ValueError:
+                    pass
+            if "date_to" in params:
+                try:
+                    date_to_picker.value = datetime.strptime(
+                        params["date_to"][0], "%Y-%m-%d"
+                    ).date()
+                except ValueError:
+                    pass
+            on_load()
+
+        pn.state.location.param.watch(_on_search_arrive, "search")
 
     header = pn.pane.Markdown(
         "# Session Status Viewer\n\n"
@@ -503,11 +537,11 @@ def build_panel_app():
     controls = pn.Row(
         pn.Column("**Project**", project_select),
         pn.Spacer(width=20),
-        pn.Column("**Date range**", pn.Row(date_from_picker, date_to_picker)),
+        pn.Column("**Date range**", pn.Row("From", date_from_picker, pn.Spacer(width=10), "To", date_to_picker)),
         pn.Spacer(width=20),
-        pn.Column(pn.Spacer(height=2), subject_input),
+        pn.Column("**Subject ID (optional)**", subject_input),
         pn.Spacer(width=20),
-        pn.Column(pn.Spacer(height=18), load_button),
+        pn.Column("&nbsp;", load_button),
         align="start",
     )
 
