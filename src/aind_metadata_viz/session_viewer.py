@@ -647,6 +647,7 @@ def build_session_table(
             "Session Date": dt_str,
             "Modalities": modalities,
             "Session Name": display_name,
+            "Rig Log": '<span style="color:#aaa;font-style:italic">(not yet implemented)</span>',
             "DTS Upload": dts_html,
             "_dts_url": dts_url,
             "Raw Asset": asset_cell(raw_name or None),
@@ -668,7 +669,7 @@ def build_session_table(
         rows.append(row)
 
     fixed_cols = ["Subject", "Session Date", "Modalities", "Session Name",
-                  "DTS Upload", "Raw Asset"]
+                  "Rig Log", "DTS Upload", "Raw Asset"]
     derived_col_labels = [c["label"] for c in derived_columns]
     hidden_cols = ["_dts_url", "_name_Raw Asset"] + [f"_name_{c['label']}" for c in derived_columns]
     return pd.DataFrame(rows, columns=fixed_cols + derived_col_labels + hidden_cols)
@@ -800,7 +801,7 @@ def build_panel_app():
         if df.empty:
             table_col[:] = [pn.pane.Markdown("_No sessions found for the selected filters._")]
         else:
-            html_cols = ["DTS Upload", "Raw Asset"] + [c["label"] for c in derived_columns]
+            html_cols = ["Rig Log", "DTS Upload", "Raw Asset"] + [c["label"] for c in derived_columns]
             hidden_cols = ["_dts_url", "_name_Raw Asset"] + [f"_name_{c['label']}" for c in derived_columns]
             tab = pn.widgets.Tabulator(
                 df,
@@ -913,7 +914,8 @@ def build_panel_app():
         "⏳ running/queued &nbsp;&nbsp; "
         "⬜ not yet reached &nbsp;&nbsp; "
         "— not applicable &nbsp;&nbsp; "
-        "_DTS cells link to the task drill-down. Asset cells link to the metadata portal._",
+        "_(not yet implemented)_ coming soon &nbsp;&nbsp; "
+        "_DTS and asset cells open an inline viewer._",
         styles={
             "background": "#f0f4ff",
             "padding": "8px 12px",
