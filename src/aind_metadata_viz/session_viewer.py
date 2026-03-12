@@ -9,6 +9,8 @@ ARCHITECTURE:
 
     - DocDB (via aind-data-access-api): asset registration records, cached 1hr.
       No time limit; shows all sessions that made it to registration.
+      Searches V1 and/or V2 DB as configured per project; V2 takes precedence
+      when the same asset exists in both.
 
     - DTS REST API (via requests): job status from http://aind-data-transfer-service.
       The DTS is on the AIND internal network, so this app must be run from the AIND
@@ -20,7 +22,7 @@ ARCHITECTURE:
 DATA FLOW:
     1. User selects date range and clicks Load Sessions
     2. Server queries DTS API (paginated) for all jobs in the date range
-    3. Server queries DocDB for project records in the date range (cached 1hr)
+    3. Server queries DocDB (V1 and/or V2) for project records (cached 1hr)
     4. Both are joined by session name and rendered as a status table
 
 LIMITATIONS:
@@ -29,11 +31,18 @@ LIMITATIONS:
     - Sessions that failed before reaching the DTS are not visible (Phase 2 scope).
     - Requires AIND network or VPN access for DTS data.
 
+EXTENSION POINTS:
+    - Add projects to PROJECT_CONFIG.
+    - Tier 2 rig-side manifest detection: implement RigLogSource (see stub below).
+
 URL PARAMETERS:
-    - subject: pre-fill subject ID filter (e.g. ?subject=822683)
+    - subject:   pre-fill subject ID filter (e.g. ?subject=822683)
+    - date_from: pre-fill start date (e.g. ?date_from=2026-03-04)
+    - date_to:   pre-fill end date   (e.g. ?date_to=2026-03-11)
 """
 
 import logging
+import threading
 from datetime import datetime, timedelta, timezone
 
 import requests as req
@@ -54,29 +63,126 @@ pn.extension("tabulator")
 DTS_BASE_URL = "http://aind-data-transfer-service"
 METADATA_PORTAL_BASE = "https://metadata-portal.allenneuraldynamics-test.org"
 DTS_MAX_LOOKBACK_DAYS = 14
+DTS_CACHE_TTL = 5 * 60  # 5 minutes — DTS data changes frequently
 
-# Maps project name (as it appears in DocDB) to per-job-type configuration.
-# expected_pipelines: which derived pipeline columns apply to sessions of this job type.
-# Add new projects or job types here to extend the viewer.
+# Suffixes that mark a derived (processed) asset name
+_DERIVED_MARKERS = ("_processed_", "_videoprocessed_", "_sorted_")
+
+# ---------------------------------------------------------------------------
+# PROJECT_CONFIG
+#
+# Each entry defines one dropdown option.  Keys:
+#
+#   job_types         dict[str, dict] — DTS job type → {"expected_pipelines": set[str]}
+#                     expected_pipelines: modality abbreviations whose derived asset
+#                     columns are applicable to this job type.  Pipelines not in this
+#                     set will show "—" (N/A) rather than ⬜ (not yet reached).
+#
+#   docdb_project_names  list[str] — DocDB project_name values to query.  A single
+#                        dropdown entry may span multiple DocDB project names.
+#
+#   docdb_versions    list[str] — which DocDB versions to search ("v1", "v2", or both).
+#                     When the same asset exists in both, V2 takes precedence.
+#
+#   derived_columns   list[dict] — pipeline asset columns for this project.
+#                     Each entry: {"label": str, "modalities": set[str]}
+# ---------------------------------------------------------------------------
+
 PROJECT_CONFIG: dict[str, dict] = {
     "Cognitive flexibility in patch foraging": {
         "job_types": {
             "vr_foraging_fiber": {"expected_pipelines": {"behavior", "fib"}},
             "vr_foraging_v2":    {"expected_pipelines": {"behavior"}},
         },
+        "docdb_project_names": ["Cognitive flexibility in patch foraging"],
+        "docdb_versions": ["v2"],
+        "derived_columns": [
+            {"label": "Behavior Asset", "modalities": {"behavior"}},
+            {"label": "FIP Asset",      "modalities": {"fib", "fiber"}},
+        ],
+    },
+    "Dynamic Foraging": {
+        "job_types": {
+            "dynamic_foraging_behavior_and_fiber": {"expected_pipelines": {"behavior", "fib"}},
+            "dynamic_foraging_behavior_only":      {"expected_pipelines": {"behavior"}},
+            "dynamic_foraging_compression":        {"expected_pipelines": {"behavior"}},
+            "dynamic_foraging":                    {"expected_pipelines": {"behavior"}},
+        },
+        # Dynamic Foraging sessions span many DocDB project names across different PIs,
+        # so filtering by project name is unreliable.  Instead, all dynamic foraging raw
+        # assets in V1 share the "behavior_" name prefix — use that as the filter.
+        "docdb_project_names": [],
+        "docdb_name_regex": "^behavior_",
+        "docdb_versions": ["v1", "v2"],
+        "two_phase_loading": True,
+        "derived_columns": [
+            {"label": "Behavior Asset", "modalities": {"behavior"}},
+            {"label": "Video Asset",    "modalities": {"behavior-videos"}},
+            {"label": "FIP Asset",      "modalities": {"fib", "fiber"}},
+        ],
     },
 }
-DTS_CACHE_TTL = 5 * 60  # 5 minutes — DTS data changes frequently
 
-# Suffixes that mark a derived (processed) asset name
-_DERIVED_MARKERS = ("_processed_", "_videoprocessed_", "_sorted_")
+# ---------------------------------------------------------------------------
+# DocDB clients (V1 and V2)
+# ---------------------------------------------------------------------------
 
-docdb_client = MetadataDbClient(
-    host="api.allenneuraldynamics.org",
-    version="v2",
-)
+docdb_client_v1 = MetadataDbClient(host="api.allenneuraldynamics.org", version="v1")
+docdb_client_v2 = MetadataDbClient(host="api.allenneuraldynamics.org", version="v2")
+
+_DOCDB_CLIENTS = {"v1": docdb_client_v1, "v2": docdb_client_v2}
 
 logger = logging.getLogger("session_viewer")
+
+# ---------------------------------------------------------------------------
+# Tier 2 extension point: rig-side manifest / log detection
+#
+# Implement a concrete subclass and pass it to build_panel_app() when ready.
+# The FileSystemRigLogSource reads from the network path where Alex Piet's
+# cron job saves manifest listings.  Replace with a LokiLogSource (or similar)
+# once the log server is available.
+# ---------------------------------------------------------------------------
+
+class RigLogSource:
+    """
+    Abstract source for rig-side manifest and watchdog log data (Tier 2).
+
+    Subclass this and implement get_manifest_sessions() to surface sessions
+    that failed before reaching the DTS (pre-watchdog failures).
+    """
+
+    def get_manifest_sessions(
+        self,
+        date_from: datetime,
+        date_to: datetime,
+    ) -> list[dict]:
+        """
+        Return a list of session dicts detected at the rig level.
+
+        Each dict should contain at least:
+            session_name (str), status (str), hostname (str)
+
+        Raise NotImplementedError to signal "not configured" — the app will
+        suppress Tier 2 columns rather than showing an error.
+        """
+        raise NotImplementedError
+
+
+class FileSystemRigLogSource(RigLogSource):
+    """
+    Reads manifest listings saved by Alex Piet's cron job from the network share.
+
+    Path: /allen/programs/mindscope/workgroups/behavioral-dynamics/aind_logs/
+
+    NOT YET IMPLEMENTED.  Stub in place so the interface is defined.
+    See build_plan.md §Tier 2 for details.
+    """
+
+    BASE_PATH = "/allen/programs/mindscope/workgroups/behavioral-dynamics/aind_logs"
+
+    def get_manifest_sessions(self, date_from, date_to):
+        raise NotImplementedError("FileSystemRigLogSource not yet implemented")
+
 
 # ---------------------------------------------------------------------------
 # Name parsing helpers
@@ -133,9 +239,15 @@ def session_date(session_name: str) -> datetime | None:
 
 
 def get_modalities(record: dict) -> list[str]:
-    """Return lowercased modality abbreviations from a DocDB record."""
+    """
+    Return lowercased modality abbreviations from a DocDB record.
+
+    Handles both V2 schema ("modalities") and V1 schema ("modality").
+    """
     try:
-        mods = record.get("data_description", {}).get("modalities", [])
+        dd = record.get("data_description", {})
+        # V2 uses "modalities", V1 uses "modality" (same list structure)
+        mods = dd.get("modalities") or dd.get("modality") or []
         return [m["abbreviation"].lower() for m in mods if isinstance(m, dict)]
     except Exception:
         return []
@@ -186,25 +298,139 @@ def asset_cell(name: str | None) -> str:
 # ---------------------------------------------------------------------------
 
 @pn.cache(ttl=TTL_HOUR)
-def get_project_records(project_name: str) -> list[dict]:
+def get_project_records(
+    project_names: tuple[str, ...],
+    versions: tuple[str, ...],
+    name_regex: str = "",
+) -> list[dict]:
     """
-    Fetch all DocDB records for the project (raw + derived), cached for 1 hour.
-    Date filtering is done in Python to avoid timezone ambiguity.
+    Fetch all DocDB records (raw + derived) for the given project, across the
+    specified DB versions.  Results are merged by asset name; V2 takes precedence
+    over V1 when the same asset exists in both.  Cached for 1 hour.
+
+    If name_regex is provided, records are filtered by asset name pattern instead
+    of project name.  Useful when a project spans many unpredictable project names
+    (e.g. Dynamic Foraging, where all raw assets share the "behavior_" prefix).
     """
-    logger.info("Querying DocDB for project records", extra={"project": project_name})
-    records = docdb_client.retrieve_docdb_records(
-        filter_query={"data_description.project_name": project_name},
-        projection={
-            "name": 1,
-            "_id": 1,
-            "data_description.data_level": 1,
-            "data_description.modalities": 1,
-        },
-        limit=0,
-        paginate_batch_size=500,
+    logger.info(
+        "Querying DocDB for project records",
+        extra={"projects": project_names, "versions": versions, "name_regex": name_regex},
     )
-    logger.info("DocDB query complete", extra={"count": len(records)})
-    return records
+    projection = {
+        "name": 1,
+        "_id": 1,
+        "subject.subject_id": 1,
+        "data_description.data_level": 1,
+        "data_description.modalities": 1,
+        "data_description.modality": 1,
+    }
+    # Collect V1 first, then V2 so V2 naturally overwrites on name collision.
+    by_name: dict[str, dict] = {}
+    for version in ("v1", "v2"):
+        if version not in versions:
+            continue
+        client = _DOCDB_CLIENTS[version]
+        if name_regex:
+            records = client.retrieve_docdb_records(
+                filter_query={"name": {"$regex": name_regex}},
+                projection=projection,
+                limit=0,
+                paginate_batch_size=500,
+            )
+            for r in records:
+                by_name[r.get("name", "")] = r
+        else:
+            for project_name in project_names:
+                records = client.retrieve_docdb_records(
+                    filter_query={"data_description.project_name": project_name},
+                    projection=projection,
+                    limit=0,
+                    paginate_batch_size=500,
+                )
+                for r in records:
+                    by_name[r.get("name", "")] = r
+    result = list(by_name.values())
+    logger.info("DocDB query complete", extra={"count": len(result)})
+    return result
+
+
+@pn.cache(ttl=DTS_CACHE_TTL)
+def get_raw_records_by_names(
+    names: tuple[str, ...],
+    versions: tuple[str, ...],
+) -> list[dict]:
+    """
+    Fast $in lookup for raw records by exact asset name.
+
+    Used in Phase 1 of two-phase loading: DTS job names are the exact
+    DocDB raw asset names, so this query uses the name index (<0.2s).
+    Cached for 5 minutes to match DTS cache lifetime.
+    """
+    if not names:
+        return []
+    projection = {
+        "name": 1,
+        "_id": 1,
+        "subject.subject_id": 1,
+        "data_description.data_level": 1,
+        "data_description.modalities": 1,
+        "data_description.modality": 1,
+    }
+    by_name: dict[str, dict] = {}
+    for version in ("v1", "v2"):
+        if version not in versions:
+            continue
+        client = _DOCDB_CLIENTS[version]
+        records = client.retrieve_docdb_records(
+            filter_query={"name": {"$in": list(names)}},
+            projection=projection,
+            limit=0,
+        )
+        for r in records:
+            by_name[r.get("name", "")] = r
+    logger.info("Phase 1 raw $in query", extra={"count": len(by_name), "names_queried": len(names)})
+    return list(by_name.values())
+
+
+@pn.cache(ttl=TTL_HOUR)
+def get_derived_records_by_input_names(
+    input_names: tuple[str, ...],
+    versions: tuple[str, ...],
+) -> list[dict]:
+    """
+    Fetch derived DocDB records by their input_data_name field.
+
+    Derived assets store the name of their source raw asset in
+    data_description.input_data_name.  Using $in on this field gives us
+    exactly the derived records for the sessions found in Phase 1.
+    This field is not indexed so the query is slow (~5-8s) — call from
+    a background thread.  Cached for 1 hour.
+    """
+    if not input_names:
+        return []
+    projection = {
+        "name": 1,
+        "_id": 1,
+        "subject.subject_id": 1,
+        "data_description.data_level": 1,
+        "data_description.modalities": 1,
+        "data_description.modality": 1,
+    }
+    by_name: dict[str, dict] = {}
+    for version in ("v1", "v2"):
+        if version not in versions:
+            continue
+        client = _DOCDB_CLIENTS[version]
+        records = client.retrieve_docdb_records(
+            filter_query={"data_description.input_data_name": {"$in": list(input_names)}},
+            projection=projection,
+            limit=0,
+            paginate_batch_size=500,
+        )
+        for r in records:
+            by_name[r.get("name", "")] = r
+    logger.info("Phase 2 derived input_data_name $in query", extra={"count": len(by_name)})
+    return list(by_name.values())
 
 
 def filter_records_by_date(
@@ -270,6 +496,7 @@ def build_session_table(
     dts_jobs: list[dict],
     all_docdb_records: list[dict],
     job_types: dict[str, dict],
+    derived_columns: list[dict],
     date_from: datetime,
     date_to: datetime,
 ) -> pd.DataFrame:
@@ -277,6 +504,9 @@ def build_session_table(
     Build a DataFrame with one row per session, joining DTS and DocDB by session name.
 
     job_types maps job_type name → config dict with 'expected_pipelines'.
+    derived_columns is a list of {"label": str, "modalities": set[str]} dicts that
+    drives which pipeline asset columns appear in the table.
+
     Sessions whose job_type is not in job_types are excluded from the table.
     For pipelines not in a session's expected_pipelines, '—' is shown instead of ⬜.
     For sessions with no DTS job (>14 days), expected_pipelines is unknown and ⬜ is used.
@@ -288,9 +518,11 @@ def build_session_table(
     now_utc = datetime.now(tz=timezone.utc)
     cutoff_14d = now_utc - timedelta(days=DTS_MAX_LOOKBACK_DAYS)
 
-    # Index DTS jobs by session name (filter to relevant job types)
+    # Index DTS jobs by canonical session name (filter to relevant job types).
+    # DTS job names may include a modality prefix (e.g. "behavior_829489_...") so
+    # we normalise via get_session_name() to match the DocDB index key.
     dts_by_name: dict[str, dict] = {
-        j["name"]: j
+        get_session_name(j["name"]): j
         for j in dts_jobs
         if j.get("job_type") in job_types
     }
@@ -323,8 +555,14 @@ def build_session_table(
                 docdb_only.add(sname)
     all_sessions = set(dts_by_name.keys()) | docdb_only
 
+    _epoch = datetime.min.replace(tzinfo=timezone.utc)
+
     rows = []
-    for sname in sorted(all_sessions, reverse=True):
+    for sname in sorted(
+        all_sessions,
+        key=lambda s: (session_date(s) or _epoch, s),
+        reverse=True,
+    ):
         subject_id, dt_str = parse_session_name(sname)
         d = session_date(sname)
         within_14d = d is None or d >= cutoff_14d
@@ -350,22 +588,33 @@ def build_session_table(
 
         modalities = ", ".join(get_modalities(raw)) if raw else ""
 
-        rows.append({
+        # Prefer subject_id from DocDB metadata; fall back to name parsing for
+        # DTS-only sessions that have no raw record yet.
+        if raw:
+            subject_id = (raw.get("subject") or {}).get("subject_id") or subject_id
+
+        # Show the real asset name so users can search for it in DocDB / the portal.
+        # The canonical sname is the normalised join key, which strips prefixes like
+        # "behavior_" that are part of the actual asset name.
+        display_name = raw["name"] if raw else (dts_job["name"] if dts_job else sname)
+
+        row: dict = {
             "Subject": subject_id,
             "Session Date": dt_str,
             "Modalities": modalities,
-            "Session Name": sname,
+            "Session Name": display_name,
             "DTS Upload": dts_cell(dts_job, within_14d),
             "Raw Asset": asset_cell(raw["name"] if raw else None),
-            "Behavior Asset": pipeline_cell({"behavior"}),
-            "FIP Asset": pipeline_cell({"fib", "fiber"}),
-        })
+        }
+        for col in derived_columns:
+            row[col["label"]] = pipeline_cell(col["modalities"])
 
-    return pd.DataFrame(
-        rows,
-        columns=["Subject", "Session Date", "Modalities", "Session Name", "DTS Upload",
-                 "Raw Asset", "Behavior Asset", "FIP Asset"],
-    )
+        rows.append(row)
+
+    fixed_cols = ["Subject", "Session Date", "Modalities", "Session Name",
+                  "DTS Upload", "Raw Asset"]
+    derived_col_labels = [c["label"] for c in derived_columns]
+    return pd.DataFrame(rows, columns=fixed_cols + derived_col_labels)
 
 
 # ---------------------------------------------------------------------------
@@ -390,6 +639,23 @@ def build_panel_app():
     load_button = pn.widgets.Button(name="Load Sessions", button_type="primary")
     status_md = pn.pane.Markdown("", sizing_mode="stretch_width")
     table_col = pn.Column(sizing_mode="stretch_width")
+    _load_gen = [0]  # incremented on each Load click; used to discard stale Phase 2 updates
+
+    def _make_tabulator(df: pd.DataFrame, derived_cols: list[dict]) -> pn.widgets.Tabulator:
+        html_cols = ["DTS Upload", "Raw Asset"] + [c["label"] for c in derived_cols]
+        return pn.widgets.Tabulator(
+            df,
+            formatters={c: {"type": "html"} for c in html_cols if c in df.columns},
+            sizing_mode="stretch_width",
+            show_index=False,
+            disabled=True,
+            header_filters=True,
+            page_size=50,
+            stylesheets=["""
+                .tabulator-row:nth-child(even) { background-color: #f5f5f5 !important; }
+                .tabulator-row:nth-child(even):hover { background-color: #e8e8e8 !important; }
+            """],
+        )
 
     def on_load(_event=None):
         if not date_from_picker.value or not date_to_picker.value:
@@ -397,8 +663,17 @@ def build_panel_app():
             return
 
         project_name = project_select.value
-        job_types: dict[str, dict] = PROJECT_CONFIG[project_name]["job_types"]
+        cfg = PROJECT_CONFIG[project_name]
+        job_types: dict[str, dict] = cfg["job_types"]
         job_type_names: set[str] = set(job_types.keys())
+        docdb_project_names: tuple[str, ...] = tuple(cfg["docdb_project_names"])
+        docdb_versions: tuple[str, ...] = tuple(cfg["docdb_versions"])
+        docdb_name_regex: str = cfg.get("docdb_name_regex", "")
+        derived_columns: list[dict] = cfg["derived_columns"]
+        two_phase: bool = cfg.get("two_phase_loading", False)
+
+        _load_gen[0] += 1
+        gen = _load_gen[0]
 
         load_button.disabled = True
         status_md.object = "⏳ Loading..."
@@ -418,64 +693,169 @@ def build_panel_app():
             tzinfo=timezone.utc,
         )
 
-        # DTS — server-side
+        subject = subject_input.value.strip()
+
+        # DTS — server-side, always Phase 1
         dts_jobs, dts_error = get_dts_jobs(date_from.isoformat(), date_to.isoformat())
 
-        # DocDB — server-side, cached per project
-        try:
-            all_records = get_project_records(project_name)
-        except Exception as exc:
-            status_md.object = f"❌ DocDB query failed: {exc}"
-            load_button.disabled = False
-            return
+        if two_phase:
+            # ----------------------------------------------------------------
+            # TWO-PHASE LOADING (Dynamic Foraging and other large projects)
+            #
+            # Phase 1: fetch raw records via fast $in on DTS job names.
+            #          Show the table immediately (~1-2s total).
+            # Phase 2: fetch derived records by created date range in a
+            #          background thread; rebuild the table when done (~8-10s).
+            # ----------------------------------------------------------------
 
-        records_in_range = filter_records_by_date(all_records, date_from, date_to)
-
-        # Status line
-        if dts_error:
-            status_md.object = (
-                f"⚠️ **DTS unavailable** _(requires AIND network or VPN)_: {dts_error}\n\n"
-                f"Showing {len(records_in_range)} DocDB records only."
+            # Collect DTS job names for the relevant job types as the $in keys.
+            # For Dynamic Foraging, DTS job names equal DocDB raw asset names.
+            dts_names = tuple(
+                j["name"] for j in dts_jobs if j.get("job_type") in job_type_names
             )
+
+            try:
+                raw_records = get_raw_records_by_names(dts_names, docdb_versions)
+            except Exception as exc:
+                status_md.object = f"❌ DocDB query failed: {exc}"
+                load_button.disabled = False
+                return
+
+            # Subject filter
+            dts_phase1 = dts_jobs
+            raw_phase1 = raw_records
+            if subject:
+                dts_phase1 = [j for j in dts_jobs if subject in j.get("name", "")]
+                raw_phase1 = [r for r in raw_records if subject in r.get("name", "")]
+
+            records_in_range = filter_records_by_date(raw_phase1, date_from, date_to)
+            n_dts = sum(1 for j in dts_phase1 if j.get("job_type") in job_type_names)
+
+            if dts_error:
+                status_md.object = (
+                    f"⚠️ **DTS unavailable** _(requires AIND network or VPN)_: {dts_error}\n\n"
+                    f"Showing {len(records_in_range)} DocDB records only."
+                )
+            else:
+                status_md.object = (
+                    f"**{n_dts} DTS jobs** · "
+                    f"**{len(records_in_range)} raw DocDB records** · "
+                    f"{date_from.date()} → {date_to.date()} · "
+                    f"⏳ _Loading derived records…_"
+                )
+
+            df1 = build_session_table(
+                dts_phase1, raw_phase1, job_types, derived_columns, date_from, date_to
+            )
+            if df1.empty:
+                table_col[:] = [pn.pane.Markdown("_No sessions found for the selected filters._")]
+            else:
+                table_col[:] = [_make_tabulator(df1, derived_columns)]
+            load_button.disabled = False  # allow re-run while Phase 2 works
+
+            # Phase 2: background thread — fetch derived records and rebuild table
+            # Use input_data_name $in [raw_names] — more precise than a date range
+            # and avoids the need to filter results afterwards.
+            # DTS job names == raw asset names for Dynamic Foraging.
+            doc = pn.state.curdoc()
+
+            def _phase2():
+                if _load_gen[0] != gen:
+                    return  # user already clicked Load again — discard
+                try:
+                    derived_records = get_derived_records_by_input_names(
+                        dts_names, docdb_versions
+                    )
+                except Exception:
+                    return  # silently leave Phase 1 table in place
+                if _load_gen[0] != gen:
+                    return
+
+                dts_p2 = dts_jobs
+                combined = list(raw_records) + derived_records
+                if subject:
+                    dts_p2 = [j for j in dts_jobs if subject in j.get("name", "")]
+                    combined = [r for r in combined if subject in r.get("name", "")]
+
+                def _update():
+                    if _load_gen[0] != gen:
+                        return
+                    df2 = build_session_table(
+                        dts_p2, combined, job_types, derived_columns, date_from, date_to
+                    )
+                    n_raw = len(filter_records_by_date(
+                        [r for r in combined if r.get("data_description", {}).get("data_level") == "raw" or not any(m in r.get("name","") for m in _DERIVED_MARKERS)],
+                        date_from, date_to,
+                    ))
+                    n_der = len(derived_records)
+                    if dts_error:
+                        status_md.object = (
+                            f"⚠️ **DTS unavailable**: {dts_error} · "
+                            f"{n_raw} raw, {n_der} derived DocDB records."
+                        )
+                    else:
+                        status_md.object = (
+                            f"**{n_dts} DTS jobs** · "
+                            f"**{n_raw} raw + {n_der} derived DocDB records** · "
+                            f"{date_from.date()} → {date_to.date()} · "
+                            f"_DTS cache: 5min, DocDB cache: 1hr_"
+                        )
+                    if df2.empty:
+                        table_col[:] = [pn.pane.Markdown("_No sessions found for the selected filters._")]
+                    else:
+                        table_col[:] = [_make_tabulator(df2, derived_columns)]
+
+                doc.add_next_tick_callback(_update)
+
+            threading.Thread(target=_phase2, daemon=True).start()
+
         else:
-            n_dts = sum(1 for j in dts_jobs if j.get("job_type") in job_type_names)
-            status_md.object = (
-                f"**{n_dts} DTS jobs** · "
-                f"**{len(records_in_range)} DocDB records** · "
-                f"{date_from.date()} → {date_to.date()} · "
-                f"_DTS cache: 5min, DocDB cache: 1hr_"
+            # ----------------------------------------------------------------
+            # SINGLE-PHASE LOADING (small projects — VR Foraging, etc.)
+            # ----------------------------------------------------------------
+
+            try:
+                all_records = get_project_records(docdb_project_names, docdb_versions, docdb_name_regex)
+            except Exception as exc:
+                status_md.object = f"❌ DocDB query failed: {exc}"
+                load_button.disabled = False
+                return
+
+            records_in_range = filter_records_by_date(all_records, date_from, date_to)
+
+            if dts_error:
+                status_md.object = (
+                    f"⚠️ **DTS unavailable** _(requires AIND network or VPN)_: {dts_error}\n\n"
+                    f"Showing {len(records_in_range)} DocDB records only."
+                )
+            else:
+                n_dts = sum(1 for j in dts_jobs if j.get("job_type") in job_type_names)
+                status_md.object = (
+                    f"**{n_dts} DTS jobs** · "
+                    f"**{len(records_in_range)} DocDB records** · "
+                    f"{date_from.date()} → {date_to.date()} · "
+                    f"_DTS cache: 5min, DocDB cache: 1hr_"
+                )
+
+            if subject:
+                dts_jobs = [j for j in dts_jobs if subject in j.get("name", "")]
+                all_records = [r for r in all_records if subject in r.get("name", "")]
+
+            df = build_session_table(
+                dts_jobs, all_records, job_types, derived_columns, date_from, date_to
             )
 
-        # Optional subject filter — applied to both DTS and DocDB before table build
-        subject = subject_input.value.strip()
-        if subject:
-            dts_jobs = [j for j in dts_jobs if subject in j.get("name", "")]
-            all_records = [r for r in all_records if subject in r.get("name", "")]
-
-        df = build_session_table(dts_jobs, all_records, job_types, date_from, date_to)
-
-        if df.empty:
-            table_col[:] = [pn.pane.Markdown("_No sessions found for the selected filters._")]
+            if df.empty:
+                table_col[:] = [pn.pane.Markdown("_No sessions found for the selected filters._")]
+            else:
+                table_col[:] = [_make_tabulator(df, derived_columns)]
             load_button.disabled = False
-            return
-
-        html_cols = ["DTS Upload", "Raw Asset", "Behavior Asset", "FIP Asset"]
-        tab = pn.widgets.Tabulator(
-            df,
-            formatters={c: {"type": "html"} for c in html_cols},
-            sizing_mode="stretch_width",
-            show_index=False,
-            disabled=True,
-            header_filters=True,
-            page_size=50,
-        )
-        table_col[:] = [tab]
-        load_button.disabled = False
 
     load_button.on_click(on_load)
 
     if pn.state.location:
         # Keep sync so URL stays updated when the user changes widgets and re-runs.
+        pn.state.location.sync(project_select, {"value": "project"})
         pn.state.location.sync(subject_input, {"value": "subject"})
         pn.state.location.sync(date_from_picker, {"value": "date_from"})
         pn.state.location.sync(date_to_picker, {"value": "date_to"})
@@ -492,6 +872,10 @@ def build_panel_app():
             params = parse_qs(event.new.lstrip("?"))
             if not params:
                 return
+            if "project" in params:
+                project = params["project"][0]
+                if project in PROJECT_CONFIG:
+                    project_select.value = project
             if "subject" in params:
                 subject_input.value = params["subject"][0]
             if "date_from" in params:
@@ -524,6 +908,7 @@ def build_panel_app():
         "❌ failed &nbsp;&nbsp; "
         "⏳ running/queued &nbsp;&nbsp; "
         "⬜ not yet reached &nbsp;&nbsp; "
+        "— not applicable &nbsp;&nbsp; "
         "_DTS cells link to the task drill-down. Asset cells link to the metadata portal._",
         styles={
             "background": "#f0f4ff",
