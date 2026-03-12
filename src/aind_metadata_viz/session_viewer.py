@@ -41,6 +41,7 @@ URL PARAMETERS:
     - date_to:   pre-fill end date   (e.g. ?date_to=2026-03-11)
 """
 
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -53,7 +54,7 @@ from urllib.parse import quote
 from aind_data_access_api.document_db import MetadataDbClient
 from aind_metadata_viz.utils import TTL_HOUR
 
-pn.extension("tabulator")
+pn.extension("tabulator", "modal")
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -284,11 +285,10 @@ def dts_cell(job: dict | None, within_14_days: bool) -> str:
 
 
 def asset_cell(name: str | None) -> str:
-    """Render an asset status cell as HTML, linking to the metadata portal."""
+    """Render an asset status cell as a clickable span (opens inline metadata modal)."""
     if not name:
         return "⬜"
-    url = f"{METADATA_PORTAL_BASE}/view?name={quote(name)}"
-    return f'<a href="{url}" target="_blank">✅ view docdb record</a>'
+    return '<span style="cursor:pointer;color:#1a73e8;text-decoration:underline">✅ view metadata</span>'
 
 
 # ---------------------------------------------------------------------------
@@ -429,6 +429,25 @@ def get_derived_records_by_input_names(
             by_name[r.get("name", "")] = r
     logger.info("Phase 2 derived input_data_name $in query", extra={"count": len(by_name)})
     return list(by_name.values())
+
+
+@pn.cache(ttl=TTL_HOUR)
+def get_full_record(name: str) -> dict | None:
+    """
+    Fetch the complete DocDB record for a single asset by name.
+
+    Tries V2 first (newer schema), falls back to V1.  Returns None if not found.
+    Cached for 1 hour — individual records rarely change.
+    """
+    for version in ("v2", "v1"):
+        client = _DOCDB_CLIENTS[version]
+        records = client.retrieve_docdb_records(
+            filter_query={"name": name},
+            limit=1,
+        )
+        if records:
+            return records[0]
+    return None
 
 
 def filter_records_by_date(
@@ -574,16 +593,6 @@ def build_session_table(
         job_type = dts_job.get("job_type") if dts_job else None
         expected = job_types[job_type]["expected_pipelines"] if job_type else None
 
-        def pipeline_cell(modality_names: set[str]) -> str:
-            """Return asset cell, or '—' if this pipeline is not applicable."""
-            if expected is not None and not modality_names & expected:
-                return "—"
-            record = next(
-                (r for r in derived if modality_names & set(get_modalities(r))),
-                None,
-            )
-            return asset_cell(record["name"] if record else None)
-
         modalities = ", ".join(get_modalities(raw)) if raw else ""
 
         # Prefer subject_id from DocDB metadata; fall back to name parsing for
@@ -596,23 +605,36 @@ def build_session_table(
         # "behavior_" that are part of the actual asset name.
         display_name = raw["name"] if raw else (dts_job["name"] if dts_job else sname)
 
+        raw_name = raw["name"] if raw else ""
         row: dict = {
             "Subject": subject_id,
             "Session Date": dt_str,
             "Modalities": modalities,
             "Session Name": display_name,
             "DTS Upload": dts_cell(dts_job, within_14d),
-            "Raw Asset": asset_cell(raw["name"] if raw else None),
+            "Raw Asset": asset_cell(raw_name or None),
+            "_name_Raw Asset": raw_name,
         }
         for col in derived_columns:
-            row[col["label"]] = pipeline_cell(col["modalities"])
+            if expected is not None and not col["modalities"] & expected:
+                row[col["label"]] = "—"
+                row[f"_name_{col['label']}"] = ""
+            else:
+                record = next(
+                    (r for r in derived if col["modalities"] & set(get_modalities(r))),
+                    None,
+                )
+                name = record["name"] if record else ""
+                row[col["label"]] = asset_cell(name or None)
+                row[f"_name_{col['label']}"] = name
 
         rows.append(row)
 
     fixed_cols = ["Subject", "Session Date", "Modalities", "Session Name",
                   "DTS Upload", "Raw Asset"]
     derived_col_labels = [c["label"] for c in derived_columns]
-    return pd.DataFrame(rows, columns=fixed_cols + derived_col_labels)
+    name_cols = ["_name_Raw Asset"] + [f"_name_{c['label']}" for c in derived_columns]
+    return pd.DataFrame(rows, columns=fixed_cols + derived_col_labels + name_cols)
 
 
 # ---------------------------------------------------------------------------
@@ -637,6 +659,21 @@ def build_panel_app():
     load_button = pn.widgets.Button(name="Load Sessions", button_type="primary")
     status_md = pn.pane.Markdown("", sizing_mode="stretch_width")
     table_col = pn.Column(sizing_mode="stretch_width")
+
+    # Metadata inspector modal — hidden until an asset cell is clicked
+    _inspector_title = pn.pane.Markdown("", styles={"font-weight": "bold", "margin-bottom": "6px"})
+    _inspector_json = pn.pane.JSON({}, depth=1, sizing_mode="stretch_width",
+                                   styles={"overflow": "auto", "max-height": "60vh"})
+    _inspector_modal = pn.layout.Modal(
+        pn.Column(
+            _inspector_title,
+            _inspector_json,
+            min_width=700,
+            sizing_mode="stretch_width",
+        ),
+        show_close_button=True,
+        background_close=True,
+    )
 
     def on_load(_event=None):
         if not date_from_picker.value or not date_to_picker.value:
@@ -723,9 +760,11 @@ def build_panel_app():
             table_col[:] = [pn.pane.Markdown("_No sessions found for the selected filters._")]
         else:
             html_cols = ["DTS Upload", "Raw Asset"] + [c["label"] for c in derived_columns]
+            name_cols = ["_name_Raw Asset"] + [f"_name_{c['label']}" for c in derived_columns]
             tab = pn.widgets.Tabulator(
                 df,
                 formatters={c: {"type": "html"} for c in html_cols if c in df.columns},
+                hidden_columns=name_cols,
                 sizing_mode="stretch_width",
                 show_index=False,
                 disabled=True,
@@ -736,6 +775,24 @@ def build_panel_app():
                     .tabulator-row:nth-child(even):hover { background-color: #e8e8e8 !important; }
                 """],
             )
+
+            def on_cell_click(event, _df=df):
+                name_col = f"_name_{event.column}"
+                if name_col not in _df.columns:
+                    return
+                asset_name = str(_df.iloc[event.row].get(name_col, ""))
+                if not asset_name:
+                    return
+                _inspector_title.object = f"**{asset_name}**"
+                _inspector_json.object = {"loading": "fetching record…"}
+                _inspector_modal.show()
+                record = get_full_record(asset_name)
+                if record:
+                    _inspector_json.object = json.loads(json.dumps(record, default=str))
+                else:
+                    _inspector_json.object = {"error": f"Record not found: {asset_name}"}
+
+            tab.on_click(on_cell_click)
             table_col[:] = [tab]
         load_button.disabled = False
 
@@ -826,6 +883,7 @@ def build_panel_app():
         pn.Spacer(height=8),
         status_md,
         table_col,
+        _inspector_modal,
         sizing_mode="stretch_width",
         min_width=900,
     )

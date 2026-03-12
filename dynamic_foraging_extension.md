@@ -82,7 +82,7 @@ Then investigate whether `/allen/programs/mindscope/workgroups/behavioral-dynami
 From Alex's email, dynamic foraging sessions can have these modalities:
 - **Beh** (behavior) — always present
 - **Video** (behavior-videos) — usually present
-- **FIP** (fiber photometry) — sometimes present
+- **FIP** (fiber photometry) — sometimes presenta
 
 You'll need to check what the project name(s) are in DocDB for dynamic foraging. It might be multiple project names across different PIs.
 
