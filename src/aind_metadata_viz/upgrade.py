@@ -3,7 +3,7 @@ from aind_data_access_api.document_db import MetadataDbClient
 import pandas as pd
 import panel as pn
 from aind_metadata_upgrader.upgrade import Upgrade
-from aind_metadata_viz.utils import AIND_COLORS, outer_style
+from aind_metadata_viz.utils import AIND_COLORS, outer_style, TTL_DAY, TTL_HOUR
 from aind_data_schema import __version__ as schema_version
 import copy
 import json
@@ -27,9 +27,6 @@ client = MetadataDbClient(
     host="api.allenneuraldynamics.org",
     version="v1",
 )
-
-TTL_DAY = 24 * 60 * 60
-TTL_HOUR = 60 * 60
 
 
 @pn.cache(ttl=TTL_DAY)
