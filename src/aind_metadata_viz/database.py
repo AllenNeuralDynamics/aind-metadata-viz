@@ -1,6 +1,5 @@
 from aind_data_access_api.document_db import MetadataDbClient
-from aind_data_access_api.rds_tables import RDSCredentials
-from aind_data_access_api.rds_tables import Client
+from zombie_squirrel import custom
 from aind_metadata_validator.metadata_validator import validate_metadata
 import panel as pn
 import pandas as pd
@@ -24,10 +23,6 @@ REDSHIFT_SECRETS = f"/aind/{DEV_OR_PROD}/redshift/credentials/readonly"
 RDS_TABLE_NAME = f"metadata_status_{DEV_OR_PROD}_v2"
 
 CHUNK_SIZE = 1000
-
-rds_client = Client(
-    credentials=RDSCredentials(aws_secrets_name=REDSHIFT_SECRETS),
-)
 
 docdb_api_client = MetadataDbClient(
     host="api.allenneuraldynamics.org",
@@ -278,7 +273,7 @@ class Database(param.Parameterized):
 @pn.cache(ttl=CACHE_RESET_DAY)
 def _get_status() -> pd.DataFrame:
     """Get the status of the metadata"""
-    response = rds_client.read_table(RDS_TABLE_NAME)
+    response = custom(RDS_TABLE_NAME)
 
     # replace values using the int -> string map
     response.replace(METASTATE_MAP, inplace=True)

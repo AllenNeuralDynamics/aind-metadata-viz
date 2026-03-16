@@ -1,5 +1,5 @@
-from aind_data_access_api.rds_tables import RDSCredentials, Client
 from aind_data_access_api.document_db import MetadataDbClient
+from zombie_squirrel import custom
 import pandas as pd
 import panel as pn
 from aind_metadata_upgrader.upgrade import Upgrade
@@ -74,12 +74,7 @@ def get_extra_col_df():
 @pn.cache(ttl=TTL_HOUR)
 def get_redshift_table():
     print("Connecting to Redshift RDS...")
-    rds_client = Client(
-        credentials=RDSCredentials(
-            aws_secrets_name=REDSHIFT_SECRETS,
-        ),
-    )
-    df = rds_client.read_table(RDS_TABLE_NAME)
+    df = custom(RDS_TABLE_NAME)
     print(f"Retrieved {len(df)} records from Redshift table.")
     return df
 
