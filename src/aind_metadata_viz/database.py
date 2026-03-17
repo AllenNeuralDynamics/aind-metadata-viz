@@ -1,5 +1,5 @@
 from aind_data_access_api.document_db import MetadataDbClient
-from zombie_squirrel import custom
+from zombie_squirrel import custom, asset_basics
 from aind_metadata_validator.metadata_validator import validate_metadata
 import panel as pn
 import pandas as pd
@@ -283,62 +283,11 @@ def _get_status() -> pd.DataFrame:
 
 @pn.cache(ttl=CACHE_RESET_DAY)
 def _get_metadata(test_mode=False) -> pd.DataFrame:
-    """Get metadata about records in DocDB
-
-    Parameters
-    ----------
-    test_mode : bool, optional
-        _description_, by default False
-    """
-    record_list = docdb_api_client.retrieve_docdb_records(
-        filter_query={},
-        projection={
-            "data_description.modalities": 1,
-            "name": 1,
-            "_id": 1,
-            "location": 1,
-        },
-        limit=0 if not test_mode else 10,
-        paginate_batch_size=500,
-    )
-
-    records = []
-    # Now add some information about the records, i.e. modality, derived state, etc.
-    for record in record_list:
-        if (
-            "data_description" in record
-            and record["data_description"]
-            and "modalities" in record["data_description"]
-        ):
-            if isinstance(record["data_description"]["modalities"], list):
-                modalities = [
-                    mod["abbreviation"]
-                    for mod in record["data_description"]["modalities"]
-                ]
-        else:
-            modalities = []
-        derived = True if record["name"].count("_") <= 3 else False
-
-        info_data = {
-            "modalities": ",".join(modalities),
-            "derived": derived,
-            "name": record["name"],
-            "_id": record["_id"],
-            "location": record["location"],
-        }
-
-        records.append(info_data)
-
-    return pd.DataFrame(
-        records,
-        columns=[
-            "modalities",
-            "derived",
-            "name",
-            "_id",
-            "location",
-        ],
-    )
+    df = asset_basics()[["_id", "name", "location", "modalities", "data_level"]].copy()
+    df["modalities"] = df["modalities"].fillna("").str.replace(", ", ",", regex=False)
+    df["derived"] = df["data_level"] != "raw"
+    df.drop(columns=["data_level"], inplace=True)
+    return df
 
 
 @pn.cache(ttl=CACHE_RESET_HOUR)

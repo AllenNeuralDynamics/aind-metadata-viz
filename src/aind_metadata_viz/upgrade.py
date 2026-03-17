@@ -1,5 +1,6 @@
 from aind_data_access_api.document_db import MetadataDbClient
 from zombie_squirrel import custom
+import altair as alt
 import pandas as pd
 import panel as pn
 from aind_metadata_upgrader.upgrade import Upgrade
@@ -528,7 +529,32 @@ def build_panel_app():
             page_size=500,
             show_index=False,
         )
-        table_col[:] = ["# Metadata Upgrade Status Table", tab]
+        success_detail = (
+            df.groupby(["project_name", "status"])
+            .size()
+            .reset_index(name="count")
+        )
+        chart = (
+            alt.Chart(success_detail)
+            .mark_bar()
+            .encode(
+                x=alt.X("project_name:N", sort="-y", title="Project Name"),
+                y=alt.Y("count:Q", title="Count"),
+                color=alt.Color("status:N", title="Status"),
+                tooltip=["project_name:N", "status:N", "count:Q"],
+            )
+            .properties(
+                width="container",
+                height=500,
+                title="Upgrade Status Breakdown by Project",
+            )
+            .interactive()
+        )
+        table_col[:] = [
+            "# Metadata Upgrade Status Table",
+            tab,
+            pn.pane.Vega(chart, sizing_mode="stretch_width"),
+        ]
         table_col.loading = False
 
     def run_upgrade_callback(event):

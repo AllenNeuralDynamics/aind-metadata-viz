@@ -2,6 +2,8 @@ FROM python:3.10-slim
 
 WORKDIR /app
 
+ENV FOREST_TYPE="s3"
+
 ADD src ./src
 ADD pyproject.toml .
 ADD setup.py .
