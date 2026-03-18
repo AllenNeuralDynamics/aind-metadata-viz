@@ -30,6 +30,8 @@ dependencies = [
     'aind-metadata-upgrader>=0.6.4,<1',
     'numpy<2.0',
     'vl-convert-python',
+    "codeocean",
+    "python-dotenv",
 ]
 
 [project.optional-dependencies]

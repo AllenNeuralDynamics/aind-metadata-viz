@@ -43,6 +43,8 @@ URL PARAMETERS:
 
 import json
 import logging
+import os
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 import requests as req
@@ -51,8 +53,148 @@ import panel as pn
 
 from urllib.parse import quote
 
+from codeocean import CodeOcean
+from codeocean.data_asset import DataAssetSearchParams, DataAssetState
+from dotenv import load_dotenv
 from aind_data_access_api.document_db import MetadataDbClient
 from aind_metadata_viz.utils import TTL_HOUR
+
+load_dotenv()  # picks up .env in the working directory (or any parent)
+
+# ---------------------------------------------------------------------------
+# Code Ocean client (optional — columns degrade gracefully if not configured)
+# ---------------------------------------------------------------------------
+
+_CO_DOMAIN: str = os.environ.get("CODEOCEAN_DOMAIN", "")
+_co_client: CodeOcean | None = None
+_co_url_cache: dict[str, str | None] = {}
+
+
+def _get_co_client() -> CodeOcean | None:
+    """Return a singleton CodeOcean client if credentials are configured."""
+    global _co_client
+    if _co_client is None:
+        token = os.environ.get("CODEOCEAN_API_TOKEN")
+        if _CO_DOMAIN and token:
+            _co_client = CodeOcean(domain=_CO_DOMAIN, token=token)
+    return _co_client
+
+
+def get_co_output_url(asset_name: str) -> str | None:
+    """
+    Return the Code Ocean output log URL for a derived asset name.
+
+    Returns:
+        A URL string  — if the CO data asset is Ready
+        'pending'     — if the asset exists but is not yet complete
+        None          — if not found or CO is unavailable
+
+    Results are cached in memory for the server lifetime (CO asset states
+    are effectively immutable once Ready).
+    """
+    if asset_name in _co_url_cache:
+        return _co_url_cache[asset_name]
+    co = _get_co_client()
+    if co is None:
+        return None
+    try:
+        results = co.data_assets.search_data_assets(
+            DataAssetSearchParams(query=asset_name, limit=5)
+        )
+        asset = next(
+            (a for a in results.results if a.name == asset_name), None
+        )
+        if asset is None:
+            result: str | None = None
+        elif asset.state != DataAssetState.Ready:
+            result = "pending"
+        else:
+            result = f"{_CO_DOMAIN}/data-assets/{asset.id}/{asset.name}/output"
+    except Exception as e:
+        logger.warning("CO log lookup failed for %s: %s", asset_name, e)
+        result = None
+    _co_url_cache[asset_name] = result
+    return result
+
+
+_co_raw_id_cache: dict[str, str | None] = {}
+_co_computation_status_cache: dict[tuple[str, str], str | None] = {}
+# co_asset_id → raw asset name (for reversing failed computation lookups).
+_co_asset_name_cache: dict[str, str | None] = {}
+# Capsule scan cache: capsule_id → (scan_time, {raw_asset_name: status})
+# Refreshed if older than _CAPSULE_SCAN_TTL seconds.
+_co_capsule_scan_cache: dict[str, tuple[float, dict[str, str]]] = {}
+_CAPSULE_SCAN_TTL = 600  # 10 minutes
+
+
+def get_raw_co_asset_id(raw_asset_name: str) -> str | None:
+    """Look up the Code Ocean UUID for a raw asset by exact name. Cached."""
+    if raw_asset_name in _co_raw_id_cache:
+        return _co_raw_id_cache[raw_asset_name]
+    co = _get_co_client()
+    if co is None:
+        return None
+    try:
+        results = co.data_assets.search_data_assets(
+            DataAssetSearchParams(query=raw_asset_name, limit=5)
+        )
+        asset = next(
+            (a for a in results.results if a.name == raw_asset_name), None
+        )
+        result: str | None = asset.id if asset else None
+    except Exception as e:
+        logger.warning("CO raw asset lookup failed for %s: %s", raw_asset_name, e)
+        result = None
+    _co_raw_id_cache[raw_asset_name] = result
+    return result
+
+
+def get_co_computation_status(
+    raw_asset_co_id: str,
+    pipeline_capsule_id: str,
+    session_ts: float,
+) -> str | None:
+    """
+    Scan the pipeline capsule's computation history for one that used
+    raw_asset_co_id as input.
+
+    Returns:
+        'failed'  — computation found, exit_code != 0 or no results
+        'running' — computation found, still in progress
+        None      — no matching computation found (not yet triggered)
+
+    Results are cached by (raw_asset_co_id, pipeline_capsule_id).
+    None is not cached so we retry on the next table load.
+    """
+    cache_key = (raw_asset_co_id, pipeline_capsule_id)
+    if cache_key in _co_computation_status_cache:
+        return _co_computation_status_cache[cache_key]
+    co = _get_co_client()
+    if co is None:
+        return None
+    window_start = session_ts - 86400        # 1 day before session
+    window_end = session_ts + 4 * 86400     # 4 days after (trigger delay + run)
+    result: str | None = None
+    try:
+        for comp in co.capsules.list_computations(pipeline_capsule_id):
+            if comp.created < window_start:
+                break  # list is newest-first; gone past the window
+            if comp.created > window_end:
+                continue
+            input_ids = {da.id for da in (comp.data_assets or [])}
+            if raw_asset_co_id not in input_ids:
+                continue
+            if comp.state.value in ("running", "initializing"):
+                result = "running"
+            elif comp.exit_code != 0 or not comp.has_results:
+                result = "failed"
+            break
+    except Exception as e:
+        logger.warning("CO computation status lookup failed: %s", e)
+    if result is not None:
+        _co_computation_status_cache[cache_key] = result
+    return result
+
 
 pn.extension("tabulator", "modal")
 
@@ -97,8 +239,10 @@ PROJECT_CONFIG: dict[str, dict] = {
         "docdb_project_names": ["Cognitive flexibility in patch foraging"],
         "docdb_versions": ["v2"],
         "derived_columns": [
-            {"label": "Behavior Asset", "modalities": {"behavior"}},
-            {"label": "FIP Asset",      "modalities": {"fib", "fiber"}},
+            {"label": "Behavior Asset", "modalities": {"behavior"},
+             "co_pipeline_capsule_id": "da8785b1-1597-41c6-af30-5844f52d4947"},
+            {"label": "FIP Asset",      "modalities": {"fib", "fiber"},
+             "co_pipeline_capsule_id": "9f8af19f-d107-488d-a3c1-a1f9db29401f"},
         ],
     },
     "Dynamic Foraging": {
@@ -115,9 +259,11 @@ PROJECT_CONFIG: dict[str, dict] = {
         "docdb_name_regex": "^behavior_",
         "docdb_versions": ["v1", "v2"],
         "derived_columns": [
-            {"label": "Behavior Asset", "modalities": {"behavior"}},
+            {"label": "Behavior Asset", "modalities": {"behavior"},
+             "co_pipeline_capsule_id": "250cf9b5-f438-4d31-9bbb-ba29dab47d56"},
             {"label": "Video Asset",    "modalities": {"behavior-videos"}},
-            {"label": "FIP Asset",      "modalities": {"fib", "fiber"}},
+            {"label": "FIP Asset",      "modalities": {"fib", "fiber"},
+             "co_pipeline_capsule_id": "250cf9b5-f438-4d31-9bbb-ba29dab47d56"},
         ],
     },
 }
@@ -324,6 +470,23 @@ def asset_cell(name: str | None) -> str:
     if not name:
         return "⬜"
     return '<span style="cursor:pointer;color:#1a73e8;text-decoration:underline">✅ view metadata</span>'
+
+
+def _co_log_col_name(derived_label: str) -> str:
+    """'Behavior Asset' → 'Behavior Log', 'FIP Asset' → 'FIP Log'"""
+    return f"{derived_label.split()[0]} Log"
+
+
+def co_log_cell(co_url: str | None) -> str:
+    """Render a Code Ocean log cell based on the URL lookup result."""
+    if co_url == "pending":
+        return "⏳ pending"
+    if co_url:
+        return (
+            f'<a href="{co_url}" target="_blank" rel="noopener noreferrer" '
+            f'style="color:#1a73e8;text-decoration:underline">🔗 view log</a>'
+        )
+    return "⬜"
 
 
 # ---------------------------------------------------------------------------
@@ -597,6 +760,19 @@ def build_session_table(
         else:
             derived_by_session.setdefault(sname, []).append(r)
 
+    # Parallel CO URL lookup for all derived assets found in DocDB.
+    # Results go into _co_url_cache; subsequent table builds use the cache.
+    all_derived_names = {
+        r["name"]
+        for records in derived_by_session.values()
+        for r in records
+    }
+    if _get_co_client() is not None and all_derived_names:
+        uncached = [n for n in all_derived_names if n not in _co_url_cache]
+        if uncached:
+            with ThreadPoolExecutor(max_workers=10) as executor:
+                list(executor.map(get_co_output_url, uncached))
+
     # DTS sessions: date-filtered by execution_date via the API — include all.
     # DocDB-only sessions: filter by the date encoded in the session name.
     docdb_only: set[str] = set()
@@ -654,7 +830,9 @@ def build_session_table(
             "_name_Raw Asset": raw_name,
         }
         for col in derived_columns:
+            co_log_col = _co_log_col_name(col["label"])
             if expected is not None and not col["modalities"] & expected:
+                row[co_log_col] = "—"
                 row[col["label"]] = "—"
                 row[f"_name_{col['label']}"] = ""
             else:
@@ -663,6 +841,19 @@ def build_session_table(
                     None,
                 )
                 name = record["name"] if record else ""
+
+                # CO log cell
+                if name:
+                    row[co_log_col] = co_log_cell(_co_url_cache.get(name))
+                elif (
+                    dts_job
+                    and dts_job.get("job_state") == "success"
+                    and (expected is None or bool(col["modalities"] & expected))
+                ):
+                    row[co_log_col] = "⏳ pending"
+                else:
+                    row[co_log_col] = "⬜"
+
                 row[col["label"]] = asset_cell(name or None)
                 row[f"_name_{col['label']}"] = name
 
@@ -670,9 +861,12 @@ def build_session_table(
 
     fixed_cols = ["Subject", "Session Date", "Modalities", "Session Name",
                   "Rig Log", "DTS Upload", "Raw Asset"]
-    derived_col_labels = [c["label"] for c in derived_columns]
+    derived_col_list = []
+    for c in derived_columns:
+        derived_col_list.append(_co_log_col_name(c["label"]))
+        derived_col_list.append(c["label"])
     hidden_cols = ["_dts_url", "_name_Raw Asset"] + [f"_name_{c['label']}" for c in derived_columns]
-    return pd.DataFrame(rows, columns=fixed_cols + derived_col_labels + hidden_cols)
+    return pd.DataFrame(rows, columns=fixed_cols + derived_col_list + hidden_cols)
 
 
 # ---------------------------------------------------------------------------
@@ -777,13 +971,13 @@ def build_panel_app():
         records_in_range = filter_records_by_date(all_records, date_from, date_to)
 
         if dts_error:
-            status_md.object = (
+            base_status = (
                 f"⚠️ **DTS unavailable** _(requires AIND network or VPN)_: {dts_error}\n\n"
                 f"Showing {len(records_in_range)} DocDB records only."
             )
         else:
             n_dts = sum(1 for j in dts_jobs if j.get("job_type") in job_type_names)
-            status_md.object = (
+            base_status = (
                 f"**{n_dts} DTS jobs** · "
                 f"**{len(records_in_range)} DocDB records** · "
                 f"{date_from.date()} → {date_to.date()} · "
@@ -794,14 +988,28 @@ def build_panel_app():
             dts_jobs = [j for j in dts_jobs if subject in j.get("name", "")]
             all_records = [r for r in all_records if subject in r.get("name", "")]
 
-        df = build_session_table(
-            dts_jobs, all_records, job_types, derived_columns, date_from, date_to
-        )
+        status_md.object = base_status
+
+        try:
+            df = build_session_table(
+                dts_jobs, all_records, job_types, derived_columns, date_from, date_to
+            )
+        except Exception as exc:
+            import traceback
+            logger.error("build_session_table failed: %s", traceback.format_exc())
+            status_md.object = f"❌ Table build failed: {exc}"
+            load_button.disabled = False
+            return
 
         if df.empty:
             table_col[:] = [pn.pane.Markdown("_No sessions found for the selected filters._")]
         else:
-            html_cols = ["Rig Log", "DTS Upload", "Raw Asset"] + [c["label"] for c in derived_columns]
+            co_log_col_names = {_co_log_col_name(c["label"]) for c in derived_columns}
+            html_cols = (
+                ["Rig Log", "DTS Upload", "Raw Asset"]
+                + list(co_log_col_names)
+                + [c["label"] for c in derived_columns]
+            )
             hidden_cols = ["_dts_url", "_name_Raw Asset"] + [f"_name_{c['label']}" for c in derived_columns]
             tab = pn.widgets.Tabulator(
                 df,
@@ -818,9 +1026,12 @@ def build_panel_app():
                 """],
             )
 
-            def on_cell_click(event, _df=df):
+            def on_cell_click(event, _df=df, _co_log_cols=co_log_col_names):
                 row = _df.iloc[event.row]
                 col = event.column
+
+                if col in _co_log_cols:
+                    return  # <a href target="_blank"> handles the click
 
                 if col == "DTS Upload":
                     url = str(row.get("_dts_url", ""))

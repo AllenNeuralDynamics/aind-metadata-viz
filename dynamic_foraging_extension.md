@@ -6,9 +6,24 @@ We built a Phase 0 Session Status Viewer as a Streamlit page in [aind-metadata-v
 
 Now we need to extend it to support **Dynamic Foraging** and, critically, to replicate **Alex Piet's automated session tracking email** which detects sessions at the rig level — including sessions that never made it to the DTS.
 
+## Current Status (as of 2026-03-12)
+
+**Tier 1 is complete** for both Dynamic Foraging and VR/Patch Foraging:
+
+- Dynamic Foraging added to the project dropdown
+- DTS job types configured (`dynamic_foraging_behavior_and_fiber`, `dynamic_foraging_behavior_only`, `dynamic_foraging_compression`, `dynamic_foraging`)
+- DocDB query strategy: raw records via `name $in [DTS job names]` (fast, ~0.1s), derived records via `data_description.input_data_name $in [DTS job names]` (~8s in V1)
+- Derived asset columns: Behavior Asset, Video Asset, FIP Asset
+- Modal inspector for metadata and DTS task drill-down
+- Rig Log column added as placeholder `(not yet implemented)` pending Tier 2
+
+**Tier 2 (rig-level detection) is not yet implemented.** See below.
+
+---
+
 ## What Alex's Tracker Does
 
-Alex runs a daily cron job from the repo [AllenNeuralDynamics/behavior_communication](https://github.com/AllenNeuralDynamics/behavior_communication). The key files are in `data_transfer/`:
+Alex runs a cron job from the repo [AllenNeuralDynamics/behavior_communication](https://github.com/AllenNeuralDynamics/behavior_communication). The key files are in `data_transfer/`:
 
 ### How it detects sessions at the rig (pre-DTS)
 
@@ -23,7 +38,7 @@ This is how Alex detects "missing data" sessions — mice that were scheduled/ex
 
 ### How it determines status
 
-`parse_upload_manifests.py` (38KB, the main logic) cross-references manifests against DocDB and Code Ocean to assign each session a status:
+`parse_upload_manifests.py` cross-references manifests against DocDB and Code Ocean to assign each session a status:
 
 - **missing data** — no manifest file from yesterday (session expected but didn't happen)
 - **stalled** — manifest exists but didn't move to the complete folder
@@ -37,7 +52,8 @@ This is how Alex detects "missing data" sessions — mice that were scheduled/ex
 
 ### How it gets watchdog logs
 
-`get_watchdog_logs.py` SSHs into rigs and SCPs the watchdog log file from `C:\ProgramData\aind\aind-watchdog-service\aind-watchdog-service.log`
+`get_watchdog_logs.py` SSHs into rigs and SCPs the watchdog log file from:
+`C:\ProgramData\aind\aind-watchdog-service\aind-watchdog-service.log`
 
 These are saved to: `/allen/programs/mindscope/workgroups/behavioral-dynamics/aind_logs/watchdog_logs/`
 
@@ -45,56 +61,67 @@ These are saved to: `/allen/programs/mindscope/workgroups/behavioral-dynamics/ai
 
 The daily email shows: status, Beh/Video/FIP pass/fail columns, mouse ID, PI, hostname, trainer, manifest filename. Color-coded by status. Includes summary counts and a backlog section.
 
-## What to Build
+---
 
-### Goal
+## Tier 2 Implementation Plan
 
-Add Dynamic Foraging support to the session viewer that replicates and extends Alex's tracker, making it interactive rather than a static daily email.
+### Key architectural point: no SSH from the app
 
-### Approach: Two tiers
+Alex's cron job does the SSH to rigs. **We do not SSH from the Panel app.** Instead, we read from the network share where Alex saves the already-fetched data:
 
-**Tier 1 (same as VR Foraging — no new infrastructure):**
-- Query DocDB for Dynamic Foraging sessions (project name filtering)
-- Query DTS API for matching jobs
-- Join them and show status table with DTS drill-down links
-- This should work with the existing session_tracker.py logic
+```
+/allen/programs/mindscope/workgroups/behavioral-dynamics/aind_logs/
+```
 
-**Tier 2 (replicate Alex's rig-level detection):**
-- Read manifest files to detect sessions at the rig level
-- This catches "missing data" and "stalled" sessions that Tier 1 misses
-- Alex's scripts save manifest listings and watchdog logs to `/allen/programs/mindscope/workgroups/behavioral-dynamics/aind_logs/`
-- If the metadata portal server can read this network path, we can use the already-fetched data
-- If not, start with Tier 1 only and add Tier 2 later
+The `FileSystemRigLogSource` stub in `session_viewer.py` is designed for exactly this.
 
-### Recommended approach
+### Open questions before implementing
 
-Start with **Tier 1** to get dynamic foraging into the viewer quickly:
+1. **Cron frequency** — This is the critical question. If the cron job runs only once daily (e.g. overnight), the rig log data is stale by mid-day and not useful for real-time session monitoring. We need to know:
+   - How often does the cron run? (check `computer_list.json` / crontab in behavior_communication repo)
+   - Is there a way to increase frequency, or run it on-demand?
+   - Ideal: runs every 15–30 min so the Rig Log column reflects current rig state during the day.
 
-1. Add dynamic foraging project(s) to the project dropdown
-2. Determine the correct DTS job type(s) for dynamic foraging sessions
-3. The existing join logic (DocDB + DTS) should work as-is
-4. Add behavior-specific derived asset columns (Beh, Video, FIP pass/fail as Alex shows)
+2. **File structure at the network share** — What files are written, how are they named, and what fields do they contain? We need to map manifest filenames → session names to join with the table.
 
-Then investigate whether `/allen/programs/mindscope/workgroups/behavioral-dynamics/aind_logs/` is accessible for Tier 2 manifest detection.
+3. **Network share accessibility** — Is `/allen/programs/mindscope/workgroups/behavioral-dynamics/aind_logs/` mounted on the server where the Panel app runs? Verify with a quick `ls` from that server.
 
-### Dynamic Foraging specifics
+4. **Coverage** — Does `computer_list.json` include all Dynamic Foraging rigs? Any rigs missing?
 
-From Alex's email, dynamic foraging sessions can have these modalities:
-- **Beh** (behavior) — always present
-- **Video** (behavior-videos) — usually present
-- **FIP** (fiber photometry) — sometimes presenta
+### Extension to Patch Foraging
 
-You'll need to check what the project name(s) are in DocDB for dynamic foraging. It might be multiple project names across different PIs.
+Unclear. Alex's system is focused on Dynamic Foraging behavior rigs. Patch foraging rigs may or may not:
+- Use the same watchdog service / manifest format
+- Be included in `computer_list.json`
+- Write to the same or a parallel network share
+
+If not covered by Alex's system, Patch Foraging Tier 2 would need to wait for the token server implementation (a planned AIND infrastructure feature that would provide a proper API for rig-side session status).
+
+### Implementation sketch (once open questions are resolved)
+
+```python
+class FileSystemRigLogSource(RigLogSource):
+    BASE_PATH = "/allen/programs/mindscope/workgroups/behavioral-dynamics/aind_logs"
+
+    def get_manifest_sessions(self, date_from, date_to):
+        # Read manifest listing files from BASE_PATH
+        # Parse filenames → session names (subject_id, date, time)
+        # Return list of dicts with at least: session_name, status, hostname
+        ...
+```
+
+The `build_session_table` function already has a `RigLogSource` parameter slot in the interface. Populating the "Rig Log" column just requires wiring in a concrete `FileSystemRigLogSource` implementation.
 
 ### Key files to reference
 
-- Your existing `session_tracker.py` from PR #64 — extend this
-- `parse_upload_manifests.py` at https://github.com/AllenNeuralDynamics/behavior_communication/blob/main/data_transfer/parse_upload_manifests.py — reference for status logic
-- `check_upload_manifests.py` at https://github.com/AllenNeuralDynamics/behavior_communication/blob/main/data_transfer/check_upload_manifests.py — reference for manifest detection
+- `session_viewer.py` — `RigLogSource` stub, `FileSystemRigLogSource` stub, "Rig Log" column placeholder
+- `parse_upload_manifests.py` at https://github.com/AllenNeuralDynamics/behavior_communication/blob/main/data_transfer/parse_upload_manifests.py
+- `check_upload_manifests.py` at https://github.com/AllenNeuralDynamics/behavior_communication/blob/main/data_transfer/check_upload_manifests.py
+- `computer_list.json` in the same repo — lists all rigs that are SSHed into
 
 ### What NOT to do
 
-- Don't try to SSH into rigs from the Streamlit app (not feasible)
-- Don't rebuild the DTS task view or log viewer — link to them via deep-linkable URLs
+- Don't SSH into rigs from the Panel app
+- Don't rebuild the DTS task view or log viewer — link to them (already done via modal)
 - Don't worry about Loki/Grafana integration for now
 - Don't add scheduling or WaterLog features
