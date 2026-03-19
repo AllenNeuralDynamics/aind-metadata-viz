@@ -6,7 +6,7 @@ We built a Phase 0 Session Status Viewer as a Streamlit page in [aind-metadata-v
 
 Now we need to extend it to support **Dynamic Foraging** and, critically, to replicate **Alex Piet's automated session tracking email** which detects sessions at the rig level — including sessions that never made it to the DTS.
 
-## Current Status (as of 2026-03-12)
+## Current Status (as of 2026-03-19)
 
 **Tier 1 is complete** for both Dynamic Foraging and VR/Patch Foraging:
 
@@ -15,9 +15,8 @@ Now we need to extend it to support **Dynamic Foraging** and, critically, to rep
 - DocDB query strategy: raw records via `name $in [DTS job names]` (fast, ~0.1s), derived records via `data_description.input_data_name $in [DTS job names]` (~8s in V1)
 - Derived asset columns: Behavior Asset, Video Asset, FIP Asset
 - Modal inspector for metadata and DTS task drill-down
-- Rig Log column added as placeholder `(not yet implemented)` pending Tier 2
 
-**Tier 2 (rig-level detection) is not yet implemented.** See below.
+**Tier 2 (rig-level detection) is now implemented for Dynamic Foraging.** See below.
 
 ---
 
@@ -63,30 +62,68 @@ The daily email shows: status, Beh/Video/FIP pass/fail columns, mouse ID, PI, ho
 
 ---
 
-## Tier 2 Implementation Plan
+## Tier 2 Implementation (completed 2026-03-19)
 
-### Key architectural point: no SSH from the app
+### Key architectural decision: no SSH from the app
 
 Alex's cron job does the SSH to rigs. **We do not SSH from the Panel app.** Instead, we read from the network share where Alex saves the already-fetched data:
 
 ```
-/allen/programs/mindscope/workgroups/behavioral-dynamics/aind_logs/
+/allen/programs/mindscope/workgroups/behavioral-dynamics/aind_logs/watchdog_manifests/
 ```
 
-The `FileSystemRigLogSource` stub in `session_viewer.py` is designed for exactly this.
+The cron job runs **once daily at 6am** and writes two files per rig:
+- `{RIG}.txt` — Windows `dir` listing of `manifest/` (staged, awaiting watchdog pickup)
+- `{RIG}_complete.txt` — Windows `dir` listing of `manifest_complete/` (watchdog processed)
 
-### Open questions before implementing
+Each file is a raw Windows directory listing, e.g.:
+```
+03/18/2026  09:35 AM     764 manifest_behavior_841859_2026-03-18_09-35-42.yml
+```
 
-1. **Cron frequency** — This is the critical question. If the cron job runs only once daily (e.g. overnight), the rig log data is stale by mid-day and not useful for real-time session monitoring. We need to know:
-   - How often does the cron run? (check `computer_list.json` / crontab in behavior_communication repo)
-   - Is there a way to increase frequency, or run it on-demand?
-   - Ideal: runs every 15–30 min so the Rig Log column reflects current rig state during the day.
+### What was implemented
 
-2. **File structure at the network share** — What files are written, how are they named, and what fields do they contain? We need to map manifest filenames → session names to join with the table.
+Three changes to `session_viewer.py`:
 
-3. **Network share accessibility** — Is `/allen/programs/mindscope/workgroups/behavioral-dynamics/aind_logs/` mounted on the server where the Panel app runs? Verify with a quick `ls` from that server.
+#### 1. `load_manifest_sessions()` — new cached data loader
 
-4. **Coverage** — Does `computer_list.json` include all Dynamic Foraging rigs? Any rigs missing?
+Reads all `{RIG}.txt` and `{RIG}_complete.txt` files from `MANIFEST_DIR`. Parses each line with a regex to extract the manifest filename, strips the `manifest_` prefix and `.yml` suffix to get the raw asset name (e.g. `behavior_822683_2026-03-18_09-35-42`), then applies `get_session_name()` to get the canonical join key.
+
+Returns `{session_name: {"rig": str, "status": "pending"|"complete", "session_raw": str}}`.
+
+- `status = "complete"` — manifest was in `manifest_complete/` (watchdog processed it, should have been submitted to DTS)
+- `status = "pending"` — manifest was still in `manifest/` at 6am (not yet picked up)
+- `"complete"` takes precedence if the same session appears in both files
+- Cached for 1 hour (files only update once daily)
+- Degrades gracefully if `MANIFEST_DIR` is not mounted
+
+#### 2. `rig_log_cell()` — new HTML cell renderer
+
+Replaces the old `(not yet implemented)` placeholder in the "Rig Log" column:
+- `⬜` — no manifest found for this session
+- `✅ {rig}` — manifest processed by watchdog; hover shows rig hostname
+- `⏳ {rig}` — manifest staged on rig, awaiting watchdog pickup (amber color)
+
+#### 3. Manifest-only rows in `build_session_table()`
+
+After the main DTS+DocDB session loop, a second pass over `manifest_sessions` adds rows for sessions that:
+- Are within the selected date range
+- Are **not** already in `all_sessions` (absent from both DTS and DocDB)
+
+These "fell through the cracks" rows show the rig manifest status, Watchdog events (if any), and ⬜ for all pipeline columns. The DTS column shows ⬜ (within 14 days) or "N/A >14 days" (older).
+
+### How it's enabled per-project
+
+`PROJECT_CONFIG` for Dynamic Foraging has `"use_manifests": True`. In `on_load()`, this flag triggers a call to `load_manifest_sessions()` and passes the result to `build_session_table()`. Projects without the flag (VR/Patch Foraging) get an empty dict, so the Rig Log column shows ⬜ for all rows and no extra rows are added.
+
+Subject ID filtering is applied to manifest sessions when the subject filter is active.
+
+### Coverage and limitations
+
+- **Scope**: Dynamic Foraging only. All manifest files use the `behavior_` prefix, which is the Dynamic Foraging naming convention. VR/Patch Foraging rigs may use different manifest formats or may not be covered by Alex's cron job.
+- **Staleness**: Data is a snapshot from 6am. Sessions run after 6am will not appear as manifest-only rows until the next morning. They will appear via DTS once uploaded.
+- **"complete" ≠ successfully uploaded**: A manifest in `manifest_complete/` means the watchdog picked it up and attempted to submit to DTS. The DTS job may have still failed — in that case the session will appear via DTS with a failed status (not as a manifest-only row).
+- **Network access**: `MANIFEST_DIR` must be mounted on the server running the Panel app. The app degrades gracefully (Rig Log shows ⬜ for all rows) if the path is unavailable.
 
 ### Extension to Patch Foraging
 
@@ -97,24 +134,9 @@ Unclear. Alex's system is focused on Dynamic Foraging behavior rigs. Patch forag
 
 If not covered by Alex's system, Patch Foraging Tier 2 would need to wait for the token server implementation (a planned AIND infrastructure feature that would provide a proper API for rig-side session status).
 
-### Implementation sketch (once open questions are resolved)
+### Key files
 
-```python
-class FileSystemRigLogSource(RigLogSource):
-    BASE_PATH = "/allen/programs/mindscope/workgroups/behavioral-dynamics/aind_logs"
-
-    def get_manifest_sessions(self, date_from, date_to):
-        # Read manifest listing files from BASE_PATH
-        # Parse filenames → session names (subject_id, date, time)
-        # Return list of dicts with at least: session_name, status, hostname
-        ...
-```
-
-The `build_session_table` function already has a `RigLogSource` parameter slot in the interface. Populating the "Rig Log" column just requires wiring in a concrete `FileSystemRigLogSource` implementation.
-
-### Key files to reference
-
-- `session_viewer.py` — `RigLogSource` stub, `FileSystemRigLogSource` stub, "Rig Log" column placeholder
+- `session_viewer.py` — `MANIFEST_DIR`, `_MANIFEST_LINE_RE`, `load_manifest_sessions()`, `rig_log_cell()`, `build_session_table()` manifest-only rows, `on_load()` manifest loading
 - `parse_upload_manifests.py` at https://github.com/AllenNeuralDynamics/behavior_communication/blob/main/data_transfer/parse_upload_manifests.py
 - `check_upload_manifests.py` at https://github.com/AllenNeuralDynamics/behavior_communication/blob/main/data_transfer/check_upload_manifests.py
 - `computer_list.json` in the same repo — lists all rigs that are SSHed into

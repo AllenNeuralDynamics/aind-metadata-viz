@@ -28,8 +28,9 @@ DATA FLOW:
 LIMITATIONS:
     - DTS API enforces a 14-day lookback window. For sessions older than 14 days,
       the DTS Status column shows "N/A (>14 days)".
-    - Sessions that failed before reaching the DTS are not visible (Phase 2 scope).
-    - Requires AIND network or VPN access for DTS data.
+    - Rig manifest detection (Dynamic Foraging only) surfaces sessions that never
+      reached the DTS. Requires the MANIFEST_DIR network share to be mounted.
+    - Requires AIND network or VPN access for DTS data and rig manifests.
 
 EXTENSION POINTS:
     - Add projects to PROJECT_CONFIG.
@@ -44,6 +45,7 @@ URL PARAMETERS:
 import json
 import logging
 import os
+import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 import html as _html
@@ -317,6 +319,29 @@ DTS_CACHE_TTL = 5 * 60  # 5 minutes — DTS data changes frequently
 _DERIVED_MARKERS = ("_processed_", "_videoprocessed_", "_sorted_")
 
 # ---------------------------------------------------------------------------
+# Rig-side manifest detection
+#
+# Alex Piet's cron job (AllenNeuralDynamics/behavior_communication) SSHs into
+# every behavior rig at 6am and captures a Windows `dir` listing of two folders:
+#   manifest/          — sessions staged for the watchdog, not yet picked up
+#   manifest_complete/ — sessions the watchdog has processed (submitted to DTS)
+#
+# The results are written as {RIG}.txt and {RIG}_complete.txt to MANIFEST_DIR.
+# We read these files to surface sessions that never made it to the DTS.
+# ---------------------------------------------------------------------------
+
+AIND_LOGS_DIR = (
+    "/allen/programs/mindscope/workgroups/behavioral-dynamics/aind_logs"
+)
+MANIFEST_DIR = os.path.join(AIND_LOGS_DIR, "watchdog_manifests")
+
+# Matches a file-entry line in a Windows `dir` listing, e.g.:
+#   03/18/2026  09:35 AM     764 manifest_behavior_841859_2026-03-18_09-35-42.yml
+_MANIFEST_LINE_RE = re.compile(
+    r"^\s*\d{2}/\d{2}/\d{4}\s+\d{1,2}:\d{2} [AP]M\s+[\d,]+\s+(manifest_\S+\.yml)\s*$"
+)
+
+# ---------------------------------------------------------------------------
 # PROJECT_CONFIG
 #
 # Each entry defines one dropdown option.  Keys:
@@ -364,6 +389,9 @@ PROJECT_CONFIG: dict[str, dict] = {
         "docdb_project_names": [],
         "docdb_name_regex": "^behavior_",
         "docdb_versions": ["v1", "v2"],
+        # Enable rig-side manifest detection: reads Alex Piet's daily manifest snapshots
+        # from MANIFEST_DIR to surface sessions that never reached the DTS.
+        "use_manifests": True,
         "derived_columns": [
             {
                 "label": "Derived Asset Metadata",
@@ -649,6 +677,90 @@ def co_asset_link_cell(asset_id: str | None, asset_name: str) -> str:
     return "⬜"
 
 
+def find_gui_log_path(rig: str, session_name: str) -> str | None:
+    """
+    Find the GUI acquisition log file for a session on a given rig, or None.
+
+    GUI logs live at {AIND_LOGS_DIR}/{rig}_gui_log/ and are named:
+        {RIG}-{BOX}_gui_log_{YYYY-MM-DD}_{HH-MM-SS}.txt
+
+    The filename timestamp is the GUI *launch* time, which is always before
+    the session timestamp.  We find all logs on the session date, parse their
+    timestamps, and return the one with the latest start time that is still
+    at or before the session timestamp (i.e. the GUI that was running when
+    the session was saved).
+    """
+    import glob as _glob
+    from datetime import datetime as _dt
+    parts = session_name.split("_")
+    if len(parts) < 3:
+        return None
+    date_str, time_str = parts[1], parts[2]
+    pattern = os.path.join(AIND_LOGS_DIR, f"{rig}_gui_log", f"*{date_str}*.txt")
+    matches = _glob.glob(pattern)
+    if not matches:
+        return None
+    if len(matches) == 1:
+        return matches[0]
+    # Parse the timestamp from each filename and pick the closest one before
+    # the session timestamp.
+    try:
+        session_ts = _dt.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H-%M-%S")
+    except ValueError:
+        return matches[0]
+    candidates: list[tuple] = []
+    for path in matches:
+        fname = os.path.basename(path)
+        try:
+            ts_str = fname.replace(".txt", "").split("_gui_log_")[-1]
+            ts = _dt.strptime(ts_str, "%Y-%m-%d_%H-%M-%S")
+            candidates.append((ts, path))
+        except (ValueError, IndexError):
+            continue
+    if not candidates:
+        return matches[0]
+    before = [(ts, p) for ts, p in candidates if ts <= session_ts]
+    if before:
+        return max(before, key=lambda x: x[0])[1]
+    # All logs are after session time — return the earliest
+    return min(candidates, key=lambda x: x[0])[1]
+
+
+def gui_log_cell(path: str | None) -> str:
+    """Render the Rig Log column cell — clickable if a GUI log file was found."""
+    if path:
+        return '<span style="cursor:pointer;color:#1a73e8;text-decoration:underline">📋 view log</span>'
+    return "⬜"
+
+
+def rig_log_cell(manifest_entry: dict | None) -> str:
+    """
+    Render the Rig Log column cell based on rig-side manifest status.
+
+    manifest_entry comes from load_manifest_sessions() and has keys:
+        status:       "complete" — manifest processed by watchdog (submitted to DTS)
+                      "pending"  — manifest staged on rig, not yet picked up
+        rig:          rig hostname (e.g. "W10DT714027")
+        session_raw:  original asset name from the manifest filename
+    """
+    if manifest_entry is None:
+        return "⬜"
+    status = manifest_entry.get("status", "")
+    rig = manifest_entry.get("rig", "")
+    if status == "complete":
+        return (
+            f'<span title="Manifest processed by watchdog on {rig}">'
+            f"✅ {rig}</span>"
+        )
+    if status == "pending":
+        return (
+            f'<span style="color:#a60" '
+            f'title="Manifest staged on {rig}, awaiting watchdog pickup">'
+            f"⏳ {rig}</span>"
+        )
+    return "⬜"
+
+
 # ---------------------------------------------------------------------------
 # Data fetching — both server-side
 # ---------------------------------------------------------------------------
@@ -679,6 +791,8 @@ def get_project_records(
         "data_description.data_level": 1,
         "data_description.modalities": 1,
         "data_description.modality": 1,
+        "acquisition.acquisition_start_time": 1,
+        "session.session_start_time": 1,
     }
     # Collect V1 first, then V2 so V2 naturally overwrites on name collision.
     by_name: dict[str, dict] = {}
@@ -731,6 +845,8 @@ def get_raw_records_by_names(
         "data_description.data_level": 1,
         "data_description.modalities": 1,
         "data_description.modality": 1,
+        "acquisition.acquisition_start_time": 1,
+        "session.session_start_time": 1,
     }
     by_name: dict[str, dict] = {}
     for version in ("v1", "v2"):
@@ -771,6 +887,8 @@ def get_derived_records_by_input_names(
         "data_description.data_level": 1,
         "data_description.modalities": 1,
         "data_description.modality": 1,
+        "acquisition.acquisition_start_time": 1,
+        "session.session_start_time": 1,
     }
     by_name: dict[str, dict] = {}
     for version in ("v1", "v2"):
@@ -864,6 +982,76 @@ def get_dts_jobs(date_from_iso: str, date_to_iso: str) -> tuple[list[dict], str 
 
 
 # ---------------------------------------------------------------------------
+# Rig manifest loader
+# ---------------------------------------------------------------------------
+
+@pn.cache(ttl=TTL_HOUR)
+def load_manifest_sessions() -> dict[str, dict]:
+    """
+    Parse all per-rig manifest listing files from MANIFEST_DIR and return a
+    dict mapping canonical session name → manifest metadata.
+
+    Return value: {session_name: {"rig": str, "status": str, "session_raw": str}}
+        status "complete" — manifest was in manifest_complete/ (watchdog processed it)
+        status "pending"  — manifest was in manifest/ (staged, not yet picked up)
+        session_raw       — full asset name from the manifest filename, e.g.
+                            "behavior_822683_2026-03-18_09-35-42"
+
+    Files are Windows `dir` listings written by Alex Piet's 6am cron job:
+        {RIG}.txt          → manifest/ (pending)
+        {RIG}_complete.txt → manifest_complete/ (complete)
+
+    "complete" takes precedence if the same session appears in both.
+    Cached for 1 hour since files are only refreshed once daily.
+    """
+    sessions: dict[str, dict] = {}
+    try:
+        filenames = os.listdir(MANIFEST_DIR)
+    except OSError as e:
+        logger.warning("Manifest directory not accessible (%s): %s", MANIFEST_DIR, e)
+        return sessions
+
+    for filename in filenames:
+        if not filename.endswith(".txt"):
+            continue
+        if filename == "processed.txt":
+            continue
+        if filename.endswith("_complete.txt"):
+            rig = filename[: -len("_complete.txt")]
+            status = "complete"
+        else:
+            rig = filename[: -len(".txt")]
+            status = "pending"
+
+        filepath = os.path.join(MANIFEST_DIR, filename)
+        try:
+            with open(filepath, encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    m = _MANIFEST_LINE_RE.match(line.rstrip("\n"))
+                    if not m:
+                        continue
+                    manifest_fname = m.group(1)
+                    # e.g. "manifest_behavior_822683_2026-03-18_09-35-42.yml"
+                    # → session_raw = "behavior_822683_2026-03-18_09-35-42"
+                    session_raw = manifest_fname[len("manifest_") : -len(".yml")]
+                    sname = get_session_name(session_raw)
+                    if not sname:
+                        continue
+                    # "complete" takes precedence if the session appears in both files
+                    if sname not in sessions or status == "complete":
+                        sessions[sname] = {
+                            "rig": rig,
+                            "status": status,
+                            "session_raw": session_raw,
+                        }
+        except OSError as e:
+            logger.warning("Could not read manifest file %s: %s", filepath, e)
+
+    logger.info("Loaded %d sessions from rig manifests", len(sessions))
+    return sessions
+
+
+# ---------------------------------------------------------------------------
 # Table builder
 # ---------------------------------------------------------------------------
 
@@ -874,6 +1062,7 @@ def build_session_table(
     derived_columns: list[dict],
     date_from: datetime,
     date_to: datetime,
+    manifest_sessions: dict | None = None,
 ) -> pd.DataFrame:
     """
     Build a DataFrame with one row per session, joining DTS and DocDB by session name.
@@ -940,15 +1129,43 @@ def build_session_table(
                 with ThreadPoolExecutor(max_workers=10) as executor:
                     list(executor.map(get_raw_co_asset_id, uncached_raw))
 
-    # DTS sessions: date-filtered by execution_date via the API — include all.
-    # DocDB-only sessions: filter by the date encoded in the session name.
+    # Filter both DTS and DocDB sessions by the date the session was actually
+    # acquired (not the DTS execution_date, which reflects when the job ran and
+    # can include old sessions that were retried or reprocessed recently).
+    #
+    # For DTS sessions: use the date encoded in the session name.
+    # For DocDB-only sessions: prefer acquisition.acquisition_start_time (ground
+    # truth), falling back to the session name date when not present.
+    def _acquisition_date(r: dict) -> datetime | None:
+        # V2 schema: acquisition.acquisition_start_time
+        # V1 schema: session.session_start_time
+        # Fallback: date encoded in the asset name
+        for ts_str in (
+            (r.get("acquisition") or {}).get("acquisition_start_time", ""),
+            (r.get("session") or {}).get("session_start_time", ""),
+        ):
+            if ts_str:
+                try:
+                    d = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                    return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+                except ValueError:
+                    pass
+        return session_date(get_session_name(r.get("name", "")))
+
+    dts_in_range: set[str] = set()
+    for sname in dts_by_name:
+        d = session_date(sname)
+        if d is not None and date_from <= d <= date_to:
+            dts_in_range.add(sname)
+
     docdb_only: set[str] = set()
-    for sname in raw_by_session:
+    for sname, raw_rec in raw_by_session.items():
         if sname not in dts_by_name:
-            d = session_date(sname)
+            d = _acquisition_date(raw_rec)
             if d is not None and date_from <= d <= date_to:
                 docdb_only.add(sname)
-    all_sessions = set(dts_by_name.keys()) | docdb_only
+
+    all_sessions = dts_in_range | docdb_only
 
     # Fetch watchdog events for the date range (cached, ~0.4s on first call).
     try:
@@ -1020,12 +1237,18 @@ def build_session_table(
         raw_name = raw["name"] if raw else ""
         dts_html, dts_url = dts_cell(dts_job, within_14d)
         wd_events = watchdog_events.get(sname, [])
+        manifest_entry = manifest_sessions.get(sname) if manifest_sessions else None
+        rig = manifest_entry["rig"] if manifest_entry else ""
+        gui_log_path = find_gui_log_path(rig, sname) if rig else None
         row: dict = {
             "Subject": subject_id,
             "Session Date": dt_str,
             "Modalities": modalities,
             "Session Name": display_name,
-            "Rig Log": '<span style="color:#aaa;font-style:italic">(not yet implemented)</span>',
+            "Rig Log": gui_log_cell(gui_log_path),
+            "_rig_log_path": gui_log_path or "",
+            "Rig Manifest": rig_log_cell(manifest_entry),
+            "_rig_manifest_rig": rig,
             "Watchdog": watchdog_cell(wd_events),
             "_watchdog_sname": sname,
             "DTS Upload": dts_html,
@@ -1083,15 +1306,64 @@ def build_session_table(
 
         rows.append(row)
 
+    # Add rows for sessions found in rig manifests but absent from both DTS and DocDB.
+    # These are sessions where the watchdog processed the manifest (or it's still pending)
+    # but the session never appeared in DTS — the "fell through the cracks" case.
+    if manifest_sessions:
+        for sname, mentry in sorted(
+            manifest_sessions.items(),
+            key=lambda kv: session_datetime(kv[0]) or _epoch,
+            reverse=True,
+        ):
+            if sname in all_sessions:
+                continue  # already represented via DTS or DocDB
+            d = session_date(sname)
+            if d is None or not (date_from <= d <= date_to):
+                continue  # outside the selected date window
+            subject_id, dt_str = parse_session_name(sname)
+            within_14d = d >= cutoff_14d
+            wd_events = watchdog_events.get(sname, [])
+            dts_html, _ = dts_cell(None, within_14d)
+            display_name = mentry.get("session_raw", sname)
+            mrig = mentry.get("rig", "")
+            m_gui_log_path = find_gui_log_path(mrig, sname) if mrig else None
+            manifest_row: dict = {
+                "Subject": subject_id,
+                "Session Date": dt_str,
+                "Modalities": "",
+                "Session Name": display_name,
+                "Rig Log": gui_log_cell(m_gui_log_path),
+                "_rig_log_path": m_gui_log_path or "",
+                "Rig Manifest": rig_log_cell(mentry),
+                "_rig_manifest_rig": mrig,
+                "Watchdog": watchdog_cell(wd_events),
+                "_watchdog_sname": sname,
+                "DTS Upload": dts_html,
+                "_dts_url": "",
+                "Raw Asset Metadata": "⬜",
+                "_name_Raw Asset Metadata": "",
+                "CO Raw Asset": "⬜",
+            }
+            for col in derived_columns:
+                co_log_col = _col_co_log_name(col)
+                co_asset_col = _col_co_asset_name(col)
+                manifest_row[co_log_col] = "⬜"
+                manifest_row[col["label"]] = "⬜"
+                manifest_row[co_asset_col] = "⬜"
+                manifest_row[f"_name_{col['label']}"] = ""
+                manifest_row[f"_comp_id_{col['label']}"] = ""
+            rows.append(manifest_row)
+
     fixed_cols = ["Subject", "Session Date", "Modalities", "Session Name",
-                  "Rig Log", "Watchdog", "DTS Upload", "Raw Asset Metadata", "CO Raw Asset"]
+                  "Rig Log", "Rig Manifest", "Watchdog", "DTS Upload", "Raw Asset Metadata", "CO Raw Asset"]
     derived_col_list = []
     for c in derived_columns:
         derived_col_list.append(_col_co_log_name(c))
         derived_col_list.append(c["label"])
         derived_col_list.append(_col_co_asset_name(c))
     hidden_cols = (
-        ["_dts_url", "_watchdog_sname", "_name_Raw Asset Metadata"]
+        ["_dts_url", "_watchdog_sname", "_name_Raw Asset Metadata",
+         "_rig_log_path", "_rig_manifest_rig"]
         + [f"_name_{c['label']}" for c in derived_columns]
         + [f"_comp_id_{c['label']}" for c in derived_columns]
     )
@@ -1220,11 +1492,24 @@ def build_panel_app():
             dts_jobs = [j for j in dts_jobs if subject in j.get("name", "")]
             all_records = [r for r in all_records if subject in r.get("name", "")]
 
+        # Rig-side manifest sessions (only for projects that opt in)
+        manifest_sessions: dict = {}
+        if cfg.get("use_manifests"):
+            try:
+                manifest_sessions = load_manifest_sessions()
+                if subject:
+                    manifest_sessions = {
+                        k: v for k, v in manifest_sessions.items() if subject in k
+                    }
+            except Exception as e:
+                logger.warning("Manifest session load failed: %s", e)
+
         status_md.object = base_status
 
         try:
             df, watchdog_events = build_session_table(
-                dts_jobs, all_records, job_types, derived_columns, date_from, date_to
+                dts_jobs, all_records, job_types, derived_columns, date_from, date_to,
+                manifest_sessions=manifest_sessions,
             )
         except Exception as exc:
             import traceback
@@ -1254,14 +1539,15 @@ def build_panel_app():
                 for c in derived_columns
             }
             html_cols = (
-                ["Rig Log", "Watchdog", "DTS Upload", "Raw Asset Metadata",
-                 "CO Raw Asset"]
+                ["Rig Log", "Rig Manifest", "Watchdog", "DTS Upload",
+                 "Raw Asset Metadata", "CO Raw Asset"]
                 + list(co_log_col_names)
                 + [c["label"] for c in derived_columns]
                 + [_col_co_asset_name(c) for c in derived_columns]
             )
             hidden_cols = (
-                ["_dts_url", "_watchdog_sname", "_name_Raw Asset Metadata"]
+                ["_dts_url", "_watchdog_sname", "_name_Raw Asset Metadata",
+                 "_rig_log_path", "_rig_manifest_rig"]
                 + [f"_name_{c['label']}" for c in derived_columns]
                 + [f"_comp_id_{c['label']}" for c in derived_columns]
             )
@@ -1446,6 +1732,76 @@ def build_panel_app():
                         )]
                     return
 
+                if col == "Rig Log":
+                    path = str(row.get("_rig_log_path", ""))
+                    if not path:
+                        return
+                    sname = str(row.get("_watchdog_sname", ""))
+                    _modal_body[:] = [pn.pane.Markdown(
+                        "🔍 Loading acquisition log…", styles={"padding": "16px"}
+                    )]
+                    _inspector_modal.show()
+
+                    def _load_gui_log(_path=path):
+                        try:
+                            with open(_path, encoding="utf-8", errors="replace") as f:
+                                return f.read()
+                        except OSError as e:
+                            return f"Could not read log: {e}"
+
+                    loop = asyncio.get_event_loop()
+                    log_text = await loop.run_in_executor(None, _load_gui_log)
+                    _modal_body[:] = [pn.pane.HTML(
+                        _log_modal_html(log_text), sizing_mode="stretch_both"
+                    )]
+                    return
+
+                if col == "Rig Manifest":
+                    rig = str(row.get("_rig_manifest_rig", ""))
+                    if not rig:
+                        return
+                    sname = str(row.get("_watchdog_sname", ""))
+                    watchdog_log_path = os.path.join(
+                        AIND_LOGS_DIR, "watchdog_logs", f"{rig}_aind-watchdog-service.log"
+                    )
+                    _modal_body[:] = [pn.pane.Markdown(
+                        f"🔍 Loading watchdog log for **{rig}**…", styles={"padding": "16px"}
+                    )]
+                    _inspector_modal.show()
+
+                    def _load_watchdog_log(_path=watchdog_log_path, _sname=sname, _rig=rig):
+                        if not os.path.exists(_path):
+                            return (
+                                f"No watchdog service log found for rig {_rig}.\n\n"
+                                f"Log would be at: {_path}"
+                            )
+                        try:
+                            with open(_path, encoding="utf-8", errors="replace") as f:
+                                lines = f.readlines()
+                        except OSError as e:
+                            return f"Could not read watchdog log: {e}"
+                        # Search for lines referencing this session by subject+date
+                        # (more specific than date alone; avoids matching all sessions that day)
+                        parts = _sname.split("_")
+                        terms = [_sname]
+                        if len(parts) >= 2:
+                            terms.append(f"{parts[0]}_{parts[1]}")  # subject_date
+                        matching = [l for l in lines if any(t in l for t in terms)]
+                        if not matching:
+                            return (
+                                f"No watchdog log entries found for {_sname}.\n\n"
+                                f"The rig may not have been running the watchdog service "
+                                f"when this session was uploaded, or the log has been rotated."
+                            )
+                        return "".join(matching)
+
+                    loop = asyncio.get_event_loop()
+                    log_text = await loop.run_in_executor(None, _load_watchdog_log)
+                    _modal_body[:] = [pn.pane.HTML(
+                        _log_modal_html(log_text), sizing_mode="stretch_both"
+                    )]
+                    return
+
                 if col == "Watchdog":
                     sname = str(row.get("_watchdog_sname", ""))
                     events = _wd_events.get(sname, [])
@@ -1566,11 +1922,10 @@ def build_panel_app():
     legend = pn.pane.Markdown(
         "**Status:** ✅ complete/registered &nbsp;&nbsp; "
         "❌ failed &nbsp;&nbsp; "
-        "⏳ running/queued &nbsp;&nbsp; "
+        "⏳ running/queued/pending &nbsp;&nbsp; "
         "⬜ not yet reached &nbsp;&nbsp; "
         "— not applicable &nbsp;&nbsp; "
-        "_(not yet implemented)_ coming soon &nbsp;&nbsp; "
-        "_DTS and asset cells open an inline viewer._",
+        "_Rig Log opens the GUI acquisition log; Rig Manifest shows watchdog status and opens the watchdog service log. DTS and asset cells open an inline viewer._",
         styles={
             "background": "#f0f4ff",
             "padding": "8px 12px",
