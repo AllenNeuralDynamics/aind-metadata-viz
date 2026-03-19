@@ -977,8 +977,14 @@ def build_session_table(
     for c in derived_columns:
         derived_col_list.append(_co_log_col_name(c["label"]))
         derived_col_list.append(c["label"])
-    hidden_cols = ["_dts_url", "_name_Raw Asset"] + [f"_name_{c['label']}" for c in derived_columns]
-    return pd.DataFrame(rows, columns=fixed_cols + derived_col_list + hidden_cols)
+    hidden_cols = (
+        ["_dts_url", "_watchdog_sname", "_name_Raw Asset"]
+        + [f"_name_{c['label']}" for c in derived_columns]
+    )
+    return (
+        pd.DataFrame(rows, columns=fixed_cols + derived_col_list + hidden_cols),
+        watchdog_events,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1103,7 +1109,7 @@ def build_panel_app():
         status_md.object = base_status
 
         try:
-            df = build_session_table(
+            df, watchdog_events = build_session_table(
                 dts_jobs, all_records, job_types, derived_columns, date_from, date_to
             )
         except Exception as exc:
@@ -1143,7 +1149,7 @@ def build_panel_app():
 
             def on_cell_click(
                 event, _df=df, _co_log_cols=co_log_col_names,
-                _date_from=date_from, _date_to=date_to,
+                _wd_events=watchdog_events,
             ):
                 row = _df.iloc[event.row]
                 col = event.column
@@ -1153,13 +1159,13 @@ def build_panel_app():
 
                 if col == "Watchdog":
                     sname = str(row.get("_watchdog_sname", ""))
-                    events = fetch_watchdog_events(_date_from, _date_to).get(sname, [])
+                    events = _wd_events.get(sname, [])
                     if not events:
                         return
                     lines = [
                         f"**{e['datetime']}** &nbsp; {e['source'].split('/')[0].strip()} &nbsp; "
                         f"{'❌' if e['action'].lower().startswith('error') else '✅'} {e['action']}"
-                        for e in events
+                        for e in reversed(events)
                     ]
                     _modal_body[:] = [pn.pane.Markdown(
                         f"**Watchdog events: {sname}**\n\n" + "\n\n".join(lines),
