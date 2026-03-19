@@ -46,6 +46,7 @@ import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+import html as _html
 
 import requests as req
 import pandas as pd
@@ -68,6 +69,7 @@ load_dotenv()  # picks up .env in the working directory (or any parent)
 _CO_DOMAIN: str = os.environ.get("CODEOCEAN_DOMAIN", "")
 _co_client: CodeOcean | None = None
 _co_url_cache: dict[str, str | None] = {}
+_co_derived_id_cache: dict[str, str | None] = {}
 
 
 def _get_co_client() -> CodeOcean | None:
@@ -106,10 +108,13 @@ def get_co_output_url(asset_name: str) -> str | None:
         )
         if asset is None:
             result: str | None = None
+            _co_derived_id_cache[asset_name] = None
         elif asset.state != DataAssetState.Ready:
             result = "pending"
+            _co_derived_id_cache[asset_name] = asset.id
         else:
             result = f"{_CO_DOMAIN}/data-assets/{asset.id}/{asset.name}/output"
+            _co_derived_id_cache[asset_name] = asset.id
     except Exception as e:
         logger.warning("CO log lookup failed for %s: %s", asset_name, e)
         result = None
@@ -340,9 +345,9 @@ PROJECT_CONFIG: dict[str, dict] = {
         "docdb_project_names": ["Cognitive flexibility in patch foraging"],
         "docdb_versions": ["v2"],
         "derived_columns": [
-            {"label": "Behavior Asset", "modalities": {"behavior"},
+            {"label": "Behavior Metadata Record", "modalities": {"behavior"},
              "co_pipeline_capsule_id": "da8785b1-1597-41c6-af30-5844f52d4947"},
-            {"label": "FIP Asset",      "modalities": {"fib", "fiber"},
+            {"label": "FIB Metadata Record",      "modalities": {"fib", "fiber"},
              "co_pipeline_capsule_id": "9f8af19f-d107-488d-a3c1-a1f9db29401f"},
         ],
     },
@@ -360,11 +365,13 @@ PROJECT_CONFIG: dict[str, dict] = {
         "docdb_name_regex": "^behavior_",
         "docdb_versions": ["v1", "v2"],
         "derived_columns": [
-            {"label": "Behavior Asset", "modalities": {"behavior"},
-             "co_pipeline_capsule_id": "250cf9b5-f438-4d31-9bbb-ba29dab47d56"},
-            {"label": "Video Asset",    "modalities": {"behavior-videos"}},
-            {"label": "FIP Asset",      "modalities": {"fib", "fiber"},
-             "co_pipeline_capsule_id": "250cf9b5-f438-4d31-9bbb-ba29dab47d56"},
+            {
+                "label": "Derived Asset Metadata",
+                "modalities": {"behavior", "fib", "fiber", "behavior-videos"},
+                "co_pipeline_capsule_id": "250cf9b5-f438-4d31-9bbb-ba29dab47d56",
+                "co_log_col": "CO Pipeline Log",
+                "co_asset_col": "CO Derived Asset",
+            },
         ],
     },
 }
@@ -574,8 +581,18 @@ def asset_cell(name: str | None) -> str:
 
 
 def _co_log_col_name(derived_label: str) -> str:
-    """'Behavior Asset' → 'Behavior Log', 'FIP Asset' → 'FIP Log'"""
-    return f"{derived_label.split()[0]} Log"
+    """'Behavior Metadata Record' → 'Behavior CO Log', etc."""
+    return f"{derived_label.split()[0]} CO Log"
+
+
+def _col_co_log_name(col: dict) -> str:
+    """Return CO log column name, respecting optional 'co_log_col' override."""
+    return col.get("co_log_col") or _co_log_col_name(col["label"])
+
+
+def _col_co_asset_name(col: dict) -> str:
+    """Return CO derived asset link column name, respecting optional 'co_asset_col' override."""
+    return col.get("co_asset_col") or f"CO Derived {col['label'].split()[0]} Asset"
 
 
 def co_log_cell(co_url: str | None) -> str:
@@ -586,6 +603,48 @@ def co_log_cell(co_url: str | None) -> str:
         return (
             f'<a href="{co_url}" target="_blank" rel="noopener noreferrer" '
             f'style="color:#1a73e8;text-decoration:underline">🔗 view log</a>'
+        )
+    return "⬜"
+
+
+def _log_modal_html(log_text: str) -> str:
+    """Render pipeline log text with a copy-to-clipboard button for the modal."""
+    # Escape for HTML display and for embedding in a JS template literal.
+    displayed = _html.escape(log_text)
+    js_text = (
+        log_text
+        .replace("\\", "\\\\")
+        .replace("`", "\\`")
+        .replace("${", "\\${")
+    )
+    return f"""
+<div style="display:flex;flex-direction:column;height:100%;padding:8px;box-sizing:border-box">
+  <div style="margin-bottom:8px;flex-shrink:0">
+    <button
+      style="padding:4px 12px;cursor:pointer;font-size:13px"
+      onclick="
+        navigator.clipboard.writeText(`{js_text}`)
+          .then(() => {{
+            this.textContent = '✅ Copied!';
+            setTimeout(() => {{ this.textContent = '📋 Copy to clipboard'; }}, 2000);
+          }})
+          .catch(() => {{ this.textContent = '❌ Copy failed'; }});
+      ">📋 Copy to clipboard</button>
+  </div>
+  <pre style="flex:1;overflow:auto;white-space:pre-wrap;word-wrap:break-word;
+              background:#f8f8f8;padding:8px;font-size:12px;margin:0;
+              border:1px solid #ddd;border-radius:4px">{displayed}</pre>
+</div>
+"""
+
+
+def co_asset_link_cell(asset_id: str | None, asset_name: str) -> str:
+    """Render a Code Ocean data-asset folder link."""
+    if asset_id and asset_name:
+        url = f"{_CO_DOMAIN}/data-assets/{asset_id}/{asset_name}/data"
+        return (
+            f'<a href="{url}" target="_blank" rel="noopener noreferrer" '
+            f'style="color:#1a73e8;text-decoration:underline">🔗 view data</a>'
         )
     return "⬜"
 
@@ -861,18 +920,25 @@ def build_session_table(
         else:
             derived_by_session.setdefault(sname, []).append(r)
 
-    # Parallel CO URL lookup for all derived assets found in DocDB.
-    # Results go into _co_url_cache; subsequent table builds use the cache.
+    # Parallel CO lookup for all derived assets — populates _co_url_cache and
+    # _co_derived_id_cache so both log-link and data-link columns are ready.
     all_derived_names = {
         r["name"]
         for records in derived_by_session.values()
         for r in records
     }
-    if _get_co_client() is not None and all_derived_names:
-        uncached = [n for n in all_derived_names if n not in _co_url_cache]
-        if uncached:
-            with ThreadPoolExecutor(max_workers=10) as executor:
-                list(executor.map(get_co_output_url, uncached))
+    all_raw_names = {r["name"] for r in raw_by_session.values() if r.get("name")}
+    if _get_co_client() is not None:
+        if all_derived_names:
+            uncached = [n for n in all_derived_names if n not in _co_url_cache]
+            if uncached:
+                with ThreadPoolExecutor(max_workers=10) as executor:
+                    list(executor.map(get_co_output_url, uncached))
+        if all_raw_names:
+            uncached_raw = [n for n in all_raw_names if n not in _co_raw_id_cache]
+            if uncached_raw:
+                with ThreadPoolExecutor(max_workers=10) as executor:
+                    list(executor.map(get_raw_co_asset_id, uncached_raw))
 
     # DTS sessions: date-filtered by execution_date via the API — include all.
     # DocDB-only sessions: filter by the date encoded in the session name.
@@ -964,15 +1030,19 @@ def build_session_table(
             "_watchdog_sname": sname,
             "DTS Upload": dts_html,
             "_dts_url": dts_url,
-            "Raw Asset": asset_cell(raw_name or None),
-            "_name_Raw Asset": raw_name,
+            "Raw Asset Metadata": asset_cell(raw_name or None),
+            "_name_Raw Asset Metadata": raw_name,
+            "CO Raw Asset": co_asset_link_cell(_co_raw_id_cache.get(raw_name), raw_name),
         }
         for col in derived_columns:
-            co_log_col = _co_log_col_name(col["label"])
+            co_log_col = _col_co_log_name(col)
+            co_asset_col = _col_co_asset_name(col)
             if expected is not None and not col["modalities"] & expected:
                 row[co_log_col] = "—"
+                row[co_asset_col] = "—"
                 row[col["label"]] = "—"
                 row[f"_name_{col['label']}"] = ""
+                row[f"_comp_id_{col['label']}"] = ""
             else:
                 record = next(
                     (r for r in derived if col["modalities"] & set(get_modalities(r))),
@@ -1003,19 +1073,25 @@ def build_session_table(
                         row[co_log_col] = "⬜"
                         row[comp_id_key] = ""
 
+                # CO derived asset data-folder link
+                row[co_asset_col] = co_asset_link_cell(
+                    _co_derived_id_cache.get(name), name
+                )
+
                 row[col["label"]] = asset_cell(name or None)
                 row[f"_name_{col['label']}"] = name
 
         rows.append(row)
 
     fixed_cols = ["Subject", "Session Date", "Modalities", "Session Name",
-                  "Rig Log", "Watchdog", "DTS Upload", "Raw Asset"]
+                  "Rig Log", "Watchdog", "DTS Upload", "Raw Asset Metadata", "CO Raw Asset"]
     derived_col_list = []
     for c in derived_columns:
-        derived_col_list.append(_co_log_col_name(c["label"]))
+        derived_col_list.append(_col_co_log_name(c))
         derived_col_list.append(c["label"])
+        derived_col_list.append(_col_co_asset_name(c))
     hidden_cols = (
-        ["_dts_url", "_watchdog_sname", "_name_Raw Asset"]
+        ["_dts_url", "_watchdog_sname", "_name_Raw Asset Metadata"]
         + [f"_name_{c['label']}" for c in derived_columns]
         + [f"_comp_id_{c['label']}" for c in derived_columns]
     )
@@ -1160,30 +1236,32 @@ def build_panel_app():
         if df.empty:
             table_col[:] = [pn.pane.Markdown("_No sessions found for the selected filters._")]
         else:
-            co_log_col_names = {_co_log_col_name(c["label"]) for c in derived_columns}
+            co_log_col_names = {_col_co_log_name(c) for c in derived_columns}
             # Map CO log column → hidden comp_id column for failed log lookups.
             co_log_comp_id_col = {
-                _co_log_col_name(c["label"]): f"_comp_id_{c['label']}"
+                _col_co_log_name(c): f"_comp_id_{c['label']}"
                 for c in derived_columns
             }
             # Map CO log column → capsule_id for on-demand pending lookups.
             co_log_capsule_col = {
-                _co_log_col_name(c["label"]): c.get("co_pipeline_capsule_id", "")
+                _col_co_log_name(c): c.get("co_pipeline_capsule_id", "")
                 for c in derived_columns
             }
             # Map CO log column → hidden asset name column.
             # Non-empty name means the cell has a <a href> link — browser handles it.
             co_log_name_col = {
-                _co_log_col_name(c["label"]): f"_name_{c['label']}"
+                _col_co_log_name(c): f"_name_{c['label']}"
                 for c in derived_columns
             }
             html_cols = (
-                ["Rig Log", "Watchdog", "DTS Upload", "Raw Asset"]
+                ["Rig Log", "Watchdog", "DTS Upload", "Raw Asset Metadata",
+                 "CO Raw Asset"]
                 + list(co_log_col_names)
                 + [c["label"] for c in derived_columns]
+                + [_col_co_asset_name(c) for c in derived_columns]
             )
             hidden_cols = (
-                ["_dts_url", "_watchdog_sname", "_name_Raw Asset"]
+                ["_dts_url", "_watchdog_sname", "_name_Raw Asset Metadata"]
                 + [f"_name_{c['label']}" for c in derived_columns]
                 + [f"_comp_id_{c['label']}" for c in derived_columns]
             )
@@ -1199,6 +1277,7 @@ def build_panel_app():
                 stylesheets=["""
                     .tabulator-row:nth-child(even) { background-color: #f5f5f5 !important; }
                     .tabulator-row:nth-child(even):hover { background-color: #e8e8e8 !important; }
+                    .tabulator-col-title { white-space: normal !important; word-wrap: break-word; }
                 """],
             )
 
@@ -1230,7 +1309,7 @@ def build_panel_app():
                         # ⚠️ / ⏳ cell — show modal immediately then search.
                         capsule_id = _co_log_capsule.get(col, "")
                         sname = str(row.get("_watchdog_sname", ""))
-                        raw_name = str(row.get("_name_Raw Asset", ""))
+                        raw_name = str(row.get("_name_Raw Asset Metadata", ""))
                         if not capsule_id or not sname:
                             return
                         sdt = session_datetime(sname)
@@ -1346,15 +1425,17 @@ def build_panel_app():
                     if co is None:
                         return
 
-                    def _get_urls():
-                        return co.computations.get_result_file_urls(comp_id, "output")
+                    def _fetch_log_text():
+                        urls = co.computations.get_result_file_urls(comp_id, "output")
+                        r = req.get(urls.view_url, timeout=30)
+                        r.raise_for_status()
+                        return r.text
 
                     loop = asyncio.get_event_loop()
                     try:
-                        urls = await loop.run_in_executor(None, _get_urls)
+                        log_text = await loop.run_in_executor(None, _fetch_log_text)
                         _modal_body[:] = [pn.pane.HTML(
-                            f'<iframe src="{urls.view_url}" '
-                            'style="width:100%;min-height:85vh;border:none;"></iframe>',
+                            _log_modal_html(log_text),
                             sizing_mode="stretch_both",
                         )]
                     except Exception as exc:
