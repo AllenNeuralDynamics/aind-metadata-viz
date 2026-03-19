@@ -1876,14 +1876,16 @@ def build_panel_app():
         pn.state.location.sync(date_from_picker, {"value": "date_from"})
         pn.state.location.sync(date_to_picker, {"value": "date_to"})
 
-        # Auto-run when URL params arrive from the browser.  pn.state.onload fires
-        # before the browser sends location data, so we watch location.search instead.
-        _initial_load_done = [False]
+        # Pre-fill fields from URL params when they arrive from the browser.
+        # pn.state.onload fires before location data is available, so we watch
+        # location.search.  We only apply params once (on first non-empty search
+        # string) and never auto-trigger a load — the user must click Load Sessions.
+        _params_applied = [False]
 
         def _on_search_arrive(event):
-            if _initial_load_done[0] or not event.new:
+            if _params_applied[0] or not event.new:
                 return
-            _initial_load_done[0] = True
+            _params_applied[0] = True
             from urllib.parse import parse_qs
             params = parse_qs(event.new.lstrip("?"))
             if not params:
@@ -1908,7 +1910,6 @@ def build_panel_app():
                     ).date()
                 except ValueError:
                     pass
-            on_load()
 
         pn.state.location.param.watch(_on_search_arrive, "search")
 
