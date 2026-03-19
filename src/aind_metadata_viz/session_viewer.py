@@ -119,12 +119,6 @@ def get_co_output_url(asset_name: str) -> str | None:
 
 _co_raw_id_cache: dict[str, str | None] = {}
 _co_computation_status_cache: dict[tuple[str, str], str | None] = {}
-# co_asset_id → raw asset name (for reversing failed computation lookups).
-_co_asset_name_cache: dict[str, str | None] = {}
-# Capsule scan cache: capsule_id → (scan_time, {raw_asset_name: status})
-# Refreshed if older than _CAPSULE_SCAN_TTL seconds.
-_co_capsule_scan_cache: dict[str, tuple[float, dict[str, str]]] = {}
-_CAPSULE_SCAN_TTL = 600  # 10 minutes
 
 
 def get_raw_co_asset_id(raw_asset_name: str) -> str | None:
@@ -897,6 +891,33 @@ def build_session_table(
         logger.warning("Watchdog fetch failed: %s", e)
         watchdog_events = {}
 
+    # Sessions with DTS success but no derived asset: mark for on-demand click lookup.
+    # The {(sname, col_label): session_ts} map is used at render time to decide
+    # whether to show "⏳ running" (recent) vs "⚠️ check log?" (pipeline should be done).
+    import time as _time
+    pending_session_ts: dict[tuple[str, str], float] = {}
+    _now_ts = _time.time()
+    for sname in all_sessions:
+        dts_job = dts_by_name.get(sname)
+        if not dts_job or dts_job.get("job_state") != "success":
+            continue
+        raw = raw_by_session.get(sname)
+        if not raw:
+            continue
+        derived = derived_by_session.get(sname, [])
+        job_type = dts_job.get("job_type")
+        expected = job_types[job_type]["expected_pipelines"] if job_type else None
+        sdt = session_datetime(sname)
+        session_ts = sdt.timestamp() if sdt else 0.0
+        for col in derived_columns:
+            if not col.get("co_pipeline_capsule_id"):
+                continue
+            if expected is not None and not col["modalities"] & expected:
+                continue
+            if any(col["modalities"] & set(get_modalities(r)) for r in derived):
+                continue
+            pending_session_ts[(sname, col["label"])] = session_ts
+
     _epoch = datetime.min.replace(tzinfo=timezone.utc)
 
     rows = []
@@ -960,16 +981,27 @@ def build_session_table(
                 name = record["name"] if record else ""
 
                 # CO log cell
+                comp_id_key = f"_comp_id_{col['label']}"
                 if name:
                     row[co_log_col] = co_log_cell(_co_url_cache.get(name))
-                elif (
-                    dts_job
-                    and dts_job.get("job_state") == "success"
-                    and (expected is None or bool(col["modalities"] & expected))
-                ):
-                    row[co_log_col] = "⏳ pending"
+                    row[comp_id_key] = ""
                 else:
-                    row[co_log_col] = "⬜"
+                    session_ts = pending_session_ts.get((sname, col["label"]))
+                    if session_ts is not None:
+                        age_hours = (_now_ts - session_ts) / 3600
+                        if age_hours > 8:
+                            row[co_log_col] = (
+                                '<span style="cursor:pointer;color:#a60">'
+                                "⚠️ check log?</span>"
+                            )
+                        else:
+                            row[co_log_col] = (
+                                '<span style="cursor:pointer">⏳ running</span>'
+                            )
+                        row[comp_id_key] = ""
+                    else:
+                        row[co_log_col] = "⬜"
+                        row[comp_id_key] = ""
 
                 row[col["label"]] = asset_cell(name or None)
                 row[f"_name_{col['label']}"] = name
@@ -985,6 +1017,7 @@ def build_session_table(
     hidden_cols = (
         ["_dts_url", "_watchdog_sname", "_name_Raw Asset"]
         + [f"_name_{c['label']}" for c in derived_columns]
+        + [f"_comp_id_{c['label']}" for c in derived_columns]
     )
     return (
         pd.DataFrame(rows, columns=fixed_cols + derived_col_list + hidden_cols),
@@ -1128,6 +1161,16 @@ def build_panel_app():
             table_col[:] = [pn.pane.Markdown("_No sessions found for the selected filters._")]
         else:
             co_log_col_names = {_co_log_col_name(c["label"]) for c in derived_columns}
+            # Map CO log column → hidden comp_id column for failed log lookups.
+            co_log_comp_id_col = {
+                _co_log_col_name(c["label"]): f"_comp_id_{c['label']}"
+                for c in derived_columns
+            }
+            # Map CO log column → capsule_id for on-demand pending lookups.
+            co_log_capsule_col = {
+                _co_log_col_name(c["label"]): c.get("co_pipeline_capsule_id", "")
+                for c in derived_columns
+            }
             html_cols = (
                 ["Rig Log", "Watchdog", "DTS Upload", "Raw Asset"]
                 + list(co_log_col_names)
@@ -1136,6 +1179,7 @@ def build_panel_app():
             hidden_cols = (
                 ["_dts_url", "_watchdog_sname", "_name_Raw Asset"]
                 + [f"_name_{c['label']}" for c in derived_columns]
+                + [f"_comp_id_{c['label']}" for c in derived_columns]
             )
             tab = pn.widgets.Tabulator(
                 df,
@@ -1152,15 +1196,162 @@ def build_panel_app():
                 """],
             )
 
-            def on_cell_click(
+            async def on_cell_click(
                 event, _df=df, _co_log_cols=co_log_col_names,
                 _wd_events=watchdog_events,
+                _co_log_comp_id=co_log_comp_id_col,
+                _co_log_capsule=co_log_capsule_col,
             ):
+                import asyncio
                 row = _df.iloc[event.row]
                 col = event.column
 
                 if col in _co_log_cols:
-                    return  # <a href target="_blank"> handles the click
+                    # For failed computations open the pipeline log in the modal;
+                    # for successful ones the <a href> link handles the click.
+                    comp_id_col = _co_log_comp_id.get(col, "")
+                    if not comp_id_col or comp_id_col not in _df.columns:
+                        return
+                    comp_id = str(row.get(comp_id_col, ""))
+
+                    if not comp_id:
+                        # ⚠️ / ⏳ cell — show modal immediately then search.
+                        capsule_id = _co_log_capsule.get(col, "")
+                        sname = str(row.get("_watchdog_sname", ""))
+                        raw_name = str(row.get("_name_Raw Asset", ""))
+                        if not capsule_id or not sname:
+                            return
+                        sdt = session_datetime(sname)
+                        if sdt is None:
+                            return
+                        session_ts = sdt.timestamp()
+                        co = _get_co_client()
+                        if co is None:
+                            return
+
+                        # Show modal immediately so the user gets feedback.
+                        _modal_body[:] = [pn.pane.Markdown(
+                            "🔍 Searching for pipeline log…",
+                            styles={"padding": "16px"},
+                        )]
+                        _inspector_modal.show()
+
+                        def _find_comp() -> tuple[str, str]:
+                            """Sync search; runs in thread pool.
+
+                            Returns (comp_id, message) where comp_id is empty on
+                            failure and message explains the outcome.
+
+                            Strategy:
+                            1. Collect all comps in the session time window.
+                            2. If none → pipeline was never triggered.
+                            3. Filter to failed comps.
+                            4. If none (only successes) → pipeline ran but DocDB
+                               hasn't picked up the derived asset yet.
+                            5. For each failed comp, fetch log and search for the
+                               subject ID — reliable even when data_assets is None.
+                            6. Only fall back to timing if exactly one candidate.
+                            """
+                            win_lo = session_ts - 3600
+                            win_hi = session_ts + 86400
+                            subject_id, _ = parse_session_name(sname)
+                            all_window: list = []
+                            failed: list = []
+                            try:
+                                for comp in co.capsules.list_computations(capsule_id):
+                                    if not (win_lo <= comp.created <= win_hi):
+                                        continue
+                                    all_window.append(comp)
+                                    is_success = (
+                                        comp.state.value == "completed"
+                                        and comp.exit_code == 0
+                                        and comp.has_results is not False
+                                    )
+                                    is_running = comp.state.value in (
+                                        "running", "initializing", "finalizing"
+                                    )
+                                    if not is_success and not is_running:
+                                        failed.append(comp)
+                            except Exception as exc:
+                                logger.warning("list_computations failed: %s", exc)
+                                return "", "Error searching for pipeline log."
+
+                            if not all_window:
+                                return "", (
+                                    "No pipeline run found for this session. "
+                                    "The pipeline may not have been triggered."
+                                )
+                            if not failed:
+                                return "", (
+                                    "The pipeline ran successfully for sessions in "
+                                    "this time window, but the derived asset has not "
+                                    "yet been registered in DocDB."
+                                )
+
+                            # Search failed comp logs for the subject ID.
+                            if subject_id:
+                                for comp in failed:
+                                    try:
+                                        urls = co.computations.get_result_file_urls(
+                                            comp.id, "output"
+                                        )
+                                        r = req.get(urls.view_url, timeout=15)
+                                        if r.ok and subject_id in r.text:
+                                            return comp.id, ""
+                                    except Exception as exc:
+                                        logger.warning(
+                                            "Log fetch for %s failed: %s",
+                                            comp.id, exc,
+                                        )
+
+                            # Unambiguous timing fallback.
+                            if len(failed) == 1:
+                                return failed[0].id, ""
+
+                            return "", (
+                                f"Found {len(failed)} failed pipeline run(s) in this "
+                                "time window, but none reference this session. "
+                                "The pipeline may not have been triggered for this session."
+                            )
+
+                        loop = asyncio.get_event_loop()
+                        comp_id, msg = await loop.run_in_executor(None, _find_comp)
+                        if not comp_id:
+                            _modal_body[:] = [pn.pane.Markdown(
+                                msg or "No pipeline log found for this session.",
+                                styles={"padding": "16px"},
+                            )]
+                            return
+                    else:
+                        # ❌ comp_id already known — show loading modal now.
+                        _modal_body[:] = [pn.pane.Markdown(
+                            "🔍 Loading pipeline log…",
+                            styles={"padding": "16px"},
+                        )]
+                        _inspector_modal.show()
+
+                    co = _get_co_client()
+                    if co is None:
+                        return
+
+                    def _get_urls():
+                        return co.computations.get_result_file_urls(comp_id, "output")
+
+                    loop = asyncio.get_event_loop()
+                    try:
+                        urls = await loop.run_in_executor(None, _get_urls)
+                        _modal_body[:] = [pn.pane.HTML(
+                            f'<iframe src="{urls.view_url}" '
+                            'style="width:100%;min-height:85vh;border:none;"></iframe>',
+                            sizing_mode="stretch_both",
+                        )]
+                    except Exception as exc:
+                        logger.warning("Failed to get computation log: %s", exc)
+                        _modal_body[:] = [pn.pane.Markdown(
+                            f"Failed to load pipeline log: {exc}",
+                            styles={"padding": "16px"},
+                        )]
+                    return
 
                 if col == "Watchdog":
                     sname = str(row.get("_watchdog_sname", ""))
@@ -1204,7 +1395,12 @@ def build_panel_app():
                                          styles={"overflow": "auto", "max-height": "88vh"})
                 _modal_body[:] = [title, json_pane]
                 _inspector_modal.show()
-                record = get_full_record(asset_name)
+
+                def _fetch_record():
+                    return get_full_record(asset_name)
+
+                loop = asyncio.get_event_loop()
+                record = await loop.run_in_executor(None, _fetch_record)
                 json_pane.object = (
                     sort_record_for_display(json.loads(json.dumps(record, default=str)))
                     if record else {"error": f"Record not found: {asset_name}"}
