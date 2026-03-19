@@ -273,6 +273,11 @@ def fetch_watchdog_events(date_from, date_to) -> dict[str, list[dict]]:
         sname = get_session_name(raw_name)
         if not sname:
             continue
+        # Normalize T/Z timestamp format: '841302_2026-03-17T202227Z'
+        #   → '841302_2026-03-17_20-22-27' to match DTS/DocDB session keys.
+        tz_m = _re.match(r"^(\d+_\d{4}-\d{2}-\d{2})T(\d{2})(\d{2})(\d{2})Z$", sname)
+        if tz_m:
+            sname = f"{tz_m.group(1)}_{tz_m.group(2)}-{tz_m.group(3)}-{tz_m.group(4)}"
         action_m = _re.match(r"(Action|Error),\s*([^,]+)", msg)
         event = {
             "datetime": row[0] if row else "",
