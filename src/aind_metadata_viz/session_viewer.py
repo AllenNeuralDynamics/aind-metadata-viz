@@ -1171,6 +1171,12 @@ def build_panel_app():
                 _co_log_col_name(c["label"]): c.get("co_pipeline_capsule_id", "")
                 for c in derived_columns
             }
+            # Map CO log column → hidden asset name column.
+            # Non-empty name means the cell has a <a href> link — browser handles it.
+            co_log_name_col = {
+                _co_log_col_name(c["label"]): f"_name_{c['label']}"
+                for c in derived_columns
+            }
             html_cols = (
                 ["Rig Log", "Watchdog", "DTS Upload", "Raw Asset"]
                 + list(co_log_col_names)
@@ -1201,14 +1207,20 @@ def build_panel_app():
                 _wd_events=watchdog_events,
                 _co_log_comp_id=co_log_comp_id_col,
                 _co_log_capsule=co_log_capsule_col,
+                _co_log_name=co_log_name_col,
             ):
                 import asyncio
                 row = _df.iloc[event.row]
                 col = event.column
 
                 if col in _co_log_cols:
-                    # For failed computations open the pipeline log in the modal;
-                    # for successful ones the <a href> link handles the click.
+                    # If the cell has a CO link (<a href>), the browser already
+                    # handles the click — skip the modal entirely.
+                    name_col = _co_log_name.get(col, "")
+                    if name_col and str(row.get(name_col, "")):
+                        return
+
+                    # For failed/pending computations open the pipeline log in modal.
                     comp_id_col = _co_log_comp_id.get(col, "")
                     if not comp_id_col or comp_id_col not in _df.columns:
                         return
