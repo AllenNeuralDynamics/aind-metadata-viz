@@ -199,6 +199,108 @@ def get_co_computation_status(
 pn.extension("tabulator", "modal")
 
 # ---------------------------------------------------------------------------
+# Watchdog log integration  (eng-logtools:8080)
+# ---------------------------------------------------------------------------
+
+_WATCHDOG_URL = "http://eng-logtools:8080/dstest"
+_watchdog_cache: dict[str, tuple[float, dict[str, list]]] = {}
+_WATCHDOG_TTL = 300  # 5 minutes
+
+
+def _query_watchdog_dstest(message_filter: str, length: int = 2000) -> list:
+    """POST to the eng-logtools DataTables endpoint. Returns list of row arrays."""
+    cols = ["date", "source", "channel", "version", "level", "location", "message", "count"]
+    body: dict[str, str] = {
+        "draw": "1", "start": "0", "length": str(length),
+        "search[value]": "", "search[regex]": "false",
+        "order[0][column]": "0", "order[0][dir]": "desc",
+    }
+    for i, name in enumerate(cols):
+        body[f"columns[{i}][data]"] = str(i)
+        body[f"columns[{i}][name]"] = name
+        body[f"columns[{i}][searchable]"] = "true"
+        body[f"columns[{i}][orderable]"] = "true"
+        body[f"columns[{i}][search][regex]"] = "true"
+        if name == "channel":
+            body[f"columns[{i}][search][value]"] = "watchdog"
+        elif name == "message":
+            body[f"columns[{i}][search][value]"] = message_filter
+        else:
+            body[f"columns[{i}][search][value]"] = ""
+    try:
+        r = req.post(
+            _WATCHDOG_URL, data=body,
+            headers={"X-Requested-With": "XMLHttpRequest"},
+            timeout=10,
+        )
+        return r.json().get("data", [])
+    except Exception as e:
+        logger.warning("Watchdog query failed: %s", e)
+        return []
+
+
+def fetch_watchdog_events(date_from, date_to) -> dict[str, list[dict]]:
+    """
+    Fetch watchdog log events for sessions whose names contain dates in
+    [date_from, date_to].  Returns {sname: [event_dict, ...]} newest-first.
+    Cached for _WATCHDOG_TTL seconds.
+    """
+    import re as _re
+    import time as _time
+
+    cache_key = f"{date_from}|{date_to}"
+    cached = _watchdog_cache.get(cache_key)
+    if cached and (_time.time() - cached[0]) < _WATCHDOG_TTL:
+        return cached[1]
+
+    # Build a regex that matches any YYYY-MM-DD in the date range.
+    dates: list[str] = []
+    d = date_from
+    while d <= date_to:
+        dates.append(d.strftime("%Y-%m-%d"))
+        d += timedelta(days=1)
+    date_regex = "|".join(dates)
+
+    rows = _query_watchdog_dstest(message_filter=date_regex)
+
+    events_by_session: dict[str, list[dict]] = {}
+    for row in rows:
+        msg = row[6] if len(row) > 6 else ""
+        m = _re.search(r"name,\s*([^\s,][^,]*)", msg)
+        if not m:
+            continue
+        raw_name = m.group(1).strip()
+        sname = get_session_name(raw_name)
+        if not sname:
+            continue
+        action_m = _re.match(r"(Action|Error),\s*([^,]+)", msg)
+        event = {
+            "datetime": row[0] if row else "",
+            "source": row[1] if len(row) > 1 else "",
+            "action": action_m.group(2).strip() if action_m else msg[:50],
+            "message": msg,
+        }
+        events_by_session.setdefault(sname, []).append(event)
+
+    _watchdog_cache[cache_key] = (_time.time(), events_by_session)
+    return events_by_session
+
+
+def watchdog_cell(events: list[dict]) -> str:
+    """Format the Watchdog column cell HTML."""
+    if not events:
+        return "⬜"
+    latest = events[0]  # newest-first
+    rig = latest["source"].split("/")[0].strip()
+    action = latest["action"]
+    icon = "❌" if action.lower().startswith("error") else "✅"
+    return (
+        f'<span style="cursor:pointer;white-space:nowrap">'
+        f"{icon} {rig}</span>"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
@@ -783,6 +885,13 @@ def build_session_table(
                 docdb_only.add(sname)
     all_sessions = set(dts_by_name.keys()) | docdb_only
 
+    # Fetch watchdog events for the date range (cached, ~0.4s on first call).
+    try:
+        watchdog_events = fetch_watchdog_events(date_from, date_to)
+    except Exception as e:
+        logger.warning("Watchdog fetch failed: %s", e)
+        watchdog_events = {}
+
     _epoch = datetime.min.replace(tzinfo=timezone.utc)
 
     rows = []
@@ -818,12 +927,15 @@ def build_session_table(
 
         raw_name = raw["name"] if raw else ""
         dts_html, dts_url = dts_cell(dts_job, within_14d)
+        wd_events = watchdog_events.get(sname, [])
         row: dict = {
             "Subject": subject_id,
             "Session Date": dt_str,
             "Modalities": modalities,
             "Session Name": display_name,
             "Rig Log": '<span style="color:#aaa;font-style:italic">(not yet implemented)</span>',
+            "Watchdog": watchdog_cell(wd_events),
+            "_watchdog_sname": sname,
             "DTS Upload": dts_html,
             "_dts_url": dts_url,
             "Raw Asset": asset_cell(raw_name or None),
@@ -860,7 +972,7 @@ def build_session_table(
         rows.append(row)
 
     fixed_cols = ["Subject", "Session Date", "Modalities", "Session Name",
-                  "Rig Log", "DTS Upload", "Raw Asset"]
+                  "Rig Log", "Watchdog", "DTS Upload", "Raw Asset"]
     derived_col_list = []
     for c in derived_columns:
         derived_col_list.append(_co_log_col_name(c["label"]))
@@ -1006,11 +1118,14 @@ def build_panel_app():
         else:
             co_log_col_names = {_co_log_col_name(c["label"]) for c in derived_columns}
             html_cols = (
-                ["Rig Log", "DTS Upload", "Raw Asset"]
+                ["Rig Log", "Watchdog", "DTS Upload", "Raw Asset"]
                 + list(co_log_col_names)
                 + [c["label"] for c in derived_columns]
             )
-            hidden_cols = ["_dts_url", "_name_Raw Asset"] + [f"_name_{c['label']}" for c in derived_columns]
+            hidden_cols = (
+                ["_dts_url", "_watchdog_sname", "_name_Raw Asset"]
+                + [f"_name_{c['label']}" for c in derived_columns]
+            )
             tab = pn.widgets.Tabulator(
                 df,
                 formatters={c: {"type": "html"} for c in html_cols if c in df.columns},
@@ -1026,12 +1141,33 @@ def build_panel_app():
                 """],
             )
 
-            def on_cell_click(event, _df=df, _co_log_cols=co_log_col_names):
+            def on_cell_click(
+                event, _df=df, _co_log_cols=co_log_col_names,
+                _date_from=date_from, _date_to=date_to,
+            ):
                 row = _df.iloc[event.row]
                 col = event.column
 
                 if col in _co_log_cols:
                     return  # <a href target="_blank"> handles the click
+
+                if col == "Watchdog":
+                    sname = str(row.get("_watchdog_sname", ""))
+                    events = fetch_watchdog_events(_date_from, _date_to).get(sname, [])
+                    if not events:
+                        return
+                    lines = [
+                        f"**{e['datetime']}** &nbsp; {e['source'].split('/')[0].strip()} &nbsp; "
+                        f"{'❌' if e['action'].lower().startswith('error') else '✅'} {e['action']}"
+                        for e in events
+                    ]
+                    _modal_body[:] = [pn.pane.Markdown(
+                        f"**Watchdog events: {sname}**\n\n" + "\n\n".join(lines),
+                        sizing_mode="stretch_width",
+                        styles={"overflow": "auto", "max-height": "88vh", "padding": "8px"},
+                    )]
+                    _inspector_modal.show()
+                    return
 
                 if col == "DTS Upload":
                     url = str(row.get("_dts_url", ""))
