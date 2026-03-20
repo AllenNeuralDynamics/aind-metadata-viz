@@ -414,6 +414,11 @@ docdb_client_v2 = MetadataDbClient(host="api.allenneuraldynamics.org", version="
 _DOCDB_CLIENTS = {"v1": docdb_client_v1, "v2": docdb_client_v2}
 
 logger = logging.getLogger("session_viewer")
+logger.setLevel(logging.INFO)
+if not logger.handlers:
+    _h = logging.StreamHandler()
+    _h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    logger.addHandler(_h)
 
 # ---------------------------------------------------------------------------
 # Tier 2 extension point: rig-side manifest / log detection
@@ -677,6 +682,9 @@ def co_asset_link_cell(asset_id: str | None, asset_name: str) -> str:
     return "⬜"
 
 
+_gui_dir_cache: dict[str, list[str]] = {}  # rig → sorted list of all .txt paths
+
+
 def find_gui_log_path(rig: str, session_name: str) -> str | None:
     """
     Find the GUI acquisition log file for a session on a given rig, or None.
@@ -689,6 +697,9 @@ def find_gui_log_path(rig: str, session_name: str) -> str | None:
     timestamps, and return the one with the latest start time that is still
     at or before the session timestamp (i.e. the GUI that was running when
     the session was saved).
+
+    Directory listings are cached per rig in _gui_dir_cache so that repeated
+    calls for different sessions on the same rig do not re-scan the network share.
     """
     import glob as _glob
     from datetime import datetime as _dt
@@ -696,14 +707,16 @@ def find_gui_log_path(rig: str, session_name: str) -> str | None:
     if len(parts) < 3:
         return None
     date_str, time_str = parts[1], parts[2]
-    pattern = os.path.join(AIND_LOGS_DIR, f"{rig}_gui_log", f"*{date_str}*.txt")
-    matches = _glob.glob(pattern)
+
+    if rig not in _gui_dir_cache:
+        all_files = _glob.glob(os.path.join(AIND_LOGS_DIR, f"{rig}_gui_log", "*.txt"))
+        _gui_dir_cache[rig] = sorted(all_files)
+
+    matches = [p for p in _gui_dir_cache[rig] if date_str in os.path.basename(p)]
     if not matches:
         return None
     if len(matches) == 1:
         return matches[0]
-    # Parse the timestamp from each filename and pick the closest one before
-    # the session timestamp.
     try:
         session_ts = _dt.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H-%M-%S")
     except ValueError:
@@ -722,7 +735,6 @@ def find_gui_log_path(rig: str, session_name: str) -> str | None:
     before = [(ts, p) for ts, p in candidates if ts <= session_ts]
     if before:
         return max(before, key=lambda x: x[0])[1]
-    # All logs are after session time — return the earliest
     return min(candidates, key=lambda x: x[0])[1]
 
 
@@ -1079,6 +1091,11 @@ def build_session_table(
     applied to DocDB-only sessions (those not present in DTS), so that sessions collected
     one day before the range start but uploaded within the range still show their raw asset.
     """
+    import time as _time
+    _t0 = _time.time()
+    def _elapsed(label: str) -> None:
+        logger.info("build_session_table [%.2fs] %s", _time.time() - _t0, label)
+
     now_utc = datetime.now(tz=timezone.utc)
     cutoff_14d = now_utc - timedelta(days=DTS_MAX_LOOKBACK_DAYS)
 
@@ -1109,25 +1126,7 @@ def build_session_table(
         else:
             derived_by_session.setdefault(sname, []).append(r)
 
-    # Parallel CO lookup for all derived assets — populates _co_url_cache and
-    # _co_derived_id_cache so both log-link and data-link columns are ready.
-    all_derived_names = {
-        r["name"]
-        for records in derived_by_session.values()
-        for r in records
-    }
-    all_raw_names = {r["name"] for r in raw_by_session.values() if r.get("name")}
-    if _get_co_client() is not None:
-        if all_derived_names:
-            uncached = [n for n in all_derived_names if n not in _co_url_cache]
-            if uncached:
-                with ThreadPoolExecutor(max_workers=10) as executor:
-                    list(executor.map(get_co_output_url, uncached))
-        if all_raw_names:
-            uncached_raw = [n for n in all_raw_names if n not in _co_raw_id_cache]
-            if uncached_raw:
-                with ThreadPoolExecutor(max_workers=10) as executor:
-                    list(executor.map(get_raw_co_asset_id, uncached_raw))
+    _elapsed(f"indexed {len(raw_by_session)} raw + {len(derived_by_session)} derived sessions from DocDB")
 
     # Filter both DTS and DocDB sessions by the date the session was actually
     # acquired (not the DTS execution_date, which reflects when the job ran and
@@ -1167,12 +1166,39 @@ def build_session_table(
 
     all_sessions = dts_in_range | docdb_only
 
+    _elapsed(f"session sets built: {len(dts_in_range)} DTS + {len(docdb_only)} DocDB-only")
+
+    # Parallel CO lookup — only for sessions in the filtered date range.
+    all_derived_names = {
+        r["name"]
+        for sname in all_sessions
+        for r in derived_by_session.get(sname, [])
+    }
+    all_raw_names = {
+        raw_by_session[sname]["name"]
+        for sname in all_sessions
+        if sname in raw_by_session and raw_by_session[sname].get("name")
+    }
+    if _get_co_client() is not None:
+        uncached_derived = [n for n in all_derived_names if n not in _co_url_cache]
+        uncached_raw = [n for n in all_raw_names if n not in _co_raw_id_cache]
+        if uncached_derived or uncached_raw:
+            with ThreadPoolExecutor(max_workers=20) as executor:
+                futures = (
+                    [executor.submit(get_co_output_url, n) for n in uncached_derived]
+                    + [executor.submit(get_raw_co_asset_id, n) for n in uncached_raw]
+                )
+                for f in futures:
+                    f.result()
+        _elapsed(f"CO lookups done ({len(uncached_derived)} derived, {len(uncached_raw)} raw)")
+
     # Fetch watchdog events for the date range (cached, ~0.4s on first call).
     try:
         watchdog_events = fetch_watchdog_events(date_from, date_to)
     except Exception as e:
         logger.warning("Watchdog fetch failed: %s", e)
         watchdog_events = {}
+    _elapsed("watchdog events fetched")
 
     # Sessions with DTS success but no derived asset: mark for on-demand click lookup.
     # The {(sname, col_label): session_ts} map is used at render time to decide
@@ -1353,6 +1379,8 @@ def build_session_table(
                 manifest_row[f"_name_{col['label']}"] = ""
                 manifest_row[f"_comp_id_{col['label']}"] = ""
             rows.append(manifest_row)
+
+    _elapsed(f"session loop done: {len(rows)} rows built")
 
     fixed_cols = ["Subject", "Session Date", "Modalities", "Session Name",
                   "Rig Log", "Rig Manifest", "Watchdog", "DTS Upload", "Raw Asset Metadata", "CO Raw Asset"]
