@@ -46,6 +46,7 @@ import json
 import logging
 import os
 import re
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 import html as _html
@@ -126,6 +127,85 @@ def get_co_output_url(asset_name: str) -> str | None:
 
 _co_raw_id_cache: dict[str, str | None] = {}
 _co_computation_status_cache: dict[tuple[str, str], str | None] = {}
+
+# Cache mapping input asset UUID -> computation run ID, built from list_computations.
+# Persisted to disk so it survives server restarts.
+_CO_RUN_CACHE_FILE = Path.home() / ".cache" / "aind_metadata_viz" / "co_pipeline_run_cache.json"
+
+# Keyed by pipeline_id so each pipeline maintains its own asset→run mapping and
+# newest_created watermark. Structure:
+#   { pipeline_id: { "asset_to_run": {asset_uuid: run_id}, "newest_created": int } }
+_co_run_cache: dict[str, dict] = {}
+
+
+def _load_co_run_cache() -> None:
+    """Load the per-pipeline run cache from disk into module-level state."""
+    global _co_run_cache
+    if _CO_RUN_CACHE_FILE.exists():
+        try:
+            _co_run_cache = json.loads(_CO_RUN_CACHE_FILE.read_text())
+            total = sum(len(v.get("asset_to_run", {})) for v in _co_run_cache.values())
+            logger.info("Loaded CO run cache: %d entries across %d pipeline(s)", total, len(_co_run_cache))
+        except Exception as e:
+            logger.warning("Failed to load CO run cache: %s", e)
+
+
+def _save_co_run_cache() -> None:
+    """Persist the per-pipeline run cache to disk."""
+    try:
+        _CO_RUN_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _CO_RUN_CACHE_FILE.write_text(json.dumps(_co_run_cache))
+    except Exception as e:
+        logger.warning("Failed to save CO run cache: %s", e)
+
+
+def _update_co_run_cache(pipeline_id: str) -> None:
+    """
+    Fetch new runs for a specific pipeline and add them to that pipeline's cache.
+
+    Each pipeline has its own asset→run mapping and newest_created watermark,
+    so updating one pipeline never affects the watermark of another.
+    """
+    co = _get_co_client()
+    if co is None:
+        return
+    try:
+        all_runs = co.capsules.list_computations(pipeline_id)
+    except Exception as e:
+        logger.warning("list_computations failed for %s: %s", pipeline_id, e)
+        return
+
+    pipeline_cache = _co_run_cache.setdefault(pipeline_id, {"asset_to_run": {}, "newest_created": 0})
+    newest_cached = pipeline_cache["newest_created"]
+    asset_to_run = pipeline_cache["asset_to_run"]
+
+    new_count = 0
+    for run in all_runs:
+        if run.created <= newest_cached:
+            break  # everything from here is already cached
+        for da in (run.data_assets or []):
+            asset_to_run[da.id] = run.id
+        if run.created > pipeline_cache["newest_created"]:
+            pipeline_cache["newest_created"] = run.created
+        new_count += 1
+
+    logger.info("CO run cache updated for pipeline %s: %d new runs, %d total entries",
+                pipeline_id, new_count, len(asset_to_run))
+    _save_co_run_cache()
+
+
+def _get_run_id_for_asset(asset_uuid: str, pipeline_id: str) -> str | None:
+    """
+    Return the computation run ID for a given raw asset UUID and pipeline.
+
+    Checks the in-memory cache for that pipeline first. On a miss, refreshes
+    the cache from the pipeline's computation history and tries again.
+    """
+    run_id = _co_run_cache.get(pipeline_id, {}).get("asset_to_run", {}).get(asset_uuid)
+    if run_id:
+        return run_id
+    _update_co_run_cache(pipeline_id)
+    return _co_run_cache.get(pipeline_id, {}).get("asset_to_run", {}).get(asset_uuid)
 
 
 def get_raw_co_asset_id(raw_asset_name: str) -> str | None:
@@ -419,6 +499,8 @@ if not logger.handlers:
     _h = logging.StreamHandler()
     _h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
     logger.addHandler(_h)
+
+_load_co_run_cache()
 
 # ---------------------------------------------------------------------------
 # Tier 2 extension point: rig-side manifest / log detection
@@ -836,6 +918,15 @@ def get_project_records(
     return result
 
 
+_DOCDB_BATCH_SIZE = 50  # max names per $in query to stay under URL size limits
+
+
+def _chunked(seq, size):
+    seq = list(seq)
+    for i in range(0, len(seq), size):
+        yield seq[i:i + size]
+
+
 @pn.cache(ttl=DTS_CACHE_TTL)
 def get_raw_records_by_names(
     names: tuple[str, ...],
@@ -846,6 +937,7 @@ def get_raw_records_by_names(
 
     Used in Phase 1 of two-phase loading: DTS job names are the exact
     DocDB raw asset names, so this query uses the name index (<0.2s).
+    Batched into chunks of _DOCDB_BATCH_SIZE to avoid 431 URL-too-large errors.
     Cached for 5 minutes to match DTS cache lifetime.
     """
     if not names:
@@ -865,13 +957,14 @@ def get_raw_records_by_names(
         if version not in versions:
             continue
         client = _DOCDB_CLIENTS[version]
-        records = client.retrieve_docdb_records(
-            filter_query={"name": {"$in": list(names)}},
-            projection=projection,
-            limit=0,
-        )
-        for r in records:
-            by_name[r.get("name", "")] = r
+        for chunk in _chunked(names, _DOCDB_BATCH_SIZE):
+            records = client.retrieve_docdb_records(
+                filter_query={"name": {"$in": chunk}},
+                projection=projection,
+                limit=0,
+            )
+            for r in records:
+                by_name[r.get("name", "")] = r
     logger.info("Phase 1 raw $in query", extra={"count": len(by_name), "names_queried": len(names)})
     return list(by_name.values())
 
@@ -888,7 +981,8 @@ def get_derived_records_by_input_names(
     data_description.input_data_name.  Using $in on this field gives us
     exactly the derived records for the sessions found in Phase 1.
     This field is not indexed so the query is slow (~5-8s) — call from
-    a background thread.  Cached for 1 hour.
+    a background thread.  Batched to avoid 431 URL-too-large errors.
+    Cached for 1 hour.
     """
     if not input_names:
         return []
@@ -907,14 +1001,15 @@ def get_derived_records_by_input_names(
         if version not in versions:
             continue
         client = _DOCDB_CLIENTS[version]
-        records = client.retrieve_docdb_records(
-            filter_query={"data_description.input_data_name": {"$in": list(input_names)}},
-            projection=projection,
-            limit=0,
-            paginate_batch_size=500,
-        )
-        for r in records:
-            by_name[r.get("name", "")] = r
+        for chunk in _chunked(input_names, _DOCDB_BATCH_SIZE):
+            records = client.retrieve_docdb_records(
+                filter_query={"data_description.input_data_name": {"$in": chunk}},
+                projection=projection,
+                limit=0,
+                paginate_batch_size=500,
+            )
+            for r in records:
+                by_name[r.get("name", "")] = r
     logger.info("Phase 2 derived input_data_name $in query", extra={"count": len(by_name)})
     return list(by_name.values())
 
@@ -1391,14 +1486,22 @@ def build_session_table(
         derived_col_list.append(_col_co_asset_name(c))
     hidden_cols = (
         ["_dts_url", "_watchdog_sname", "_name_Raw Asset Metadata",
-         "_rig_log_path", "_rig_manifest_rig"]
+         "_rig_log_path", "_rig_manifest_rig", "_has_derived"]
         + [f"_name_{c['label']}" for c in derived_columns]
         + [f"_comp_id_{c['label']}" for c in derived_columns]
     )
-    return (
-        pd.DataFrame(rows, columns=fixed_cols + derived_col_list + hidden_cols),
-        watchdog_events,
-    )
+
+    # Compute _has_derived: True if any derived asset name column is non-empty.
+    derived_name_cols = [f"_name_{c['label']}" for c in derived_columns]
+    df = pd.DataFrame(rows, columns=fixed_cols + derived_col_list + hidden_cols)
+    if derived_name_cols:
+        df["_has_derived"] = df[derived_name_cols].apply(
+            lambda row: any(str(v).strip() for v in row), axis=1
+        )
+    else:
+        df["_has_derived"] = False
+
+    return df, watchdog_events
 
 
 # ---------------------------------------------------------------------------
@@ -1421,8 +1524,25 @@ def build_panel_app():
         width=220,
     )
     load_button = pn.widgets.Button(name="Load Sessions", button_type="primary")
+    orphan_toggle = pn.widgets.Checkbox(
+        name="Only show sessions missing derived asset",
+        value=False,
+    )
     status_md = pn.pane.Markdown("", sizing_mode="stretch_width")
     table_col = pn.Column(sizing_mode="stretch_width")
+
+    # Holders so the orphan toggle callback can access the current tab and full df.
+    _tab_holder: list = [None]
+    _full_df_holder: list = [None]
+
+    def _apply_orphan_filter(event):
+        tab = _tab_holder[0]
+        full_df = _full_df_holder[0]
+        if tab is None or full_df is None:
+            return
+        tab.value = full_df[~full_df["_has_derived"]] if event.new else full_df
+
+    orphan_toggle.param.watch(_apply_orphan_filter, "value")
 
     # Inspector modal — hidden until a cell is clicked; body content is swapped per click
     _modal_body = pn.Column(sizing_mode="stretch_both")
@@ -1477,24 +1597,18 @@ def build_panel_app():
 
         subject = subject_input.value.strip()
 
-        # DTS — server-side
-        dts_jobs, dts_error = get_dts_jobs(date_from.isoformat(), date_to.isoformat())
+        # DTS — server-side, clamped to its 14-day lookback window.
+        dts_cutoff = datetime.now(tz=timezone.utc) - timedelta(days=DTS_MAX_LOOKBACK_DAYS - 1)
+        dts_from = max(date_from, dts_cutoff)
+        dts_to = date_to
+        dts_jobs, dts_error = get_dts_jobs(dts_from.isoformat(), dts_to.isoformat()) if dts_from <= dts_to else ([], None)
 
-        # DocDB — strategy depends on project config
+        # DocDB — queried independently of DTS, by project config.
+        # DTS results are joined in afterwards; they don't constrain what DocDB returns.
         try:
-            if docdb_name_regex:
-                # Dynamic Foraging: sessions span many project names, so we can't
-                # filter by project_name.  Instead we use the DTS job names (which
-                # equal raw DocDB asset names) for a fast $in raw lookup, then
-                # query derived records by input_data_name $in.
-                dts_names = tuple(
-                    j["name"] for j in dts_jobs if j.get("job_type") in job_type_names
-                )
-                raw_records = get_raw_records_by_names(dts_names, docdb_versions)
-                derived_records = get_derived_records_by_input_names(dts_names, docdb_versions)
-                all_records = raw_records + derived_records
-            else:
-                all_records = get_project_records(docdb_project_names, docdb_versions)
+            all_records = get_project_records(
+                docdb_project_names, docdb_versions, docdb_name_regex
+            )
         except Exception as exc:
             status_md.object = f"❌ DocDB query failed: {exc}"
             load_button.disabled = False
@@ -1549,6 +1663,9 @@ def build_panel_app():
         if df.empty:
             table_col[:] = [pn.pane.Markdown("_No sessions found for the selected filters._")]
         else:
+            # Store full df for the orphan toggle to slice from.
+            _full_df_holder[0] = df
+
             co_log_col_names = {_col_co_log_name(c) for c in derived_columns}
             # Map CO log column → hidden comp_id column for failed log lookups.
             co_log_comp_id_col = {
@@ -1575,12 +1692,15 @@ def build_panel_app():
             )
             hidden_cols = (
                 ["_dts_url", "_watchdog_sname", "_name_Raw Asset Metadata",
-                 "_rig_log_path", "_rig_manifest_rig"]
+                 "_rig_log_path", "_rig_manifest_rig", "_has_derived"]
                 + [f"_name_{c['label']}" for c in derived_columns]
                 + [f"_comp_id_{c['label']}" for c in derived_columns]
             )
+            # Apply orphan filter in Python before building the Tabulator — more reliable
+            # than Tabulator's client-side boolean filter which has serialization issues.
+            display_df = df[~df["_has_derived"]] if orphan_toggle.value else df
             tab = pn.widgets.Tabulator(
-                df,
+                display_df,
                 formatters={c: {"type": "html"} for c in html_cols if c in df.columns},
                 hidden_columns=hidden_cols,
                 sizing_mode="stretch_width",
@@ -1594,16 +1714,17 @@ def build_panel_app():
                     .tabulator-col-title { white-space: normal !important; word-wrap: break-word; }
                 """],
             )
+            _tab_holder[0] = tab
 
             async def on_cell_click(
-                event, _df=df, _co_log_cols=co_log_col_names,
+                event, _co_log_cols=co_log_col_names,
                 _wd_events=watchdog_events,
                 _co_log_comp_id=co_log_comp_id_col,
                 _co_log_capsule=co_log_capsule_col,
                 _co_log_name=co_log_name_col,
             ):
                 import asyncio
-                row = _df.iloc[event.row]
+                row = tab.value.iloc[event.row]
                 col = event.column
 
                 if col in _co_log_cols:
@@ -1615,7 +1736,7 @@ def build_panel_app():
 
                     # For failed/pending computations open the pipeline log in modal.
                     comp_id_col = _co_log_comp_id.get(col, "")
-                    if not comp_id_col or comp_id_col not in _df.columns:
+                    if not comp_id_col or comp_id_col not in tab.value.columns:
                         return
                     comp_id = str(row.get(comp_id_col, ""))
 
@@ -1642,82 +1763,25 @@ def build_panel_app():
                         _inspector_modal.show()
 
                         def _find_comp() -> tuple[str, str]:
-                            """Sync search; runs in thread pool.
+                            """Find the computation run for this session by raw asset UUID.
 
-                            Returns (comp_id, message) where comp_id is empty on
-                            failure and message explains the outcome.
+                            Checks the in-memory/disk cache first (instant). On a cache
+                            miss, refreshes from the pipeline's full computation history
+                            and tries again. No time window — works for reprocessed sessions
+                            regardless of how long ago they ran.
 
-                            Strategy:
-                            1. Collect all comps in the session time window.
-                            2. If none → pipeline was never triggered.
-                            3. Filter to failed comps.
-                            4. If none (only successes) → pipeline ran but DocDB
-                               hasn't picked up the derived asset yet.
-                            5. For each failed comp, fetch log and search for the
-                               subject ID — reliable even when data_assets is None.
-                            6. Only fall back to timing if exactly one candidate.
+                            Returns (run_id, message) where run_id is empty on failure.
                             """
-                            win_lo = session_ts - 3600
-                            win_hi = session_ts + 86400
-                            subject_id, _ = parse_session_name(sname)
-                            all_window: list = []
-                            failed: list = []
-                            try:
-                                for comp in co.capsules.list_computations(capsule_id):
-                                    if not (win_lo <= comp.created <= win_hi):
-                                        continue
-                                    all_window.append(comp)
-                                    is_success = (
-                                        comp.state.value == "completed"
-                                        and comp.exit_code == 0
-                                        and comp.has_results is not False
-                                    )
-                                    is_running = comp.state.value in (
-                                        "running", "initializing", "finalizing"
-                                    )
-                                    if not is_success and not is_running:
-                                        failed.append(comp)
-                            except Exception as exc:
-                                logger.warning("list_computations failed: %s", exc)
-                                return "", "Error searching for pipeline log."
-
-                            if not all_window:
+                            raw_uuid = _co_raw_id_cache.get(raw_name)
+                            if not raw_uuid:
+                                return "", "Raw asset not found in Code Ocean."
+                            run_id = _get_run_id_for_asset(raw_uuid, capsule_id)
+                            if not run_id:
                                 return "", (
                                     "No pipeline run found for this session. "
                                     "The pipeline may not have been triggered."
                                 )
-                            if not failed:
-                                return "", (
-                                    "The pipeline ran successfully for sessions in "
-                                    "this time window, but the derived asset has not "
-                                    "yet been registered in DocDB."
-                                )
-
-                            # Search failed comp logs for the subject ID.
-                            if subject_id:
-                                for comp in failed:
-                                    try:
-                                        urls = co.computations.get_result_file_urls(
-                                            comp.id, "output"
-                                        )
-                                        r = req.get(urls.view_url, timeout=15)
-                                        if r.ok and subject_id in r.text:
-                                            return comp.id, ""
-                                    except Exception as exc:
-                                        logger.warning(
-                                            "Log fetch for %s failed: %s",
-                                            comp.id, exc,
-                                        )
-
-                            # Unambiguous timing fallback.
-                            if len(failed) == 1:
-                                return failed[0].id, ""
-
-                            return "", (
-                                f"Found {len(failed)} failed pipeline run(s) in this "
-                                "time window, but none reference this session. "
-                                "The pipeline may not have been triggered for this session."
-                            )
+                            return run_id, ""
 
                         loop = asyncio.get_event_loop()
                         comp_id, msg = await loop.run_in_executor(None, _find_comp)
@@ -1860,7 +1924,7 @@ def build_panel_app():
                     return
 
                 name_col = f"_name_{col}"
-                if name_col not in _df.columns:
+                if name_col not in tab.value.columns:
                     return
                 asset_name = str(row.get(name_col, ""))
                 if not asset_name:
@@ -1972,6 +2036,8 @@ def build_panel_app():
         pn.Column("**Subject ID (optional)**", subject_input),
         pn.Spacer(width=20),
         pn.Column("&nbsp;", load_button),
+        pn.Spacer(width=20),
+        pn.Column("&nbsp;", orphan_toggle),
         align="start",
     )
 
