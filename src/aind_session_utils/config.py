@@ -118,6 +118,7 @@ def to_viewer_config(cfg: dict) -> dict:
         "docdb_versions": list(query.get("docdb_versions") or ["v2"]),
         "derived_columns": derived_columns,
         "no_derived_expected": frozenset(cfg.get("no_derived_expected") or []),
+        "required_modalities": frozenset(cfg.get("required_modalities") or []),
     }
     if query.get("use_manifests"):
         result["use_manifests"] = True

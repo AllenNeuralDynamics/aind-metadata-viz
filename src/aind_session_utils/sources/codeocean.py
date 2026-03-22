@@ -69,6 +69,10 @@ def _update_co_run_cache(pipeline_id: str) -> None:
 
     Each pipeline has its own asset→run mapping and newest_created watermark,
     so updating one pipeline never affects the watermark of another.
+
+    This call is unconditional — callers are responsible for deciding whether an
+    update is needed (e.g. by checking whether any pending sessions have unknown
+    UUIDs that are newer than ``last_updated``).
     """
     co = _get_co_client()
     if co is None:

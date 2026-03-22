@@ -29,15 +29,16 @@ from aind_session_utils.naming import (
 from aind_session_utils.sources.codeocean import (
     _co_derived_id_cache,
     _co_raw_id_cache,
+    _co_run_cache,
     _co_url_cache,
     _get_co_client,
+    _update_co_run_cache,
     get_co_output_url,
     get_raw_co_asset_id,
 )
 from aind_session_utils.sources.dts import DTS_BASE_URL, DTS_MAX_LOOKBACK_DAYS, get_dts_jobs
 from aind_session_utils.sources.docdb import (
     get_project_records,
-    get_raw_records_by_names,
     filter_records_by_date,
 )
 from aind_session_utils.sources.manifests import load_manifest_sessions, AIND_LOGS_DIR
@@ -625,37 +626,22 @@ def fetch_and_build_sessions(
 
     # DocDB
     _step("⏳ Querying DocDB…")
-    bootstrap_modalities: frozenset[str] = frozenset()
-    _docdb_names = docdb_project_names
-    if not _docdb_names:
-        dts_names = tuple(j["name"] for j in dts_jobs if j.get("job_type") in job_type_names)
-        manifest_names = tuple(
-            mentry.get("session_raw", sname)
-            for sname, mentry in manifest_sessions.items()
-            if (d := session_date(sname)) is not None
-            and date_from <= d <= date_to
-        )
-        bootstrap_names = tuple(set(dts_names) | set(manifest_names))
-        bootstrap_records = get_raw_records_by_names(bootstrap_names, docdb_versions)
-        _docdb_names = tuple(sorted({
-            r.get("data_description", {}).get("project_name")
-            for r in bootstrap_records
-            if r.get("data_description", {}).get("project_name")
-        }))
-        bootstrap_modalities = frozenset(
-            m for r in bootstrap_records for m in get_modalities(r)
-        )
-        logger.info(
-            "Discovered project names: %s, modalities: %s",
-            _docdb_names, bootstrap_modalities,
-        )
+    all_records = get_project_records(docdb_project_names, docdb_versions)
 
-    all_records = get_project_records(_docdb_names, docdb_versions)
-    if bootstrap_modalities:
-        all_records = [
-            r for r in all_records
-            if not get_modalities(r) or set(get_modalities(r)) & bootstrap_modalities
-        ]
+    # Drop raw records that don't have all required modalities (e.g. SmartSPM
+    # sessions that share a project name with Dynamic Foraging sessions).
+    required_modalities: frozenset[str] = project_config.get("required_modalities", frozenset())
+    if required_modalities:
+        filtered: list[dict] = []
+        for r in all_records:
+            name = r.get("name", "")
+            data_level = r.get("data_description", {}).get("data_level", "")
+            is_raw = data_level == "raw" or (
+                not data_level and not any(m in name for m in _DERIVED_MARKERS)
+            )
+            if not is_raw or required_modalities.issubset(frozenset(get_modalities(r))):
+                filtered.append(r)
+        all_records = filtered
 
     records_in_range = filter_records_by_date(all_records, date_from, date_to)
 
@@ -686,5 +672,35 @@ def fetch_and_build_sessions(
         store=store,
         no_derived_expected=no_derived_expected,
     )
+
+    # Update the CO run cache only when needed: if any pending session (raw in CO,
+    # no derived asset yet) has a UUID not in the cache AND was acquired after the
+    # last cache update.  If every unknown session is older than last_updated, the
+    # pipeline was never triggered for it and there's nothing new to fetch.
+    if _get_co_client() is not None:
+        for col in project_config.get("derived_columns", []):
+            capsule_id = col.get("co_pipeline_capsule_id")
+            if not capsule_id:
+                continue
+            col_mods: set[str] = col.get("modalities", set())
+            pipeline_cache = _co_run_cache.get(capsule_id, {})
+            asset_to_run: dict = pipeline_cache.get("asset_to_run", {})
+            last_updated: float = pipeline_cache.get("last_updated", 0.0)
+            needs_update = any(
+                sr.raw_co_asset_id is not None
+                and not any(col_mods & d.modalities for d in sr.derived_assets)
+                and sr.raw_co_asset_id not in asset_to_run
+                and (
+                    last_updated == 0.0
+                    or (
+                        sr.acquisition_datetime is not None
+                        and sr.acquisition_datetime.timestamp() > last_updated
+                    )
+                )
+                for sr in sessions
+            )
+            if needs_update:
+                _step("⏳ Checking pipeline run history…")
+                _update_co_run_cache(capsule_id)
 
     return sessions, base_status

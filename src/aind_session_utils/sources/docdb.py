@@ -1,6 +1,7 @@
 """DocDB V1/V2 queries."""
 
 import logging
+from functools import lru_cache
 
 from aind_data_access_api.document_db import MetadataDbClient
 
@@ -22,6 +23,7 @@ def _chunked(seq, size):
         yield seq[i:i + size]
 
 
+@lru_cache(maxsize=8)
 def get_project_records(
     project_names: tuple[str, ...],
     versions: tuple[str, ...],
