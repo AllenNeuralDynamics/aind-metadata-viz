@@ -24,6 +24,18 @@ def _chunked(seq, size):
 
 
 @lru_cache(maxsize=8)
+def is_available() -> bool:
+    """Return True if the DocDB API is reachable."""
+    try:
+        docdb_client_v2.retrieve_docdb_records(
+            filter_query={"name": "__availability_check__"},
+            limit=1,
+        )
+        return True
+    except Exception:
+        return False
+
+
 def get_project_records(
     project_names: tuple[str, ...],
     versions: tuple[str, ...],

@@ -10,6 +10,11 @@ logger = logging.getLogger(__name__)
 _gui_dir_cache: dict[str, list[str]] = {}  # rig → sorted list of all .txt paths
 
 
+def is_available() -> bool:
+    """Return True if the AIND logs directory is accessible."""
+    return os.path.isdir(AIND_LOGS_DIR)
+
+
 def find_rig_log(rig: str, session_name: str) -> str | None:
     """
     Find the GUI acquisition log file for a session on a given rig, or None.

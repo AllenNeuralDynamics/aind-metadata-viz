@@ -20,6 +20,11 @@ _MANIFEST_LINE_RE = re.compile(
 )
 
 
+def is_available() -> bool:
+    """Return True if the rig manifest directory is accessible."""
+    return os.path.isdir(MANIFEST_DIR)
+
+
 def load_manifest_sessions() -> dict[str, dict]:
     """
     Parse all per-rig manifest listing files from MANIFEST_DIR and return a

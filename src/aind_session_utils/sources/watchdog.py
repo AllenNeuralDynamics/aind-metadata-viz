@@ -16,6 +16,15 @@ _watchdog_cache: dict[str, tuple[float, dict[str, list]]] = {}
 _WATCHDOG_TTL = 300  # 5 minutes
 
 
+def is_available() -> bool:
+    """Return True if the watchdog log server is reachable."""
+    try:
+        req.head(_WATCHDOG_URL, timeout=3)
+        return True
+    except Exception:
+        return False
+
+
 def _query_watchdog_dstest(message_filter: str, length: int = 2000) -> list:
     """POST to the eng-logtools DataTables endpoint. Returns list of row arrays."""
     cols = ["date", "source", "channel", "version", "level", "location", "message", "count"]

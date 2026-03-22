@@ -14,6 +14,15 @@ _DTS_CACHE_TTL = 300  # seconds; DTS jobs change frequently during the day
 _dts_cache: dict[tuple[str, str], tuple[float, list[dict], str | None]] = {}
 
 
+def is_available() -> bool:
+    """Return True if the DTS API is reachable."""
+    try:
+        req.head(f"{DTS_BASE_URL}/api/v1/get_job_status_list", timeout=3)
+        return True
+    except Exception:
+        return False
+
+
 def get_dts_jobs(date_from_iso: str, date_to_iso: str) -> tuple[list[dict], str | None]:
     """Fetch DTS jobs server-side, paginating as needed.
 

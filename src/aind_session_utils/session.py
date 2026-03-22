@@ -98,6 +98,10 @@ class SessionResult:
     # Derived assets
     derived_assets: tuple[DerivedAssetInfo, ...]
 
+    # TODO (MCP support): add sources_queried: frozenset[str] and
+    # sources_unavailable: frozenset[str] so consumers can distinguish
+    # "no DTS job exists" from "DTS was unreachable when this was built".
+
 
 def _best_datetime(raw_record: dict, sname: str) -> Optional[datetime]:
     """Return the best available acquisition datetime for a raw record.

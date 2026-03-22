@@ -32,6 +32,11 @@ _CO_RUN_CACHE_FILE = Path.home() / ".cache" / "aind_session_utils" / "co_pipelin
 _co_run_cache: dict[str, dict] = {}
 
 
+def is_available() -> bool:
+    """Return True if Code Ocean credentials are configured."""
+    return _get_co_client() is not None
+
+
 def _get_co_client() -> CodeOcean | None:
     """Return a singleton CodeOcean client if credentials are configured."""
     global _co_client
