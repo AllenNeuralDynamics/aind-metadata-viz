@@ -29,11 +29,11 @@ dependencies = [
     'aind-metadata-upgrader>=0.6.4,<1',
     'numpy<2.0',
     'vl-convert-python',
-    "codeocean",
-    "python-dotenv",
-    "pyyaml",
-    "pyarrow>=23.0.1",
+    "aind-session-utils>=0.1.0",
 ]
+
+[tool.uv.sources]
+aind-session-utils = { path = "../aind-session-utils", editable = true }
 
 [project.optional-dependencies]
 dev = [

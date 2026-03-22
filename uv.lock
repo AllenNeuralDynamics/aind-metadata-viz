@@ -114,17 +114,14 @@ dependencies = [
     { name = "aind-data-schema" },
     { name = "aind-metadata-upgrader" },
     { name = "aind-metadata-validator" },
+    { name = "aind-session-utils" },
     { name = "altair" },
-    { name = "codeocean" },
     { name = "flask" },
     { name = "langchain" },
     { name = "langchain-aws" },
     { name = "numpy" },
     { name = "panel" },
-    { name = "pyarrow" },
     { name = "pydantic" },
-    { name = "python-dotenv" },
-    { name = "pyyaml" },
     { name = "vl-convert-python" },
 ]
 
@@ -153,9 +150,9 @@ requires-dist = [
     { name = "aind-data-schema", specifier = ">=2.5.0,<3" },
     { name = "aind-metadata-upgrader", specifier = ">=0.6.4,<1" },
     { name = "aind-metadata-validator", specifier = ">=0.11.1" },
+    { name = "aind-session-utils", editable = "../aind-session-utils" },
     { name = "altair" },
     { name = "black", marker = "extra == 'dev'" },
-    { name = "codeocean" },
     { name = "coverage", marker = "extra == 'dev'" },
     { name = "flake8", marker = "extra == 'dev'" },
     { name = "flask" },
@@ -166,10 +163,7 @@ requires-dist = [
     { name = "langchain-aws" },
     { name = "numpy", specifier = "<2.0" },
     { name = "panel", specifier = ">=1.8.2" },
-    { name = "pyarrow", specifier = ">=23.0.1" },
     { name = "pydantic", specifier = "<=2.11.0" },
-    { name = "python-dotenv" },
-    { name = "pyyaml" },
     { name = "sphinx", marker = "extra == 'dev'" },
     { name = "vl-convert-python" },
     { name = "watchfiles", marker = "extra == 'dev'" },
@@ -178,6 +172,42 @@ provides-extras = ["dev"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "watchfiles", specifier = ">=1.1.1" }]
+
+[[package]]
+name = "aind-session-utils"
+source = { editable = "../aind-session-utils" }
+dependencies = [
+    { name = "aind-data-access-api", extra = ["docdb"] },
+    { name = "codeocean" },
+    { name = "pandas", version = "2.3.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' or python_full_version >= '3.14'" },
+    { name = "pandas", version = "3.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' and python_full_version < '3.14'" },
+    { name = "pyarrow" },
+    { name = "python-dotenv" },
+    { name = "pyyaml" },
+    { name = "requests" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "aind-data-access-api", extras = ["docdb"] },
+    { name = "codeocean" },
+    { name = "pandas" },
+    { name = "pyarrow" },
+    { name = "python-dotenv" },
+    { name = "pyyaml" },
+    { name = "requests" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "black" },
+    { name = "coverage" },
+    { name = "flake8" },
+    { name = "furo" },
+    { name = "interrogate" },
+    { name = "isort" },
+    { name = "sphinx" },
+]
 
 [[package]]
 name = "alabaster"
