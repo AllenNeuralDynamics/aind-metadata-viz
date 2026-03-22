@@ -201,7 +201,11 @@ class ParquetSessionStore:
             logger.warning("store: mark_settled failed: %s", exc)
 
     def refresh(self, session_names: set[str]) -> None:
-        """Force sessions back to unsettled so they are re-queried next load."""
+        """Force sessions back to unsettled so they are re-queried next load.
+
+        # TODO: expose this via a "force refresh" button or ?refresh=1 URL parameter
+        # in the viewer so users can re-query sessions whose metadata has changed.
+        """
         if not self._sessions_path.exists():
             return
         try:

@@ -18,7 +18,8 @@ from aind_session_utils.config import load_project_config, list_project_configs,
 from aind_session_utils.store import ParquetSessionStore, get_store_dir
 from aind_session_utils.sources.codeocean import (
     CO_DOMAIN,
-    get_cached_run_id,
+    get_cached_run_id,  # TODO: replace with a pipeline_status field on DerivedAssetInfo
+                        # or SessionResult so the viewer doesn't reach into cache internals.
     get_pipeline_log,
 )
 from aind_session_utils.sources.manifests import AIND_LOGS_DIR

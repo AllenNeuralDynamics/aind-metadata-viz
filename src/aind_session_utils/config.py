@@ -13,6 +13,11 @@ query:
     <job_type_name>:
       expected_pipelines: list[str]  # modalities whose derived columns are expected
   use_manifests: bool              # optional; enable rig-side manifest detection
+required_modalities: list[str]     # optional; raw records missing ALL of these are
+                                   # excluded (e.g. [behavior] drops SmartSPM records
+                                   # that share a project name)
+no_derived_expected: list[str]     # optional; modalities never expected to produce
+                                   # standalone derived output (e.g. [behavior-videos])
 pipelines:                         # list of derived asset columns to render
   - label: str
     modalities: list[str]          # lowercase abbreviations (behavior, fib, fiber, ...)
