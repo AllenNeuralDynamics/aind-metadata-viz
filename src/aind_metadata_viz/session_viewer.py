@@ -445,11 +445,11 @@ def build_panel_app():
         options=list(PROJECT_CONFIG.keys()),
         width=380,
     )
-    date_from_picker = pn.widgets.DatePicker(name="", value=default_from)
-    date_to_picker = pn.widgets.DatePicker(name="", value=today)
+    date_from_picker = pn.widgets.DatePicker(name="", value=default_from, width=130)
+    date_to_picker = pn.widgets.DatePicker(name="", value=today, width=130)
     subject_input = pn.widgets.TextInput(
         placeholder="e.g. 822683",
-        width=220,
+        width=160,
     )
     load_button = pn.widgets.Button(name="Load Sessions", button_type="primary")
     orphan_toggle = pn.widgets.Checkbox(
@@ -897,13 +897,13 @@ def build_panel_app():
 
     controls = pn.Row(
         pn.Column("**Project**", project_select),
-        pn.Spacer(width=20),
-        pn.Column("**Date range**", pn.Row("From", date_from_picker, pn.Spacer(width=10), "To", date_to_picker)),
-        pn.Spacer(width=20),
+        pn.Spacer(width=12),
+        pn.Column("**Date range**", pn.Row("From", date_from_picker, pn.Spacer(width=6), "To", date_to_picker)),
+        pn.Spacer(width=12),
         pn.Column("**Subject ID (optional)**", subject_input),
-        pn.Spacer(width=20),
+        pn.Spacer(width=12),
         pn.Column("&nbsp;", load_button),
-        pn.Spacer(width=20),
+        pn.Spacer(width=12),
         pn.Column("&nbsp;", orphan_toggle),
         align="start",
     )
