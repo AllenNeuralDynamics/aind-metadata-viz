@@ -685,9 +685,6 @@ def build_panel_app():
         if df.empty:
             table_col[:] = [pn.pane.Markdown("_No sessions found for the selected filters._")]
         else:
-            # Store full df for the orphan toggle to slice from.
-            _full_df_holder[0] = df
-
             co_log_col_names = {_col_co_log_name(c) for c in derived_columns}
             # Map CO log column → hidden comp_id column for failed log lookups.
             co_log_comp_id_col = {
@@ -718,12 +715,33 @@ def build_panel_app():
                 + [f"_name_{c['label']}" for c in derived_columns]
                 + [f"_comp_id_{c['label']}" for c in derived_columns]
             )
+            # Rename multi-word visible columns to use <br> so headers wrap to
+            # data-content width instead of header-text width.
+            _hidden_set = set(hidden_cols)
+            col_rename = {
+                c: "<br>".join(c.split())
+                for c in df.columns
+                if c not in _hidden_set and " " in c and not c.startswith("_")
+            }
+            col_unrename = {v: k for k, v in col_rename.items()}
+            html_cols = [col_rename.get(c, c) for c in html_cols]
+            co_log_col_names = {col_rename.get(c, c) for c in co_log_col_names}
+            co_log_comp_id_col = {col_rename.get(k, k): v for k, v in co_log_comp_id_col.items()}
+            co_log_capsule_col = {col_rename.get(k, k): v for k, v in co_log_capsule_col.items()}
+            co_log_name_col = {col_rename.get(k, k): v for k, v in co_log_name_col.items()}
+            _rig_log_col = col_rename.get("Rig Log", "Rig Log")
+            _rig_manifest_col = col_rename.get("Rig Manifest", "Rig Manifest")
+            _watchdog_col = col_rename.get("Watchdog", "Watchdog")
+            _dts_upload_col = col_rename.get("DTS Upload", "DTS Upload")
+            df_display = df.rename(columns=col_rename)
+            # Store full df (renamed) for the orphan toggle to slice from.
+            _full_df_holder[0] = df_display
             # Apply orphan filter in Python before building the Tabulator — more reliable
             # than Tabulator's client-side boolean filter which has serialization issues.
-            display_df = df[df["_completeness_status"] != "complete"] if orphan_toggle.value else df
+            display_df = df_display[df_display["_completeness_status"] != "complete"] if orphan_toggle.value else df_display
             tab = pn.widgets.Tabulator(
                 display_df,
-                formatters={c: {"type": "html"} for c in html_cols if c in df.columns},
+                formatters={c: {"type": "html"} for c in html_cols if c in display_df.columns},
                 hidden_columns=hidden_cols,
                 sizing_mode="stretch_width",
                 show_index=False,
@@ -734,6 +752,8 @@ def build_panel_app():
                     .tabulator-row:nth-child(even) { background-color: #f5f5f5 !important; }
                     .tabulator-row:nth-child(even):hover { background-color: #e8e8e8 !important; }
                     .tabulator-col-title { white-space: normal !important; word-wrap: break-word; }
+                    .tabulator-col-content { flex: 1 !important; display: flex !important; flex-direction: column !important; }
+                    .tabulator-col-title-holder { flex: 1 !important; display: flex !important; align-items: center !important; }
                 """],
             )
             _tab_holder[0] = tab
@@ -744,6 +764,11 @@ def build_panel_app():
                 _co_log_comp_id=co_log_comp_id_col,
                 _co_log_capsule=co_log_capsule_col,
                 _co_log_name=co_log_name_col,
+                _col_unrename=col_unrename,
+                _rig_log_col=_rig_log_col,
+                _rig_manifest_col=_rig_manifest_col,
+                _watchdog_col=_watchdog_col,
+                _dts_upload_col=_dts_upload_col,
             ):
                 import asyncio
                 row = tab.value.iloc[event.row]
@@ -788,7 +813,7 @@ def build_panel_app():
                         )]
                     return
 
-                if col == "Rig Log":
+                if col == _rig_log_col:
                     path = str(row.get("_rig_log_path", ""))
                     if not path:
                         return
@@ -812,7 +837,7 @@ def build_panel_app():
                     )]
                     return
 
-                if col == "Rig Manifest":
+                if col == _rig_manifest_col:
                     rig = str(row.get("_rig_manifest_rig", ""))
                     if not rig:
                         return
@@ -858,7 +883,7 @@ def build_panel_app():
                     )]
                     return
 
-                if col == "Watchdog":
+                if col == _watchdog_col:
                     sname = str(row.get("_watchdog_sname", ""))
                     events = _wd_events.get(sname, [])
                     if not events:
@@ -876,7 +901,7 @@ def build_panel_app():
                     _inspector_modal.show()
                     return
 
-                if col == "DTS Upload":
+                if col == _dts_upload_col:
                     url = str(row.get("_dts_url", ""))
                     if not url:
                         return
@@ -887,7 +912,7 @@ def build_panel_app():
                     _inspector_modal.show()
                     return
 
-                name_col = f"_name_{col}"
+                name_col = f"_name_{_col_unrename.get(col, col)}"
                 if name_col not in tab.value.columns:
                     return
                 asset_name = str(row.get(name_col, ""))
