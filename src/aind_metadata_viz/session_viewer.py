@@ -251,35 +251,33 @@ def co_log_cell(co_url: str | None) -> str:
     return "⬜"
 
 
-def _log_modal_html(log_text: str) -> str:
-    """Render pipeline log text with a copy-to-clipboard button for the modal."""
-    # Escape for HTML display and for embedding in a JS template literal.
+def _log_modal_pane(log_text: str) -> pn.viewable.Viewable:
+    """Return a Panel layout with a copy button and log pre for the modal."""
     displayed = _html.escape(log_text)
-    js_text = (
-        log_text
-        .replace("\\", "\\\\")
-        .replace("`", "\\`")
-        .replace("${", "\\${")
-    )
-    return f"""
+    # Replicate manual select-all + Cmd+C: programmatically select the pre's
+    # text and call execCommand('copy') — same path the browser uses natively.
+    html = f"""
 <div style="display:flex;flex-direction:column;height:100%;padding:8px;box-sizing:border-box">
   <div style="margin-bottom:8px;flex-shrink:0">
-    <button
-      style="padding:4px 12px;cursor:pointer;font-size:13px"
-      onclick="
-        navigator.clipboard.writeText(`{js_text}`)
-          .then(() => {{
-            this.textContent = '✅ Copied!';
-            setTimeout(() => {{ this.textContent = '📋 Copy to clipboard'; }}, 2000);
-          }})
-          .catch(() => {{ this.textContent = '❌ Copy failed'; }});
-      ">📋 Copy to clipboard</button>
+    <button style="padding:4px 12px;cursor:pointer;font-size:13px"
+      onclick="var pre=this.parentElement.nextElementSibling;
+               var r=document.createRange();
+               r.selectNodeContents(pre);
+               var s=window.getSelection();
+               s.removeAllRanges();
+               s.addRange(r);
+               document.execCommand('copy');
+               s.removeAllRanges();
+               var b=this;
+               b.textContent='Copied!';
+               setTimeout(function(){{b.textContent='Copy to Clipboard';}},2000);">
+      Copy to Clipboard</button>
   </div>
   <pre style="flex:1;overflow:auto;white-space:pre-wrap;word-wrap:break-word;
               background:#f8f8f8;padding:8px;font-size:12px;margin:0;
               border:1px solid #ddd;border-radius:4px">{displayed}</pre>
-</div>
-"""
+</div>"""
+    return pn.pane.HTML(html, sizing_mode="stretch_both")
 
 
 def co_asset_link_cell(asset_id: str | None, asset_name: str) -> str:
@@ -808,9 +806,7 @@ def build_panel_app():
                             err, styles={"padding": "16px"}
                         )]
                     else:
-                        _modal_body[:] = [pn.pane.HTML(
-                            _log_modal_html(log_text), sizing_mode="stretch_both"
-                        )]
+                        _modal_body[:] = [_log_modal_pane(log_text)]
                     return
 
                 if col == _rig_log_col:
@@ -832,9 +828,7 @@ def build_panel_app():
 
                     loop = asyncio.get_event_loop()
                     log_text = await loop.run_in_executor(None, _load_gui_log)
-                    _modal_body[:] = [pn.pane.HTML(
-                        _log_modal_html(log_text), sizing_mode="stretch_both"
-                    )]
+                    _modal_body[:] = [_log_modal_pane(log_text)]
                     return
 
                 if col == _rig_manifest_col:
@@ -878,9 +872,7 @@ def build_panel_app():
 
                     loop = asyncio.get_event_loop()
                     log_text = await loop.run_in_executor(None, _load_watchdog_log)
-                    _modal_body[:] = [pn.pane.HTML(
-                        _log_modal_html(log_text), sizing_mode="stretch_both"
-                    )]
+                    _modal_body[:] = [_log_modal_pane(log_text)]
                     return
 
                 if col == _watchdog_col:
