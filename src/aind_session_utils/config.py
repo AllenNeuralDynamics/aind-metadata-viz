@@ -74,15 +74,25 @@ def load_project_config(
 
 
 def to_viewer_config(cfg: dict) -> dict:
-    """Convert a raw YAML project config to the format used by session_viewer.py.
+    """Convert a raw YAML project config to the runtime format used by the API.
 
-    The viewer's internal format uses:
-      - ``job_types``: dict[str, dict] with set-valued ``expected_pipelines``
-      - ``derived_columns``: list[dict] with set-valued ``modalities``
-      - ``docdb_project_names``, ``docdb_versions``, ``use_manifests``
+    Transforms the YAML schema into the dict shape expected by
+    ``fetch_and_build_sessions`` and ``build_sessions``:
 
-    This function maps the YAML representation to that shape so that
-    session_viewer.py requires minimal changes.
+      - ``name``:                 project display name (str)
+      - ``job_types``:            ``{job_type: {"expected_pipelines": set[str]}}``
+      - ``docdb_project_names``:  list of DocDB project name strings
+      - ``docdb_versions``:       list of DocDB versions (e.g. ``["v2"]``)
+      - ``derived_columns``:      list of pipeline column dicts with set-valued
+                                  ``modalities``
+      - ``no_derived_expected``:  frozenset of modalities never processed
+      - ``use_manifests``:        bool (only present when True)
+
+    Args:
+        cfg: Raw YAML project config dict, as returned by ``list_project_configs``.
+
+    Returns:
+        Runtime config dict ready for use with the session_utils API.
     """
     query = cfg.get("query", {})
     pipelines = cfg.get("pipelines", [])
@@ -102,6 +112,7 @@ def to_viewer_config(cfg: dict) -> dict:
         derived_columns.append(col)
 
     result: dict = {
+        "name": cfg.get("name", ""),
         "job_types": job_types,
         "docdb_project_names": list(query.get("docdb_project_names") or []),
         "docdb_versions": list(query.get("docdb_versions") or ["v2"]),

@@ -7,7 +7,6 @@ import time as _time
 from pathlib import Path
 
 import requests as req
-import panel as pn
 from codeocean import CodeOcean
 from codeocean.data_asset import DataAssetSearchParams, DataAssetState
 from dotenv import load_dotenv
@@ -16,16 +15,15 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-_CO_DOMAIN: str = os.environ.get("CODEOCEAN_DOMAIN", "")
+CO_DOMAIN: str = os.environ.get("CODEOCEAN_DOMAIN", "")
 _co_client: CodeOcean | None = None
 _co_url_cache: dict[str, str | None] = {}
 _co_derived_id_cache: dict[str, str | None] = {}
 _co_raw_id_cache: dict[str, str | None] = {}
-_co_computation_status_cache: dict[tuple[str, str], str | None] = {}
 
 # Cache mapping input asset UUID -> computation run ID, built from list_computations.
 # Persisted to disk so it survives server restarts.
-_CO_RUN_CACHE_FILE = Path.home() / ".cache" / "aind_metadata_viz" / "co_pipeline_run_cache.json"
+_CO_RUN_CACHE_FILE = Path.home() / ".cache" / "aind_session_utils" / "co_pipeline_run_cache.json"
 
 # Keyed by pipeline_id so each pipeline maintains its own asset→run mapping and
 # newest_created watermark. Structure:
@@ -39,8 +37,8 @@ def _get_co_client() -> CodeOcean | None:
     global _co_client
     if _co_client is None:
         token = os.environ.get("CODEOCEAN_API_TOKEN")
-        if _CO_DOMAIN and token:
-            _co_client = CodeOcean(domain=_CO_DOMAIN, token=token)
+        if CO_DOMAIN and token:
+            _co_client = CodeOcean(domain=CO_DOMAIN, token=token)
     return _co_client
 
 
@@ -119,6 +117,20 @@ def _get_run_id_for_asset(asset_uuid: str, pipeline_id: str) -> str | None:
     return _co_run_cache.get(pipeline_id, {}).get("asset_to_run", {}).get(asset_uuid)
 
 
+def get_cached_run_id(asset_uuid: str, pipeline_id: str) -> str | None:
+    """Cache-only lookup of a computation run ID — no API call.
+
+    Returns the run ID if the asset is already in the local run cache,
+    or None if not found.  Never triggers a list_computations fetch.
+    Use this for display purposes; use get_pipeline_log for on-demand fetches.
+    """
+    return (
+        _co_run_cache.get(pipeline_id, {})
+        .get("asset_to_run", {})
+        .get(asset_uuid)
+    )
+
+
 def get_co_output_url(asset_name: str) -> str | None:
     """
     Return the Code Ocean output log URL for a derived asset name.
@@ -150,7 +162,7 @@ def get_co_output_url(asset_name: str) -> str | None:
             result = "pending"
             _co_derived_id_cache[asset_name] = asset.id
         else:
-            result = f"{_CO_DOMAIN}/data-assets/{asset.id}/{asset.name}/output"
+            result = f"{CO_DOMAIN}/data-assets/{asset.id}/{asset.name}/output"
             _co_derived_id_cache[asset_name] = asset.id
     except Exception as e:
         logger.warning("CO log lookup failed for %s: %s", asset_name, e)
@@ -178,53 +190,6 @@ def get_raw_co_asset_id(raw_asset_name: str) -> str | None:
         logger.warning("CO raw asset lookup failed for %s: %s", raw_asset_name, e)
         result = None
     _co_raw_id_cache[raw_asset_name] = result
-    return result
-
-
-def get_co_computation_status(
-    raw_asset_co_id: str,
-    pipeline_capsule_id: str,
-    session_ts: float,
-) -> str | None:
-    """
-    Scan the pipeline capsule's computation history for one that used
-    raw_asset_co_id as input.
-
-    Returns:
-        'failed'  — computation found, exit_code != 0 or no results
-        'running' — computation found, still in progress
-        None      — no matching computation found (not yet triggered)
-
-    Results are cached by (raw_asset_co_id, pipeline_capsule_id).
-    None is not cached so we retry on the next table load.
-    """
-    cache_key = (raw_asset_co_id, pipeline_capsule_id)
-    if cache_key in _co_computation_status_cache:
-        return _co_computation_status_cache[cache_key]
-    co = _get_co_client()
-    if co is None:
-        return None
-    window_start = session_ts - 86400        # 1 day before session
-    window_end = session_ts + 4 * 86400     # 4 days after (trigger delay + run)
-    result: str | None = None
-    try:
-        for comp in co.capsules.list_computations(pipeline_capsule_id):
-            if comp.created < window_start:
-                break  # list is newest-first; gone past the window
-            if comp.created > window_end:
-                continue
-            input_ids = {da.id for da in (comp.data_assets or [])}
-            if raw_asset_co_id not in input_ids:
-                continue
-            if comp.state.value in ("running", "initializing"):
-                result = "running"
-            elif comp.exit_code != 0 or not comp.has_results:
-                result = "failed"
-            break
-    except Exception as e:
-        logger.warning("CO computation status lookup failed: %s", e)
-    if result is not None:
-        _co_computation_status_cache[cache_key] = result
     return result
 
 

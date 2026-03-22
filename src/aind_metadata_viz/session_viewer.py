@@ -1,42 +1,31 @@
 """
-Session Status Viewer
+Session Status Viewer — Panel frontend for aind-session-utils.
 
-Provides an end-to-end pipeline status view for data collection sessions.
-The project is selectable via dropdown; add entries to PROJECT_CONFIG to extend.
-
-ARCHITECTURE:
-    Both data sources are queried server-side:
-
-    - DocDB (via aind-data-access-api): asset registration records, cached 1hr.
-      No time limit; shows all sessions that made it to registration.
-      Searches V1 and/or V2 DB as configured per project; V2 takes precedence
-      when the same asset exists in both.
-
-    - DTS REST API (via requests): job status from http://aind-data-transfer-service.
-      The DTS is on the AIND internal network, so this app must be run from the AIND
-      network or VPN (locally or deployed on-prem). Cached 5min.
-
-    Note: the DTS API has no CORS headers, so client-side JS fetch cannot be used.
-    The server-side approach requires network access to http://aind-data-transfer-service.
+This module is pure presentation: it imports ``aind_session_utils`` for all
+data access and delegates every query to ``fetch_and_build_sessions``.  No
+DocDB/DTS/CO client calls, no caching logic, and no session name parsing live
+here — those concerns belong to the library.
 
 DATA FLOW:
-    1. User selects date range and clicks Load Sessions
-    2. Server queries DTS API (paginated) for all jobs in the date range
-    3. Server queries DocDB (V1 and/or V2) for project records (cached 1hr)
-    4. Both are joined by session name and rendered as a status table
+    1. User selects project, date range, and subject filter, then clicks Load.
+    2. ``fetch_and_build_sessions`` queries DTS, rig manifests, and DocDB,
+       assembles ``SessionResult`` objects (using the parquet store for
+       settled sessions), and returns them along with a status summary.
+    3. ``build_session_table`` converts the results to an HTML-cell DataFrame
+       for the Tabulator widget.
+    4. Cell clicks open a modal with log text, JSON metadata, or watchdog events.
 
 LIMITATIONS:
-    - DTS API enforces a 14-day lookback window. For sessions older than 14 days,
-      the DTS Status column shows "N/A (>14 days)".
-    - Rig manifest detection (Dynamic Foraging only) surfaces sessions that never
-      reached the DTS. Requires the MANIFEST_DIR network share to be mounted.
-    - Requires AIND network or VPN access for DTS data and rig manifests.
+    - DTS API enforces a 14-day lookback window; older sessions show "N/A".
+    - Rig manifests require the AIND on-prem network share to be mounted.
+    - Code Ocean features require CODEOCEAN_DOMAIN and CODEOCEAN_API_TOKEN.
 
-EXTENSION POINTS:
-    - Add projects to PROJECT_CONFIG.
-    - Tier 2 rig-side manifest detection: implement RigLogSource (see stub below).
+ADDING A PROJECT:
+    Create a YAML file in ``aind_session_utils/project_configs/``.
+    See ``aind_session_utils/config.py`` for the schema.
 
 URL PARAMETERS:
+    - project:   pre-select project (e.g. ?project=Dynamic+Foraging)
     - subject:   pre-fill subject ID filter (e.g. ?subject=822683)
     - date_from: pre-fill start date (e.g. ?date_from=2026-03-04)
     - date_to:   pre-fill end date   (e.g. ?date_to=2026-03-11)
@@ -50,72 +39,28 @@ import time as _time_mod
 from datetime import datetime, timedelta, timezone
 import html as _html
 
-import requests as req
 import pandas as pd
 import panel as pn
 
 
 from dotenv import load_dotenv
 
-from aind_session_utils.naming import (
-    get_session_name, parse_session_name, session_date,
-    session_datetime, get_modalities,
-)
-from aind_session_utils.sources.docdb import (
-    get_project_records, get_raw_records_by_names,
-    get_full_record, filter_records_by_date,
-)
-from aind_session_utils.sources.dts import (
-    get_dts_jobs, DTS_MAX_LOOKBACK_DAYS, DTS_CACHE_TTL,
-)
-from aind_session_utils.sources.codeocean import (
-    _get_co_client, _co_raw_id_cache, _co_run_cache,
-    _get_run_id_for_asset, _CO_DOMAIN,
+from aind_session_utils import (
+    SessionResult,
+    check_completeness,
+    CO_DOMAIN,
+    get_cached_run_id,
     get_pipeline_log,
+    get_full_record,
+    AIND_LOGS_DIR,
+    fetch_and_build_sessions,
+    parse_session_name,
+    ParquetSessionStore,
+    list_project_configs,
+    to_viewer_config,
 )
-from aind_session_utils.sources.manifests import (
-    load_manifest_sessions, AIND_LOGS_DIR, MANIFEST_DIR, _MANIFEST_LINE_RE,
-)
-from aind_session_utils.config import list_project_configs, to_viewer_config
-from aind_session_utils.session import SessionResult, build_sessions
-from aind_session_utils.completeness import check_completeness
-from aind_session_utils.store import ParquetSessionStore
 
 load_dotenv()  # picks up .env in the working directory (or any parent)
-
-_session_store = ParquetSessionStore()
-
-pn.extension("tabulator", "modal")
-
-
-def watchdog_cell(events: list[dict]) -> str:
-    """Format the Watchdog column cell HTML."""
-    if not events:
-        return "⬜"
-    latest = events[0]  # newest-first
-    rig = latest["source"].split("/")[0].strip()
-    action = latest["action"]
-    icon = "❌" if action.lower().startswith("error") else "✅"
-    return (
-        f'<span style="cursor:pointer;white-space:nowrap">'
-        f"{icon} {rig}</span>"
-    )
-
-
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
-METADATA_PORTAL_BASE = "https://metadata-portal.allenneuraldynamics-test.org"
-
-# Load project configs from YAML files in aind_session_utils/project_configs/.
-# To add a project, create a new YAML file there.
-# To override a bundled config, set AIND_SESSION_USER_CONFIG_DIR to a directory
-# containing a YAML file with the same 'name' field.
-PROJECT_CONFIG: dict[str, dict] = {
-    cfg["name"]: to_viewer_config(cfg)
-    for cfg in list_project_configs()
-}
 
 logger = logging.getLogger("session_viewer")
 logger.setLevel(logging.INFO)
@@ -124,67 +69,28 @@ if not logger.handlers:
     _h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
     logger.addHandler(_h)
 
-# ---------------------------------------------------------------------------
-# Tier 2 extension point: rig-side manifest / log detection
-#
-# Implement a concrete subclass and pass it to build_panel_app() when ready.
-# The FileSystemRigLogSource reads from the network path where Alex Piet's
-# cron job saves manifest listings.  Replace with a LokiLogSource (or similar)
-# once the log server is available.
-# ---------------------------------------------------------------------------
+# Project configs loaded from YAML files in aind_session_utils/project_configs/.
+# To add a project, create a new YAML file there.
+# To override a bundled config, set AIND_SESSION_USER_CONFIG_DIR to a directory
+# containing a YAML file with the same 'name' field.
+PROJECT_CONFIG: dict[str, dict] = {
+    cfg["name"]: to_viewer_config(cfg)
+    for cfg in list_project_configs()
+}
 
-class RigLogSource:
-    """
-    Abstract source for rig-side manifest and watchdog log data (Tier 2).
+_session_store = ParquetSessionStore()
 
-    Subclass this and implement get_manifest_sessions() to surface sessions
-    that failed before reaching the DTS (pre-watchdog failures).
-    """
-
-    def get_manifest_sessions(
-        self,
-        date_from: datetime,
-        date_to: datetime,
-    ) -> list[dict]:
-        """
-        Return a list of session dicts detected at the rig level.
-
-        Each dict should contain at least:
-            session_name (str), status (str), hostname (str)
-
-        Raise NotImplementedError to signal "not configured" — the app will
-        suppress Tier 2 columns rather than showing an error.
-        """
-        raise NotImplementedError
-
-
-class FileSystemRigLogSource(RigLogSource):
-    """
-    Reads manifest listings saved by Alex Piet's cron job from the network share.
-
-    Path: /allen/programs/mindscope/workgroups/behavioral-dynamics/aind_logs/
-
-    NOT YET IMPLEMENTED.  Stub in place so the interface is defined.
-    See build_plan.md §Tier 2 for details.
-    """
-
-    BASE_PATH = "/allen/programs/mindscope/workgroups/behavioral-dynamics/aind_logs"
-
-    def get_manifest_sessions(self, date_from, date_to):
-        raise NotImplementedError("FileSystemRigLogSource not yet implemented")
-
-
-
+pn.extension("tabulator", "modal")
 
 # ---------------------------------------------------------------------------
-# JSON display helpers
+# JSON display helper
 # ---------------------------------------------------------------------------
 
 def sort_record_for_display(obj: object) -> object:
-    """
-    Recursively reorder dict keys: flat (non-dict, non-list) values first
-    (alphabetical), then nested values (alphabetical).  Makes the JSON modal
-    easier to scan — important metadata floats to the top of each level.
+    """Recursively reorder a dict so scalar values appear before nested ones.
+
+    Alphabetical within each tier.  Makes the JSON inspector modal easier
+    to scan — leaf metadata floats to the top at every nesting level.
     """
     if not isinstance(obj, dict):
         return obj
@@ -194,7 +100,7 @@ def sort_record_for_display(obj: object) -> object:
 
 
 # ---------------------------------------------------------------------------
-# HTML cell helpers
+# HTML cell helpers (all return strings for Tabulator HTML formatters)
 # ---------------------------------------------------------------------------
 
 _DTS_ICONS = {
@@ -207,11 +113,16 @@ _DTS_ICONS = {
 
 
 def dts_cell(status: str | None, url: str, within_14_days: bool) -> tuple[str, str]:
-    """
-    Render the DTS status cell as an HTML string, and return the DTS URL (or "").
+    """Render the DTS Upload cell.
 
-    Returns (html, url) — url is non-empty only when a task drill-down is available.
-    status and url are pre-computed by build_sessions() in session.py.
+    Args:
+        status:         DTS job state string, or None if no job exists.
+        url:            Pre-built Airflow task-detail URL, or empty string.
+        within_14_days: False for sessions beyond the DTS lookback window.
+
+    Returns:
+        ``(html, url)`` — ``url`` is non-empty only when a drill-down link
+        is available (so the click handler knows to open it).
     """
     if not within_14_days:
         return '<span style="color:#888;">N/A (&gt;14 days)</span>', ""
@@ -219,35 +130,27 @@ def dts_cell(status: str | None, url: str, within_14_days: bool) -> tuple[str, s
         return "⬜", ""
     icon = _DTS_ICONS.get(status, "❓")
     if url:
-        html = f'<span style="cursor:pointer;color:#1a73e8;text-decoration:underline">{icon} view tasks/logs</span>'
-        return html, url
+        return (
+            f'<span style="cursor:pointer;color:#1a73e8;text-decoration:underline">'
+            f"{icon} view tasks/logs</span>",
+            url,
+        )
     return f"{icon} {status}", ""
 
 
 def asset_cell(name: str | None) -> str:
-    """Render an asset status cell as a clickable span (opens inline metadata modal)."""
+    """Render a DocDB asset cell — clickable when an asset name is known."""
     if not name:
         return "⬜"
     return '<span style="cursor:pointer;color:#1a73e8;text-decoration:underline">✅ view metadata</span>'
 
 
-def _co_log_col_name(derived_label: str) -> str:
-    """'Behavior Metadata Record' → 'Behavior CO Log', etc."""
-    return f"{derived_label.split()[0]} CO Log"
-
-
-def _col_co_log_name(col: dict) -> str:
-    """Return CO log column name, respecting optional 'co_log_col' override."""
-    return col.get("co_log_col") or _co_log_col_name(col["label"])
-
-
-def _col_co_asset_name(col: dict) -> str:
-    """Return CO derived asset link column name, respecting optional 'co_asset_col' override."""
-    return col.get("co_asset_col") or f"CO Derived {col['label'].split()[0]} Asset"
-
-
 def co_log_cell(co_url: str | None) -> str:
-    """Render a Code Ocean log cell based on the URL lookup result."""
+    """Render a Code Ocean derived-asset log cell.
+
+    Args:
+        co_url: CO output URL (success), ``'pending'`` (in progress), or None.
+    """
     if co_url == "pending":
         return "⏳"
     if co_url:
@@ -255,11 +158,81 @@ def co_log_cell(co_url: str | None) -> str:
     return ""
 
 
+def co_asset_link_cell(asset_id: str | None, asset_name: str) -> str:
+    """Render a Code Ocean data-asset folder link.
+
+    Args:
+        asset_id:   CO data-asset UUID, or None if not in CO.
+        asset_name: Asset name used to build the URL path.
+    """
+    if asset_id and asset_name:
+        url = f"{CO_DOMAIN}/data-assets/{asset_id}/{asset_name}/data"
+        return (
+            f'<a href="{url}" target="_blank" rel="noopener noreferrer" '
+            f'style="color:#1a73e8;text-decoration:underline">🔗 view data</a>'
+        )
+    return "⬜"
+
+
+def gui_log_cell(path: str | None) -> str:
+    """Render the acquisition GUI log cell — clickable when a log file was found.
+
+    Args:
+        path: Filesystem path to the GUI log file, or None.
+    """
+    if path:
+        return '<span style="cursor:pointer;color:#1a73e8;text-decoration:underline">📋 view log</span>'
+    return "⬜"
+
+
+def rig_log_cell(manifest_entry: dict | None) -> str:
+    """Render the Rig Manifest cell based on watchdog manifest status.
+
+    Args:
+        manifest_entry: Dict with keys ``status`` (``'complete'`` or
+            ``'pending'``), ``rig`` (hostname), and ``session_raw``
+            (original asset name); or None if no manifest was found.
+    """
+    if manifest_entry is None:
+        return "⬜"
+    status = manifest_entry.get("status", "")
+    rig = manifest_entry.get("rig", "")
+    if status == "complete":
+        return (
+            f'<span title="Manifest processed by watchdog on {rig}">'
+            f"✅ {rig}</span>"
+        )
+    if status == "pending":
+        return (
+            f'<span style="color:#a60" '
+            f'title="Manifest staged on {rig}, awaiting watchdog pickup">'
+            f"⏳ {rig}</span>"
+        )
+    return "⬜"
+
+
+def watchdog_cell(events: list[dict]) -> str:
+    """Render the Watchdog cell from a list of watchdog events (newest-first).
+
+    Args:
+        events: List of watchdog event dicts with ``source`` and ``action`` keys.
+    """
+    if not events:
+        return "⬜"
+    latest = events[0]
+    rig = latest["source"].split("/")[0].strip()
+    action = latest["action"]
+    icon = "❌" if action.lower().startswith("error") else "✅"
+    return f'<span style="cursor:pointer;white-space:nowrap">{icon} {rig}</span>'
+
+
 def _log_modal_pane(log_text: str) -> pn.viewable.Viewable:
-    """Return a Panel layout with a copy button and log pre for the modal."""
+    """Build a Panel pane with a copy button and scrollable pre-formatted log.
+
+    Args:
+        log_text: Raw log text to display.
+    """
     displayed = _html.escape(log_text)
-    # Replicate manual select-all + Cmd+C: programmatically select the pre's
-    # text and call execCommand('copy') — same path the browser uses natively.
     html = f"""
 <div style="display:flex;flex-direction:column;height:100%;padding:8px;box-sizing:border-box">
   <div style="margin-bottom:8px;flex-shrink:0">
@@ -284,52 +257,24 @@ def _log_modal_pane(log_text: str) -> pn.viewable.Viewable:
     return pn.pane.HTML(html, sizing_mode="stretch_both")
 
 
-def co_asset_link_cell(asset_id: str | None, asset_name: str) -> str:
-    """Render a Code Ocean data-asset folder link."""
-    if asset_id and asset_name:
-        url = f"{_CO_DOMAIN}/data-assets/{asset_id}/{asset_name}/data"
-        return (
-            f'<a href="{url}" target="_blank" rel="noopener noreferrer" '
-            f'style="color:#1a73e8;text-decoration:underline">🔗 view data</a>'
-        )
-    return "⬜"
+# Column name helpers — derive display column names from pipeline config dicts.
 
+def _co_log_col(col: dict) -> str:
+    """Return the CO log column name for a pipeline config dict.
 
-
-
-def gui_log_cell(path: str | None) -> str:
-    """Render the Rig Log column cell — clickable if a GUI log file was found."""
-    if path:
-        return '<span style="cursor:pointer;color:#1a73e8;text-decoration:underline">📋 view log</span>'
-    return "⬜"
-
-
-def rig_log_cell(manifest_entry: dict | None) -> str:
+    Uses the ``co_log_col`` override if present, otherwise derives it from
+    the pipeline label (e.g. ``'Behavior Metadata Record'`` → ``'Behavior CO Log'``).
     """
-    Render the Rig Log column cell based on rig-side manifest status.
+    return col.get("co_log_col") or f"{col['label'].split()[0]} CO Log"
 
-    manifest_entry comes from load_manifest_sessions() and has keys:
-        status:       "complete" — manifest processed by watchdog (submitted to DTS)
-                      "pending"  — manifest staged on rig, not yet picked up
-        rig:          rig hostname (e.g. "W10DT714027")
-        session_raw:  original asset name from the manifest filename
+
+def _co_asset_col(col: dict) -> str:
+    """Return the CO derived asset column name for a pipeline config dict.
+
+    Uses the ``co_asset_col`` override if present, otherwise derives it from
+    the pipeline label (e.g. ``'Behavior'`` → ``'CO Derived Behavior Asset'``).
     """
-    if manifest_entry is None:
-        return "⬜"
-    status = manifest_entry.get("status", "")
-    rig = manifest_entry.get("rig", "")
-    if status == "complete":
-        return (
-            f'<span title="Manifest processed by watchdog on {rig}">'
-            f"✅ {rig}</span>"
-        )
-    if status == "pending":
-        return (
-            f'<span style="color:#a60" '
-            f'title="Manifest staged on {rig}, awaiting watchdog pickup">'
-            f"⏳ {rig}</span>"
-        )
-    return "⬜"
+    return col.get("co_asset_col") or f"CO Derived {col['label'].split()[0]} Asset"
 
 
 # ---------------------------------------------------------------------------
@@ -341,14 +286,25 @@ def build_session_table(
     derived_columns: list[dict],
     no_derived_expected: frozenset[str] = frozenset(),
 ) -> pd.DataFrame:
-    """Convert SessionResult objects to a DataFrame with HTML cells.
+    """Convert ``SessionResult`` objects to an HTML-cell DataFrame for Tabulator.
 
-    This is pure presentation.  It iterates the already-assembled SessionResult
-    objects from build_sessions() and renders each field using the *_cell()
-    functions.  No querying, no joining.
+    Pure presentation — no querying, no joining.  Each field is rendered by
+    one of the ``*_cell()`` helpers.  Hidden ``_``-prefixed columns carry
+    raw values for click handlers and filters.
+
+    Args:
+        sessions:             List of assembled ``SessionResult`` objects.
+        derived_columns:      Pipeline column configs from the project config
+                              (each dict has ``label``, ``modalities``,
+                              ``co_pipeline_capsule_id``, etc.).
+        no_derived_expected:  Modalities never expected to produce derived
+                              assets — used to compute completeness status.
+
+    Returns:
+        DataFrame with HTML-formatted cells and hidden metadata columns,
+        ordered: fixed columns → derived triples → hidden columns.
     """
-    import time as _time
-    _now_ts = _time.time()
+    _now_ts = _time_mod.time()
 
     rows = []
     for sr in sessions:
@@ -374,8 +330,8 @@ def build_session_table(
             "CO Raw Asset": co_asset_link_cell(sr.raw_co_asset_id, raw_name),
         }
         for col in derived_columns:
-            co_log_col = _col_co_log_name(col)
-            co_asset_col = _col_co_asset_name(col)
+            co_log_col = _co_log_col(col)
+            co_asset_col = _co_asset_col(col)
             expected = sr.expected_pipelines
             col_mods = col["modalities"]
             # Determine whether this pipeline column applies to this session.
@@ -421,9 +377,7 @@ def build_session_table(
                         # cell) and never expires; miss here means ⊘ (not yet known).
                         capsule_id = col.get("co_pipeline_capsule_id", "")
                         run_id = (
-                            _co_run_cache.get(capsule_id, {})
-                            .get("asset_to_run", {})
-                            .get(sr.raw_co_asset_id)
+                            get_cached_run_id(sr.raw_co_asset_id, capsule_id)
                             if sr.raw_co_asset_id and capsule_id
                             else None
                         )
@@ -464,9 +418,9 @@ def build_session_table(
     ]
     derived_col_list = []
     for c in derived_columns:
-        derived_col_list.append(_col_co_log_name(c))
+        derived_col_list.append(_co_log_col(c))
         derived_col_list.append(c["label"])
-        derived_col_list.append(_col_co_asset_name(c))
+        derived_col_list.append(_co_asset_col(c))
     hidden_cols = (
         ["_dts_url", "_watchdog_sname", "_name_Raw Asset Metadata",
          "_rig_log_path", "_rig_manifest_rig", "_completeness_status"]
@@ -545,10 +499,6 @@ def build_panel_app():
         # Capture all widget values on the main thread before launching background work.
         project_name = project_select.value
         cfg = PROJECT_CONFIG[project_name]
-        job_types: dict[str, dict] = cfg["job_types"]
-        job_type_names: set[str] = set(job_types.keys())
-        docdb_project_names: tuple[str, ...] = tuple(cfg["docdb_project_names"])
-        docdb_versions: tuple[str, ...] = tuple(cfg["docdb_versions"])
         derived_columns: list[dict] = cfg["derived_columns"]
         no_derived_expected: frozenset[str] = cfg.get("no_derived_expected", frozenset())
         subject = subject_input.value.strip()
@@ -594,104 +544,21 @@ def build_panel_app():
             import traceback
 
             try:
-                # DTS — server-side, clamped to its 14-day lookback window.
-                dts_cutoff = datetime.now(tz=timezone.utc) - timedelta(days=DTS_MAX_LOOKBACK_DAYS - 1)
-                dts_from = max(date_from, dts_cutoff)
-                dts_to = date_to
-                _set_step("⏳ Querying DTS…")
-                dts_jobs, dts_error = (
-                    get_dts_jobs(dts_from.isoformat(), dts_to.isoformat())
-                    if dts_from <= dts_to else ([], None)
+                sessions, base_status = fetch_and_build_sessions(
+                    project_config=cfg,
+                    date_from=date_from,
+                    date_to=date_to,
+                    subject=subject,
+                    store=_session_store,
+                    no_derived_expected=no_derived_expected,
+                    step_callback=_set_step,
                 )
+                watchdog_events = {
+                    sr.session_name: list(sr.watchdog_events) for sr in sessions
+                }
 
-                # Rig-side manifest sessions.
-                manifest_sessions: dict = {}
-                if cfg.get("use_manifests"):
-                    _set_step("⏳ Loading rig manifests…")
-                    try:
-                        manifest_sessions = load_manifest_sessions()
-                        if subject:
-                            manifest_sessions = {
-                                k: v for k, v in manifest_sessions.items() if subject in k
-                            }
-                    except Exception as e:
-                        logger.warning("Manifest session load failed: %s", e)
-
-                # DocDB — query by project name.
-                _set_step("⏳ Querying DocDB…")
+                _set_step(f"⏳ Building table ({len(sessions)} sessions)…")
                 try:
-                    bootstrap_modalities: frozenset[str] = frozenset()
-                    _docdb_names = docdb_project_names  # may be overridden below
-                    if not _docdb_names:
-                        dts_names = tuple(
-                            j["name"] for j in dts_jobs if j.get("job_type") in job_type_names
-                        )
-                        manifest_names = tuple(
-                            mentry.get("session_raw", sname)
-                            for sname, mentry in manifest_sessions.items()
-                            if (d := session_date(sname)) is not None
-                            and date_from <= d <= date_to
-                        )
-                        bootstrap_names = tuple(set(dts_names) | set(manifest_names))
-                        bootstrap_records = get_raw_records_by_names(bootstrap_names, docdb_versions)
-                        _docdb_names = tuple(sorted({
-                            r.get("data_description", {}).get("project_name")
-                            for r in bootstrap_records
-                            if r.get("data_description", {}).get("project_name")
-                        }))
-                        bootstrap_modalities = frozenset(
-                            m for r in bootstrap_records for m in get_modalities(r)
-                        )
-                        logger.info(
-                            "Discovered project names: %s, modalities: %s",
-                            _docdb_names, bootstrap_modalities,
-                        )
-
-                    all_records = get_project_records(_docdb_names, docdb_versions)
-
-                    if bootstrap_modalities:
-                        all_records = [
-                            r for r in all_records
-                            if not get_modalities(r) or set(get_modalities(r)) & bootstrap_modalities
-                        ]
-                except Exception as exc:
-                    pn.state.execute(lambda: _stop_ticker_and_set(f"❌ DocDB query failed: {exc}"))
-                    pn.state.execute(lambda: setattr(load_button, "disabled", False))
-                    return
-
-                records_in_range = filter_records_by_date(all_records, date_from, date_to)
-
-                if dts_error:
-                    base_status = (
-                        f"⚠️ **DTS unavailable** _(requires AIND network or VPN)_: {dts_error}\n\n"
-                        f"Showing {len(records_in_range)} DocDB records only."
-                    )
-                else:
-                    n_dts = sum(1 for j in dts_jobs if j.get("job_type") in job_type_names)
-                    base_status = (
-                        f"**{n_dts} DTS jobs** · "
-                        f"**{len(records_in_range)} DocDB records** · "
-                        f"{date_from.date()} → {date_to.date()}"
-                    )
-
-                if subject:
-                    dts_jobs = [j for j in dts_jobs if subject in j.get("name", "")]
-                    all_records = [r for r in all_records if subject in r.get("name", "")]
-
-                # Build session objects.
-                _set_step("⏳ Building session list…")
-                try:
-                    sessions = build_sessions(
-                        dts_jobs, all_records, job_types, date_from, date_to,
-                        manifest_sessions=manifest_sessions,
-                        store=_session_store,
-                        no_derived_expected=no_derived_expected,
-                    )
-                    watchdog_events = {
-                        sr.session_name: list(sr.watchdog_events) for sr in sessions
-                    }
-
-                    _set_step(f"⏳ Building table ({len(sessions)} sessions)…")
                     df = build_session_table(sessions, derived_columns, no_derived_expected)
                 except Exception as exc:
                     logger.error("build_session_table failed: %s", traceback.format_exc())
@@ -715,21 +582,21 @@ def build_panel_app():
                 status_md.object = base_status
                 load_button.disabled = False
                 return
-            co_log_col_names = {_col_co_log_name(c) for c in derived_columns}
+            co_log_col_names = {_co_log_col(c) for c in derived_columns}
             # Map CO log column → hidden comp_id column for failed log lookups.
             co_log_comp_id_col = {
-                _col_co_log_name(c): f"_comp_id_{c['label']}"
+                _co_log_col(c): f"_comp_id_{c['label']}"
                 for c in derived_columns
             }
             # Map CO log column → capsule_id for on-demand pending lookups.
             co_log_capsule_col = {
-                _col_co_log_name(c): c.get("co_pipeline_capsule_id", "")
+                _co_log_col(c): c.get("co_pipeline_capsule_id", "")
                 for c in derived_columns
             }
             # Map CO log column → hidden asset name column.
             # Non-empty name means the cell has a <a href> link — browser handles it.
             co_log_name_col = {
-                _col_co_log_name(c): f"_name_{c['label']}"
+                _co_log_col(c): f"_name_{c['label']}"
                 for c in derived_columns
             }
             html_cols = (
@@ -737,7 +604,7 @@ def build_panel_app():
                  "Raw Asset Metadata", "CO Raw Asset"]
                 + list(co_log_col_names)
                 + [c["label"] for c in derived_columns]
-                + [_col_co_asset_name(c) for c in derived_columns]
+                + [_co_asset_col(c) for c in derived_columns]
             )
             hidden_cols = (
                 ["_dts_url", "_watchdog_sname", "_name_Raw Asset Metadata",

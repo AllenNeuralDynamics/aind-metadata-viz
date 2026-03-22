@@ -1,12 +1,11 @@
-"""Session data model and joining logic.
+"""Session data model and query orchestration.
 
-``build_sessions`` takes already-queried DTS jobs, DocDB records, and
-optional manifest sessions, then joins them by canonical session name and
-enriches each session with CO, watchdog, and rig-log data.  It returns a
-list of ``SessionResult`` objects sorted newest-first.
-
-``build_session_table`` in ``session_viewer.py`` consumes these objects and
-converts them to an HTML-cell DataFrame for Tabulator.
+Public API:
+    ``fetch_and_build_sessions`` — high-level entry point; queries DTS,
+        manifests, and DocDB, then calls ``build_sessions``.
+    ``build_sessions`` — lower-level assembler; takes pre-fetched data and
+        joins it into ``SessionResult`` objects.
+    ``SessionResult`` / ``DerivedAssetInfo`` — immutable result dataclasses.
 """
 
 from __future__ import annotations
@@ -16,7 +15,7 @@ import time as _time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Callable, Optional
 from urllib.parse import quote
 
 from aind_session_utils.naming import (
@@ -35,7 +34,13 @@ from aind_session_utils.sources.codeocean import (
     get_co_output_url,
     get_raw_co_asset_id,
 )
-from aind_session_utils.sources.dts import DTS_BASE_URL, DTS_MAX_LOOKBACK_DAYS
+from aind_session_utils.sources.dts import DTS_BASE_URL, DTS_MAX_LOOKBACK_DAYS, get_dts_jobs
+from aind_session_utils.sources.docdb import (
+    get_project_records,
+    get_raw_records_by_names,
+    filter_records_by_date,
+)
+from aind_session_utils.sources.manifests import load_manifest_sessions, AIND_LOGS_DIR
 from aind_session_utils.sources.rig_logs import find_rig_log
 from aind_session_utils.sources.watchdog import fetch_watchdog_events
 from aind_session_utils.store import (
@@ -203,22 +208,32 @@ def build_sessions(
     store: Optional[ParquetSessionStore] = None,
     no_derived_expected: frozenset[str] = frozenset(),
 ) -> list[SessionResult]:
-    """Join DTS jobs, DocDB records, watchdog events, and rig data.
+    """Join pre-fetched DTS jobs, DocDB records, watchdog events, and rig data.
+
+    This is the lower-level assembler.  For most use cases prefer
+    ``fetch_and_build_sessions``, which queries all sources automatically.
 
     Args:
-        dts_jobs:          DTS job dicts already queried for the date range.
-        all_docdb_records: DocDB records already fetched for the project.
-        job_types:         {job_type_name: {"expected_pipelines": set[str]}}
-                           from the project config.
-        date_from:         Start of date range (UTC, inclusive).
-        date_to:           End of date range (UTC, inclusive).
-        manifest_sessions: Optional {sname: {status, rig, session_raw}} from
-                           rig-side manifest files.  When provided, sessions
-                           found only in manifests (not DTS or DocDB) are
-                           included as extra rows.
+        dts_jobs:             DTS job dicts already queried for the date range.
+        all_docdb_records:    DocDB records already fetched for the project.
+        job_types:            ``{job_type_name: {"expected_pipelines": set[str]}}``
+                              from the project config — maps DTS job types to the
+                              modalities expected to have derived outputs.
+        date_from:            Start of date range (UTC, inclusive).
+        date_to:              End of date range (UTC, inclusive).
+        manifest_sessions:    Optional ``{sname: {status, rig, session_raw}}``
+                              from rig-side manifest files.  Sessions found only
+                              in manifests (not DTS or DocDB) are included as
+                              extra rows.
+        store:                Optional ``ParquetSessionStore`` for caching.
+                              Settled (complete) sessions are returned from disk
+                              without re-querying CO or watchdog.
+        no_derived_expected:  Modalities collected but intentionally never
+                              processed (e.g. ``behavior-videos``).  Used only
+                              when ``expected_pipelines`` is unavailable.
 
     Returns:
-        List of SessionResult, sorted newest-first.
+        List of ``SessionResult``, sorted newest-first.
     """
     t0 = _time.time()
 
@@ -541,3 +556,135 @@ def _save_to_store(
     logger.info(
         "store: saved %d sessions (%d settled)", len(session_rows), len(settled_names)
     )
+
+
+# ---------------------------------------------------------------------------
+# High-level orchestrator
+# ---------------------------------------------------------------------------
+
+def fetch_and_build_sessions(
+    project_config: dict,
+    date_from: datetime,
+    date_to: datetime,
+    subject: str = "",
+    store: Optional[ParquetSessionStore] = None,
+    no_derived_expected: frozenset[str] = frozenset(),
+    step_callback: Optional[Callable[[str], None]] = None,
+) -> tuple[list[SessionResult], str]:
+    """Full data pipeline: DTS + manifests + DocDB → build_sessions.
+
+    Orchestrates all source queries and returns assembled SessionResult objects
+    plus a markdown summary string suitable for display.
+
+    Args:
+        project_config:      Viewer config dict from to_viewer_config().
+        date_from:           Start of date range (UTC, inclusive).
+        date_to:             End of date range (UTC, inclusive).
+        subject:             Optional subject ID filter substring.
+        store:               Parquet session store for caching.
+        no_derived_expected: Session names known to have no expected derived assets.
+        step_callback:       Optional callable for progress messages.
+
+    Returns:
+        (sessions, base_status) where base_status is a markdown summary string.
+
+    Raises:
+        Exception on DocDB query failure.
+    """
+    def _step(msg: str) -> None:
+        if step_callback:
+            step_callback(msg)
+
+    job_types: dict[str, dict] = project_config["job_types"]
+    job_type_names: set[str] = set(job_types.keys())
+    docdb_project_names: tuple[str, ...] = tuple(project_config.get("docdb_project_names", ()))
+    docdb_versions: tuple[str, ...] = tuple(project_config.get("docdb_versions", ("v2",)))
+    use_manifests: bool = bool(project_config.get("use_manifests", False))
+
+    # DTS
+    dts_cutoff = datetime.now(tz=timezone.utc) - timedelta(days=DTS_MAX_LOOKBACK_DAYS - 1)
+    dts_from = max(date_from, dts_cutoff)
+    _step("⏳ Querying DTS…")
+    dts_jobs, dts_error = (
+        get_dts_jobs(dts_from.isoformat(), date_to.isoformat())
+        if dts_from <= date_to else ([], None)
+    )
+
+    # Manifests
+    manifest_sessions: dict = {}
+    if use_manifests:
+        _step("⏳ Loading rig manifests…")
+        try:
+            manifest_sessions = load_manifest_sessions()
+            if subject:
+                manifest_sessions = {
+                    k: v for k, v in manifest_sessions.items() if subject in k
+                }
+        except Exception as e:
+            logger.warning("Manifest session load failed: %s", e)
+
+    # DocDB
+    _step("⏳ Querying DocDB…")
+    bootstrap_modalities: frozenset[str] = frozenset()
+    _docdb_names = docdb_project_names
+    if not _docdb_names:
+        dts_names = tuple(j["name"] for j in dts_jobs if j.get("job_type") in job_type_names)
+        manifest_names = tuple(
+            mentry.get("session_raw", sname)
+            for sname, mentry in manifest_sessions.items()
+            if (d := session_date(sname)) is not None
+            and date_from <= d <= date_to
+        )
+        bootstrap_names = tuple(set(dts_names) | set(manifest_names))
+        bootstrap_records = get_raw_records_by_names(bootstrap_names, docdb_versions)
+        _docdb_names = tuple(sorted({
+            r.get("data_description", {}).get("project_name")
+            for r in bootstrap_records
+            if r.get("data_description", {}).get("project_name")
+        }))
+        bootstrap_modalities = frozenset(
+            m for r in bootstrap_records for m in get_modalities(r)
+        )
+        logger.info(
+            "Discovered project names: %s, modalities: %s",
+            _docdb_names, bootstrap_modalities,
+        )
+
+    all_records = get_project_records(_docdb_names, docdb_versions)
+    if bootstrap_modalities:
+        all_records = [
+            r for r in all_records
+            if not get_modalities(r) or set(get_modalities(r)) & bootstrap_modalities
+        ]
+
+    records_in_range = filter_records_by_date(all_records, date_from, date_to)
+
+    # Subject filter
+    if subject:
+        dts_jobs = [j for j in dts_jobs if subject in j.get("name", "")]
+        all_records = [r for r in all_records if subject in r.get("name", "")]
+
+    # Status summary
+    if dts_error:
+        base_status = (
+            f"⚠️ **DTS unavailable** _(requires AIND network or VPN)_: {dts_error}\n\n"
+            f"Showing {len(records_in_range)} DocDB records only."
+        )
+    else:
+        n_dts = sum(1 for j in dts_jobs if j.get("job_type") in job_type_names)
+        base_status = (
+            f"**{n_dts} DTS jobs** · "
+            f"**{len(records_in_range)} DocDB records** · "
+            f"{date_from.date()} → {date_to.date()}"
+        )
+
+    # Build session objects
+    _step("⏳ Building session list…")
+    sessions = build_sessions(
+        dts_jobs, all_records, job_types, date_from, date_to,
+        manifest_sessions=manifest_sessions,
+        store=store,
+        no_derived_expected=no_derived_expected,
+    )
+
+    return sessions, base_status

@@ -3,22 +3,18 @@
 import logging
 
 import requests as req
-import panel as pn
 
 logger = logging.getLogger(__name__)
 
 DTS_BASE_URL = "http://aind-data-transfer-service"
 DTS_MAX_LOOKBACK_DAYS = 14
-DTS_CACHE_TTL = 5 * 60  # 5 minutes — DTS data changes frequently
 
 
-@pn.cache(ttl=DTS_CACHE_TTL)
 def get_dts_jobs(date_from_iso: str, date_to_iso: str) -> tuple[list[dict], str | None]:
     """
     Fetch DTS jobs server-side, paginating as needed.
 
     Returns (jobs_list, error_message_or_None).
-    Cached for 5 minutes since DTS data changes frequently.
     """
     all_jobs: list[dict] = []
     offset = 0

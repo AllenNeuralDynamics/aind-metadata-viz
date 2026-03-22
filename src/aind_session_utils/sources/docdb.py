@@ -2,9 +2,7 @@
 
 import logging
 
-import panel as pn
 from aind_data_access_api.document_db import MetadataDbClient
-from aind_metadata_viz.utils import TTL_HOUR
 
 from aind_session_utils.naming import get_session_name, session_date
 
@@ -24,7 +22,6 @@ def _chunked(seq, size):
         yield seq[i:i + size]
 
 
-@pn.cache(ttl=TTL_HOUR)
 def get_project_records(
     project_names: tuple[str, ...],
     versions: tuple[str, ...],
@@ -75,7 +72,6 @@ def get_project_records(
     return result
 
 
-@pn.cache(ttl=300)  # 5 minutes — matches DTS cache lifetime
 def get_raw_records_by_names(
     names: tuple[str, ...],
     versions: tuple[str, ...],
@@ -118,7 +114,6 @@ def get_raw_records_by_names(
     return list(by_name.values())
 
 
-@pn.cache(ttl=TTL_HOUR)
 def get_derived_records_by_input_names(
     input_names: tuple[str, ...],
     versions: tuple[str, ...],
@@ -163,7 +158,6 @@ def get_derived_records_by_input_names(
     return list(by_name.values())
 
 
-@pn.cache(ttl=TTL_HOUR)
 def get_full_record(name: str) -> dict | None:
     """
     Fetch the complete DocDB record for a single asset by name.

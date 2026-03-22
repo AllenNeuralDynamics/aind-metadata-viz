@@ -4,10 +4,7 @@ import logging
 import os
 import re
 
-import panel as pn
-
 from aind_session_utils.naming import get_session_name
-from aind_metadata_viz.utils import TTL_HOUR
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +20,6 @@ _MANIFEST_LINE_RE = re.compile(
 )
 
 
-@pn.cache(ttl=TTL_HOUR)
 def load_manifest_sessions() -> dict[str, dict]:
     """
     Parse all per-rig manifest listing files from MANIFEST_DIR and return a
