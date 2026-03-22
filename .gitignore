@@ -142,8 +142,12 @@ dmypy.json
 panel_chat_query.py
 .github/copilot-instructions.md
 
-# Procedures cache
-.cache/procedures/
+# Runtime caches — never commit these.
+# All caches should live in ~/.cache/aind_metadata_viz/ (outside the repo).
+.cache/
+*.cache.json
+.co_pipeline_cache.json
+data.json
 
 # Claude Code project instructions
 .claude/

@@ -1,0 +1,23 @@
+name: "Cognitive flexibility in patch foraging"
+
+query:
+  docdb_project_names:
+    - "Cognitive flexibility in patch foraging"
+  docdb_versions:
+    - v2
+  # dts_job_types: dict mapping job type name → expected derived pipeline modalities
+  # expected_pipelines controls which derived columns show "—" (N/A) vs ⬜ (not reached)
+  dts_job_types:
+    vr_foraging_fiber:
+      expected_pipelines: [behavior, fib]
+    vr_foraging_v2:
+      expected_pipelines: [behavior]
+
+# One entry per derived asset column rendered in the session table.
+pipelines:
+  - label: "Behavior Metadata Record"
+    modalities: [behavior]
+    co_pipeline_capsule_id: "da8785b1-1597-41c6-af30-5844f52d4947"
+  - label: "FIB Metadata Record"
+    modalities: [fib, fiber]
+    co_pipeline_capsule_id: "9f8af19f-d107-488d-a3c1-a1f9db29401f"

@@ -31,6 +31,7 @@ dependencies = [
     'vl-convert-python',
     "codeocean",
     "python-dotenv",
+    "pyyaml",
 ]
 
 [project.optional-dependencies]

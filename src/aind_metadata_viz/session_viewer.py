@@ -45,7 +45,6 @@ URL PARAMETERS:
 import json
 import logging
 import os
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 import html as _html
 
@@ -53,31 +52,29 @@ import requests as req
 import pandas as pd
 import panel as pn
 
-from urllib.parse import quote
 
 from dotenv import load_dotenv
 
 from aind_session_utils.naming import (
     get_session_name, parse_session_name, session_date,
-    session_datetime, get_modalities, _DERIVED_MARKERS,
+    session_datetime, get_modalities,
 )
 from aind_session_utils.sources.docdb import (
     get_project_records, get_raw_records_by_names,
     get_full_record, filter_records_by_date,
 )
 from aind_session_utils.sources.dts import (
-    get_dts_jobs, DTS_BASE_URL, DTS_MAX_LOOKBACK_DAYS, DTS_CACHE_TTL,
+    get_dts_jobs, DTS_MAX_LOOKBACK_DAYS, DTS_CACHE_TTL,
 )
 from aind_session_utils.sources.codeocean import (
-    get_co_output_url, get_raw_co_asset_id, get_co_computation_status,
-    _get_co_client, _co_url_cache, _co_raw_id_cache, _co_derived_id_cache,
-    _get_run_id_for_asset, _CO_DOMAIN,
+    _get_co_client, _co_raw_id_cache,
+    _get_run_id_for_asset, _update_co_run_cache, _CO_DOMAIN,
 )
-from aind_session_utils.sources.watchdog import fetch_watchdog_events
 from aind_session_utils.sources.manifests import (
     load_manifest_sessions, AIND_LOGS_DIR, MANIFEST_DIR, _MANIFEST_LINE_RE,
 )
-from aind_session_utils.sources.rig_logs import find_rig_log
+from aind_session_utils.config import list_project_configs, to_viewer_config
+from aind_session_utils.session import SessionResult, build_sessions
 
 load_dotenv()  # picks up .env in the working directory (or any parent)
 
@@ -104,65 +101,13 @@ def watchdog_cell(events: list[dict]) -> str:
 
 METADATA_PORTAL_BASE = "https://metadata-portal.allenneuraldynamics-test.org"
 
-# ---------------------------------------------------------------------------
-# PROJECT_CONFIG
-#
-# Each entry defines one dropdown option.  Keys:
-#
-#   job_types         dict[str, dict] — DTS job type → {"expected_pipelines": set[str]}
-#                     expected_pipelines: modality abbreviations whose derived asset
-#                     columns are applicable to this job type.  Pipelines not in this
-#                     set will show "—" (N/A) rather than ⬜ (not yet reached).
-#
-#   docdb_project_names  list[str] — DocDB project_name values to query.  A single
-#                        dropdown entry may span multiple DocDB project names.
-#
-#   docdb_versions    list[str] — which DocDB versions to search ("v1", "v2", or both).
-#                     When the same asset exists in both, V2 takes precedence.
-#
-#   derived_columns   list[dict] — pipeline asset columns for this project.
-#                     Each entry: {"label": str, "modalities": set[str]}
-# ---------------------------------------------------------------------------
-
+# Load project configs from YAML files in aind_session_utils/project_configs/.
+# To add a project, create a new YAML file there.
+# To override a bundled config, set AIND_SESSION_USER_CONFIG_DIR to a directory
+# containing a YAML file with the same 'name' field.
 PROJECT_CONFIG: dict[str, dict] = {
-    "Cognitive flexibility in patch foraging": {
-        "job_types": {
-            "vr_foraging_fiber": {"expected_pipelines": {"behavior", "fib"}},
-            "vr_foraging_v2":    {"expected_pipelines": {"behavior"}},
-        },
-        "docdb_project_names": ["Cognitive flexibility in patch foraging"],
-        "docdb_versions": ["v2"],
-        "derived_columns": [
-            {"label": "Behavior Metadata Record", "modalities": {"behavior"},
-             "co_pipeline_capsule_id": "da8785b1-1597-41c6-af30-5844f52d4947"},
-            {"label": "FIB Metadata Record",      "modalities": {"fib", "fiber"},
-             "co_pipeline_capsule_id": "9f8af19f-d107-488d-a3c1-a1f9db29401f"},
-        ],
-    },
-    "Dynamic Foraging": {
-        "job_types": {
-            "dynamic_foraging_behavior_and_fiber": {"expected_pipelines": {"behavior", "fib"}},
-            "dynamic_foraging_behavior_only":      {"expected_pipelines": {"behavior"}},
-            "dynamic_foraging_compression":        {"expected_pipelines": {"behavior"}},
-            "dynamic_foraging":                    {"expected_pipelines": {"behavior"}},
-        },
-        # Dynamic Foraging sessions span many DocDB project names across different PIs.
-        # Project names are auto-discovered at query time from the DTS raw record lookup.
-        "docdb_project_names": [],
-        "docdb_versions": ["v1", "v2"],
-        # Enable rig-side manifest detection: reads Alex Piet's daily manifest snapshots
-        # from MANIFEST_DIR to surface sessions that never reached the DTS.
-        "use_manifests": True,
-        "derived_columns": [
-            {
-                "label": "Derived Asset Metadata",
-                "modalities": {"behavior", "fib", "fiber", "behavior-videos"},
-                "co_pipeline_capsule_id": "250cf9b5-f438-4d31-9bbb-ba29dab47d56",
-                "co_log_col": "CO Pipeline Log",
-                "co_asset_col": "CO Derived Asset",
-            },
-        ],
-    },
+    cfg["name"]: to_viewer_config(cfg)
+    for cfg in list_project_configs()
 }
 
 logger = logging.getLogger("session_viewer")
@@ -254,28 +199,22 @@ _DTS_ICONS = {
 }
 
 
-def dts_cell(job: dict | None, within_14_days: bool) -> tuple[str, str]:
+def dts_cell(status: str | None, url: str, within_14_days: bool) -> tuple[str, str]:
     """
     Render the DTS status cell as an HTML string, and return the DTS URL (or "").
 
     Returns (html, url) — url is non-empty only when a task drill-down is available.
+    status and url are pre-computed by build_sessions() in session.py.
     """
     if not within_14_days:
         return '<span style="color:#888;">N/A (&gt;14 days)</span>', ""
-    if job is None:
+    if status is None:
         return "⬜", ""
-    state = job.get("job_state", "unknown")
-    icon = _DTS_ICONS.get(state, "❓")
-    dag_run_id = job.get("job_id", "")
-    dag = job.get("dag_id", "transform_and_upload_v2")
-    if dag_run_id:
-        url = (
-            f"{DTS_BASE_URL}/job_tasks_table"
-            f"?dag_id={quote(dag)}&dag_run_id={quote(dag_run_id)}"
-        )
+    icon = _DTS_ICONS.get(status, "❓")
+    if url:
         html = f'<span style="cursor:pointer;color:#1a73e8;text-decoration:underline">{icon} view tasks/logs</span>'
         return html, url
-    return f"{icon} {state}", ""
+    return f"{icon} {status}", ""
 
 
 def asset_cell(name: str | None) -> str:
@@ -396,245 +335,77 @@ def rig_log_cell(manifest_entry: dict | None) -> str:
 # ---------------------------------------------------------------------------
 
 def build_session_table(
-    dts_jobs: list[dict],
-    all_docdb_records: list[dict],
-    job_types: dict[str, dict],
+    sessions: list[SessionResult],
     derived_columns: list[dict],
-    date_from: datetime,
-    date_to: datetime,
-    manifest_sessions: dict | None = None,
 ) -> pd.DataFrame:
-    """
-    Build a DataFrame with one row per session, joining DTS and DocDB by session name.
+    """Convert SessionResult objects to a DataFrame with HTML cells.
 
-    job_types maps job_type name → config dict with 'expected_pipelines'.
-    derived_columns is a list of {"label": str, "modalities": set[str]} dicts that
-    drives which pipeline asset columns appear in the table.
-
-    Sessions whose job_type is not in job_types are excluded from the table.
-    For pipelines not in a session's expected_pipelines, '—' is shown instead of ⬜.
-    For sessions with no DTS job (>14 days), expected_pipelines is unknown and ⬜ is used.
-
-    all_docdb_records is the full unfiltered project record set. Date filtering is only
-    applied to DocDB-only sessions (those not present in DTS), so that sessions collected
-    one day before the range start but uploaded within the range still show their raw asset.
+    This is pure presentation.  It iterates the already-assembled SessionResult
+    objects from build_sessions() and renders each field using the *_cell()
+    functions.  No querying, no joining.
     """
     import time as _time
-    _t0 = _time.time()
-    def _elapsed(label: str) -> None:
-        logger.info("build_session_table [%.2fs] %s", _time.time() - _t0, label)
-
-    now_utc = datetime.now(tz=timezone.utc)
-    cutoff_14d = now_utc - timedelta(days=DTS_MAX_LOOKBACK_DAYS)
-
-    # Index DTS jobs by canonical session name (filter to relevant job types).
-    # DTS job names may include a modality prefix (e.g. "behavior_829489_...") so
-    # we normalise via get_session_name() to match the DocDB index key.
-    dts_by_name: dict[str, dict] = {
-        get_session_name(j["name"]): j
-        for j in dts_jobs
-        if j.get("job_type") in job_types
-    }
-
-    # Index ALL DocDB records by session name, split by raw vs derived.
-    # We index everything so that a DTS session whose name-date falls just outside
-    # the selected range can still find its DocDB record.
-    raw_by_session: dict[str, dict] = {}
-    derived_by_session: dict[str, list[dict]] = {}
-
-    for r in all_docdb_records:
-        name = r.get("name", "")
-        sname = get_session_name(name)
-        data_level = r.get("data_description", {}).get("data_level", "")
-        is_raw = data_level == "raw" or (
-            not data_level and not any(m in name for m in _DERIVED_MARKERS)
-        )
-        if is_raw:
-            raw_by_session[sname] = r
-        else:
-            derived_by_session.setdefault(sname, []).append(r)
-
-    _elapsed(f"indexed {len(raw_by_session)} raw + {len(derived_by_session)} derived sessions from DocDB")
-
-    # Filter both DTS and DocDB sessions by the date the session was actually
-    # acquired (not the DTS execution_date, which reflects when the job ran and
-    # can include old sessions that were retried or reprocessed recently).
-    #
-    # For DTS sessions: use the date encoded in the session name.
-    # For DocDB-only sessions: prefer acquisition.acquisition_start_time (ground
-    # truth), falling back to the session name date when not present.
-    def _acquisition_date(r: dict) -> datetime | None:
-        # V2 schema: acquisition.acquisition_start_time
-        # V1 schema: session.session_start_time
-        # Fallback: date encoded in the asset name
-        for ts_str in (
-            (r.get("acquisition") or {}).get("acquisition_start_time", ""),
-            (r.get("session") or {}).get("session_start_time", ""),
-        ):
-            if ts_str:
-                try:
-                    d = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-                    return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
-                except ValueError:
-                    pass
-        return session_date(get_session_name(r.get("name", "")))
-
-    dts_in_range: set[str] = set()
-    for sname in dts_by_name:
-        d = session_date(sname)
-        if d is not None and date_from <= d <= date_to:
-            dts_in_range.add(sname)
-
-    docdb_only: set[str] = set()
-    for sname, raw_rec in raw_by_session.items():
-        if sname not in dts_by_name:
-            d = _acquisition_date(raw_rec)
-            if d is not None and date_from <= d <= date_to:
-                docdb_only.add(sname)
-
-    all_sessions = dts_in_range | docdb_only
-
-    _elapsed(f"session sets built: {len(dts_in_range)} DTS + {len(docdb_only)} DocDB-only")
-
-    # Parallel CO lookup — only for sessions in the filtered date range.
-    all_derived_names = {
-        r["name"]
-        for sname in all_sessions
-        for r in derived_by_session.get(sname, [])
-    }
-    all_raw_names = {
-        raw_by_session[sname]["name"]
-        for sname in all_sessions
-        if sname in raw_by_session and raw_by_session[sname].get("name")
-    }
-    if _get_co_client() is not None:
-        uncached_derived = [n for n in all_derived_names if n not in _co_url_cache]
-        uncached_raw = [n for n in all_raw_names if n not in _co_raw_id_cache]
-        if uncached_derived or uncached_raw:
-            with ThreadPoolExecutor(max_workers=20) as executor:
-                futures = (
-                    [executor.submit(get_co_output_url, n) for n in uncached_derived]
-                    + [executor.submit(get_raw_co_asset_id, n) for n in uncached_raw]
-                )
-                for f in futures:
-                    f.result()
-        _elapsed(f"CO lookups done ({len(uncached_derived)} derived, {len(uncached_raw)} raw)")
-
-    # Fetch watchdog events for the date range (cached, ~0.4s on first call).
-    try:
-        watchdog_events = fetch_watchdog_events(date_from, date_to)
-    except Exception as e:
-        logger.warning("Watchdog fetch failed: %s", e)
-        watchdog_events = {}
-    _elapsed("watchdog events fetched")
-
-    # Sessions with DTS success but no derived asset: mark for on-demand click lookup.
-    # The {(sname, col_label): session_ts} map is used at render time to decide
-    # whether to show "⏳ running" (recent) vs "⚠️ check log?" (pipeline should be done).
-    import time as _time
-    pending_session_ts: dict[tuple[str, str], float] = {}
     _now_ts = _time.time()
-    for sname in all_sessions:
-        dts_job = dts_by_name.get(sname)
-        if not dts_job or dts_job.get("job_state") != "success":
-            continue
-        raw = raw_by_session.get(sname)
-        if not raw:
-            continue
-        derived = derived_by_session.get(sname, [])
-        job_type = dts_job.get("job_type")
-        expected = job_types[job_type]["expected_pipelines"] if job_type else None
-        sdt = session_datetime(sname)
-        session_ts = sdt.timestamp() if sdt else 0.0
-        for col in derived_columns:
-            if not col.get("co_pipeline_capsule_id"):
-                continue
-            if expected is not None and not col["modalities"] & expected:
-                continue
-            if any(col["modalities"] & set(get_modalities(r)) for r in derived):
-                continue
-            pending_session_ts[(sname, col["label"])] = session_ts
-
-    _epoch = datetime.min.replace(tzinfo=timezone.utc)
 
     rows = []
-    for sname in sorted(
-        all_sessions,
-        key=lambda s: session_datetime(s) or _epoch,
-        reverse=True,
-    ):
-        subject_id, dt_str = parse_session_name(sname)
-        d = session_date(sname)
-        within_14d = d is None or d >= cutoff_14d
-
-        dts_job = dts_by_name.get(sname)
-        raw = raw_by_session.get(sname)
-        derived = derived_by_session.get(sname, [])
-
-        # Determine which pipelines are expected for this session.
-        # Unknown (no DTS job) → None, meaning fall back to ⬜ for all pipelines.
-        job_type = dts_job.get("job_type") if dts_job else None
-        expected = job_types[job_type]["expected_pipelines"] if job_type else None
-
-        modalities = ", ".join(get_modalities(raw)) if raw else ""
-
-        # Prefer subject_id from DocDB metadata; fall back to name parsing for
-        # DTS-only sessions that have no raw record yet.
-        if raw:
-            subject_id = (raw.get("subject") or {}).get("subject_id") or subject_id
-
-        # Show the real asset name so users can search for it in DocDB / the portal.
-        # The canonical sname is the normalised join key, which strips prefixes like
-        # "behavior_" that are part of the actual asset name.
-        display_name = raw["name"] if raw else (dts_job["name"] if dts_job else sname)
-
-        raw_name = raw["name"] if raw else ""
-        dts_html, dts_url = dts_cell(dts_job, within_14d)
-        wd_events = watchdog_events.get(sname, [])
-        manifest_entry = manifest_sessions.get(sname) if manifest_sessions else None
-        rig = manifest_entry["rig"] if manifest_entry else ""
-        gui_log_path = find_rig_log(rig, sname) if rig else None
+    for sr in sessions:
+        _, dt_str = parse_session_name(sr.session_name)
+        raw_name = sr.raw_asset_name or ""
+        dts_html, dts_url = dts_cell(sr.dts_status, sr.dts_job_url, sr.within_14d)
         row: dict = {
-            "Subject": subject_id,
+            "Subject": sr.subject_id,
             "Session Date": dt_str,
-            "Modalities": modalities,
-            "Session Name": display_name,
-            "Rig Log": gui_log_cell(gui_log_path),
-            "_rig_log_path": gui_log_path or "",
-            "Rig Manifest": rig_log_cell(manifest_entry),
-            "_rig_manifest_rig": rig,
-            "Watchdog": watchdog_cell(wd_events),
-            "_watchdog_sname": sname,
+            "Modalities": ", ".join(sorted(sr.raw_modalities)),
+            "Session Name": sr.display_name,
+            "Rig Log": gui_log_cell(sr.rig_log_path),
+            "_rig_log_path": sr.rig_log_path or "",
+            "Rig Manifest": rig_log_cell(sr.manifest_entry),
+            "_rig_manifest_rig": (sr.manifest_entry or {}).get("rig", ""),
+            "Watchdog": watchdog_cell(list(sr.watchdog_events)),
+            "_watchdog_sname": sr.session_name,
             "DTS Upload": dts_html,
             "_dts_url": dts_url,
             "Raw Asset Metadata": asset_cell(raw_name or None),
             "_name_Raw Asset Metadata": raw_name,
-            "CO Raw Asset": co_asset_link_cell(_co_raw_id_cache.get(raw_name), raw_name),
+            "CO Raw Asset": co_asset_link_cell(sr.raw_co_asset_id, raw_name),
         }
         for col in derived_columns:
             co_log_col = _col_co_log_name(col)
             co_asset_col = _col_co_asset_name(col)
+            expected = sr.expected_pipelines
             if expected is not None and not col["modalities"] & expected:
+                # N/A: this job type doesn't produce this derived asset.
                 row[co_log_col] = "—"
                 row[co_asset_col] = "—"
                 row[col["label"]] = "—"
                 row[f"_name_{col['label']}"] = ""
                 row[f"_comp_id_{col['label']}"] = ""
             else:
-                record = next(
-                    (r for r in derived if col["modalities"] & set(get_modalities(r))),
+                # Find the matching derived asset for this column's modalities.
+                da = next(
+                    (d for d in sr.derived_assets if col["modalities"] & d.modalities),
                     None,
                 )
-                name = record["name"] if record else ""
-
-                # CO log cell
+                asset_name = da.asset_name if da else ""
                 comp_id_key = f"_comp_id_{col['label']}"
-                if name:
-                    row[co_log_col] = co_log_cell(_co_url_cache.get(name))
+                if asset_name:
+                    row[co_log_col] = co_log_cell(da.co_log_url if da else None)
                     row[comp_id_key] = ""
                 else:
-                    session_ts = pending_session_ts.get((sname, col["label"]))
-                    if session_ts is not None:
+                    # Show ⏳/⚠️ if the raw asset reached CO but no derived asset
+                    # exists yet.  Use raw_co_asset_id (not dts_status) as the
+                    # signal — DTS status is unavailable for sessions >14 days old
+                    # or DocDB-only sessions, yet the pipeline may still have run.
+                    is_pending = (
+                        sr.raw_co_asset_id is not None
+                        and bool(col.get("co_pipeline_capsule_id"))
+                    )
+                    if is_pending:
+                        session_ts = (
+                            sr.acquisition_datetime.timestamp()
+                            if sr.acquisition_datetime
+                            else 0.0
+                        )
                         age_hours = (_now_ts - session_ts) / 3600
                         if age_hours > 8:
                             row[co_log_col] = (
@@ -650,68 +421,19 @@ def build_session_table(
                         row[co_log_col] = "⬜"
                         row[comp_id_key] = ""
 
-                # CO derived asset data-folder link
                 row[co_asset_col] = co_asset_link_cell(
-                    _co_derived_id_cache.get(name), name
+                    da.co_asset_id if da else None, asset_name
                 )
-
-                row[col["label"]] = asset_cell(name or None)
-                row[f"_name_{col['label']}"] = name
+                row[col["label"]] = asset_cell(asset_name or None)
+                row[f"_name_{col['label']}"] = asset_name
 
         rows.append(row)
 
-    # Add rows for sessions found in rig manifests but absent from both DTS and DocDB.
-    # These are sessions where the watchdog processed the manifest (or it's still pending)
-    # but the session never appeared in DTS — the "fell through the cracks" case.
-    if manifest_sessions:
-        for sname, mentry in sorted(
-            manifest_sessions.items(),
-            key=lambda kv: session_datetime(kv[0]) or _epoch,
-            reverse=True,
-        ):
-            if sname in all_sessions:
-                continue  # already represented via DTS or DocDB
-            d = session_date(sname)
-            if d is None or not (date_from <= d <= date_to):
-                continue  # outside the selected date window
-            subject_id, dt_str = parse_session_name(sname)
-            within_14d = d >= cutoff_14d
-            wd_events = watchdog_events.get(sname, [])
-            dts_html, _ = dts_cell(None, within_14d)
-            display_name = mentry.get("session_raw", sname)
-            mrig = mentry.get("rig", "")
-            m_gui_log_path = find_rig_log(mrig, sname) if mrig else None
-            manifest_row: dict = {
-                "Subject": subject_id,
-                "Session Date": dt_str,
-                "Modalities": "",
-                "Session Name": display_name,
-                "Rig Log": gui_log_cell(m_gui_log_path),
-                "_rig_log_path": m_gui_log_path or "",
-                "Rig Manifest": rig_log_cell(mentry),
-                "_rig_manifest_rig": mrig,
-                "Watchdog": watchdog_cell(wd_events),
-                "_watchdog_sname": sname,
-                "DTS Upload": dts_html,
-                "_dts_url": "",
-                "Raw Asset Metadata": "⬜",
-                "_name_Raw Asset Metadata": "",
-                "CO Raw Asset": "⬜",
-            }
-            for col in derived_columns:
-                co_log_col = _col_co_log_name(col)
-                co_asset_col = _col_co_asset_name(col)
-                manifest_row[co_log_col] = "⬜"
-                manifest_row[col["label"]] = "⬜"
-                manifest_row[co_asset_col] = "⬜"
-                manifest_row[f"_name_{col['label']}"] = ""
-                manifest_row[f"_comp_id_{col['label']}"] = ""
-            rows.append(manifest_row)
-
-    _elapsed(f"session loop done: {len(rows)} rows built")
-
-    fixed_cols = ["Subject", "Session Date", "Modalities", "Session Name",
-                  "Rig Log", "Rig Manifest", "Watchdog", "DTS Upload", "Raw Asset Metadata", "CO Raw Asset"]
+    fixed_cols = [
+        "Subject", "Session Date", "Modalities", "Session Name",
+        "Rig Log", "Rig Manifest", "Watchdog", "DTS Upload",
+        "Raw Asset Metadata", "CO Raw Asset",
+    ]
     derived_col_list = []
     for c in derived_columns:
         derived_col_list.append(_col_co_log_name(c))
@@ -734,7 +456,7 @@ def build_session_table(
     else:
         df["_has_derived"] = False
 
-    return df, watchdog_events
+    return df
 
 
 # ---------------------------------------------------------------------------
@@ -835,27 +557,43 @@ def build_panel_app():
         dts_to = date_to
         dts_jobs, dts_error = get_dts_jobs(dts_from.isoformat(), dts_to.isoformat()) if dts_from <= dts_to else ([], None)
 
-        # DocDB — query by project name + date range (server-side filtering).
+        # Rig-side manifest sessions (loaded before DocDB so their session names
+        # can be included in the bootstrap project-name discovery below).
+        manifest_sessions: dict = {}
+        if cfg.get("use_manifests"):
+            try:
+                manifest_sessions = load_manifest_sessions()
+                if subject:
+                    manifest_sessions = {
+                        k: v for k, v in manifest_sessions.items() if subject in k
+                    }
+            except Exception as e:
+                logger.warning("Manifest session load failed: %s", e)
+
+        # DocDB — query by project name.
         #
         # For projects with known project names, query directly.
         # For projects with no configured names (e.g. Dynamic Foraging, which
-        # spans many PI-specific project names), do a fast DTS-names lookup first
-        # to discover the project names from the raw records themselves, then use
-        # those discovered names for the full project+date query.
-        date_from_iso = date_from.isoformat()
-        date_to_iso = date_to.isoformat()
+        # spans many PI-specific project names), bootstrap project-name discovery
+        # from DTS job names AND manifest session names (manifest covers sessions
+        # older than the 14-day DTS window, e.g. subjects whose first appearance
+        # in DTS is recent but whose older sessions are in the manifest).
         try:
             bootstrap_modalities: frozenset[str] = frozenset()
             if not docdb_project_names:
-                # Bootstrap: fast indexed lookup to discover project names AND
-                # the modalities those sessions actually have.  Project names can
-                # span multiple modalities (e.g. a PI who runs both behavior and
-                # SmartSPIM under the same project name), so we use the modalities
-                # from the bootstrap records as a post-fetch filter.
+                # Collect all session asset-names we know about: DTS jobs in the
+                # 14-day window + manifest sessions in the selected date range.
                 dts_names = tuple(
                     j["name"] for j in dts_jobs if j.get("job_type") in job_type_names
                 )
-                bootstrap_records = get_raw_records_by_names(dts_names, docdb_versions)
+                manifest_names = tuple(
+                    mentry.get("session_raw", sname)
+                    for sname, mentry in manifest_sessions.items()
+                    if (d := session_date(sname)) is not None
+                    and date_from <= d <= date_to
+                )
+                bootstrap_names = tuple(set(dts_names) | set(manifest_names))
+                bootstrap_records = get_raw_records_by_names(bootstrap_names, docdb_versions)
                 docdb_project_names = tuple(sorted({
                     r.get("data_description", {}).get("project_name")
                     for r in bootstrap_records
@@ -869,9 +607,7 @@ def build_panel_app():
                     docdb_project_names, bootstrap_modalities,
                 )
 
-            all_records = get_project_records(
-                docdb_project_names, docdb_versions, date_from_iso, date_to_iso
-            )
+            all_records = get_project_records(docdb_project_names, docdb_versions)
 
             # If we bootstrapped project names, filter out records with unrelated
             # modalities (e.g. SmartSPIM sessions under the same project name).
@@ -905,25 +641,34 @@ def build_panel_app():
             dts_jobs = [j for j in dts_jobs if subject in j.get("name", "")]
             all_records = [r for r in all_records if subject in r.get("name", "")]
 
-        # Rig-side manifest sessions (only for projects that opt in)
-        manifest_sessions: dict = {}
-        if cfg.get("use_manifests"):
-            try:
-                manifest_sessions = load_manifest_sessions()
-                if subject:
-                    manifest_sessions = {
-                        k: v for k, v in manifest_sessions.items() if subject in k
-                    }
-            except Exception as e:
-                logger.warning("Manifest session load failed: %s", e)
-
         status_md.object = base_status
 
         try:
-            df, watchdog_events = build_session_table(
-                dts_jobs, all_records, job_types, derived_columns, date_from, date_to,
+            sessions = build_sessions(
+                dts_jobs, all_records, job_types, date_from, date_to,
                 manifest_sessions=manifest_sessions,
             )
+            watchdog_events = {
+                sr.session_name: list(sr.watchdog_events) for sr in sessions
+            }
+
+            # Warm the CO run cache in a background thread so ⚠️/⏳ cell clicks
+            # are instant.  Mirrors the get_log_for_session.py caching strategy:
+            # list_computations is slow but only called once; subsequent lookups
+            # hit the in-memory/disk cache immediately.
+            _pipeline_ids = {
+                c["co_pipeline_capsule_id"]
+                for c in derived_columns
+                if c.get("co_pipeline_capsule_id")
+            }
+            if _pipeline_ids and _get_co_client() is not None:
+                import threading
+                def _warm_run_caches(_ids=_pipeline_ids):
+                    for pid in _ids:
+                        _update_co_run_cache(pid)
+                threading.Thread(target=_warm_run_caches, daemon=True).start()
+
+            df = build_session_table(sessions, derived_columns)
         except Exception as exc:
             import traceback
             logger.error("build_session_table failed: %s", traceback.format_exc())

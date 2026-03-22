@@ -1,0 +1,30 @@
+name: "Dynamic Foraging"
+
+query:
+  # docdb_project_names is empty: project names are auto-discovered at query
+  # time from the DTS raw record lookup (sessions span many PI-specific projects).
+  docdb_project_names: []
+  docdb_versions:
+    - v1
+    - v2
+  # dts_job_types: dict mapping job type name → expected derived pipeline modalities
+  dts_job_types:
+    dynamic_foraging_behavior_and_fiber:
+      expected_pipelines: [behavior, fib]
+    dynamic_foraging_behavior_only:
+      expected_pipelines: [behavior]
+    dynamic_foraging_compression:
+      expected_pipelines: [behavior]
+    dynamic_foraging:
+      expected_pipelines: [behavior]
+  # use_manifests: read Alex Piet's daily manifest snapshots from MANIFEST_DIR
+  # to surface sessions that never reached the DTS.
+  use_manifests: true
+
+# One entry per derived asset column rendered in the session table.
+pipelines:
+  - label: "Derived Asset Metadata"
+    modalities: [behavior, fib, fiber, behavior-videos]
+    co_pipeline_capsule_id: "250cf9b5-f438-4d31-9bbb-ba29dab47d56"
+    co_log_col: "CO Pipeline Log"
+    co_asset_col: "CO Derived Asset"

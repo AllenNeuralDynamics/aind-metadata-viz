@@ -28,21 +28,21 @@ def _chunked(seq, size):
 def get_project_records(
     project_names: tuple[str, ...],
     versions: tuple[str, ...],
-    date_from_iso: str = "",
-    date_to_iso: str = "",
 ) -> list[dict]:
     """
     Fetch all DocDB records (raw + derived) for the given projects, across the
     specified DB versions.  Results are merged by asset name; V2 takes precedence
     over V1 when the same asset exists in both.  Cached for 1 hour.
 
-    date_from_iso / date_to_iso are optional ISO-format strings used to filter
-    server-side by session/acquisition start time, avoiding full-history scans.
+    Date filtering is intentionally omitted: older v1 records often store
+    session/acquisition timestamps as datetime objects (not strings), so
+    ISO-string $gte/$lte comparisons silently exclude them.  Client-side
+    filtering (in build_sessions) uses the session name date as a reliable
+    fallback and handles the date range precisely.
     """
     logger.info(
         "Querying DocDB for project records",
-        extra={"projects": project_names, "versions": versions,
-               "date_from": date_from_iso, "date_to": date_to_iso},
+        extra={"projects": project_names, "versions": versions},
     )
     projection = {
         "name": 1,
@@ -55,19 +55,6 @@ def get_project_records(
         "session.session_start_time": 1,
     }
 
-    # Build an optional date-range clause that matches either date field.
-    date_clause: dict = {}
-    if date_from_iso or date_to_iso:
-        date_range: dict = {}
-        if date_from_iso:
-            date_range["$gte"] = date_from_iso
-        if date_to_iso:
-            date_range["$lte"] = date_to_iso
-        date_clause = {"$or": [
-            {"session.session_start_time": date_range},
-            {"acquisition.acquisition_start_time": date_range},
-        ]}
-
     # Collect V1 first, then V2 so V2 naturally overwrites on name collision.
     by_name: dict[str, dict] = {}
     for version in ("v1", "v2"):
@@ -75,10 +62,8 @@ def get_project_records(
             continue
         client = _DOCDB_CLIENTS[version]
         for project_name in project_names:
-            base: dict = {"data_description.project_name": project_name}
-            filter_query = {"$and": [base, date_clause]} if date_clause else base
             records = client.retrieve_docdb_records(
-                filter_query=filter_query,
+                filter_query={"data_description.project_name": project_name},
                 projection=projection,
                 limit=0,
                 paginate_batch_size=500,

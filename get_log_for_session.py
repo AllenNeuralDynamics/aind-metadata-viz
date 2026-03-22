@@ -22,48 +22,59 @@ import time
 
 CO_DOMAIN   = "https://codeocean.allenneuraldynamics.org"
 PIPELINE_ID = "250cf9b5-f438-4d31-9bbb-ba29dab47d56"  # Dynamic Foraging pipeline
-CACHE_FILE  = Path(".co_pipeline_cache.json")
+
+# Shared with the server — same file and format so running this script also
+# warms the server's cache (and the server's background warmup helps this script).
+CACHE_FILE  = Path.home() / ".cache" / "aind_metadata_viz" / "co_pipeline_run_cache.json"
 
 
 def load_cache() -> dict:
-    """Load the local run cache from disk, or return an empty cache."""
+    """Load the shared run cache from disk, or return an empty cache."""
     if CACHE_FILE.exists():
-        return json.loads(CACHE_FILE.read_text())
-    return {"asset_to_run": {}, "newest_created": 0, "oldest_created": None}
+        try:
+            return json.loads(CACHE_FILE.read_text())
+        except Exception:
+            pass
+    return {}
 
 
 def save_cache(cache: dict) -> None:
-    """Persist the run cache to disk."""
+    """Persist the shared run cache to disk."""
+    CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
     CACHE_FILE.write_text(json.dumps(cache))
 
 
 def update_cache(cache: dict, pipeline_id: str, co: CodeOcean, t0: float) -> dict:
     """
-    Fetch new runs from the pipeline and add them to the cache.
+    Fetch new runs for pipeline_id and merge them into the shared cache.
 
-    Iterates the full run list (newest-first) and stops as soon as we reach
-    a run already in the cache, so only truly new runs are processed.
+    The cache is keyed by pipeline_id (same format as the server), so updating
+    one pipeline never clobbers another's watermark.
 
     Returns the updated cache.
     """
     all_runs = co.capsules.list_computations(pipeline_id)
     newest = datetime.fromtimestamp(all_runs[0].created) if all_runs else None
     oldest = datetime.fromtimestamp(all_runs[-1].created) if all_runs else None
-    print(f"  [{time.time()-t0:.1f}s] fetched {len(all_runs)} total runs ({oldest.date() if oldest else '?'} to {newest.date() if newest else '?'})")
+    print(f"  [{time.time()-t0:.1f}s] fetched {len(all_runs)} total runs "
+          f"({oldest.date() if oldest else '?'} to {newest.date() if newest else '?'})")
 
-    newest_cached = cache.get("newest_created", 0)
+    pipeline_cache = cache.setdefault(pipeline_id, {"asset_to_run": {}, "newest_created": 0})
+    newest_cached = pipeline_cache["newest_created"]
+    asset_to_run = pipeline_cache["asset_to_run"]
     new_count = 0
     for run in all_runs:
         if run.created <= newest_cached:
             break  # everything from here is already cached
         for da in (run.data_assets or []):
-            cache["asset_to_run"][da.id] = run.id
-        cache["newest_created"] = max(cache["newest_created"], run.created)
-        if cache["oldest_created"] is None or run.created < cache["oldest_created"]:
-            cache["oldest_created"] = run.created
+            asset_to_run[da.id] = run.id
+        if run.created > pipeline_cache["newest_created"]:
+            pipeline_cache["newest_created"] = run.created
         new_count += 1
 
-    print(f"  [{time.time()-t0:.1f}s] added {new_count} new run(s) to cache ({len(cache['asset_to_run'])} total asset mappings)")
+    pipeline_cache["last_updated"] = time.time()
+    print(f"  [{time.time()-t0:.1f}s] added {new_count} new run(s) to cache "
+          f"({len(asset_to_run)} total asset mappings)")
     save_cache(cache)
     return cache
 
@@ -76,12 +87,12 @@ def find_log_by_asset_id(
     """
     Find a pipeline log by matching the input data asset UUID.
 
-    Checks the local cache first. If the asset is not cached (new failure since last
-    update), fetches fresh run data, updates the cache, then searches again.
-    Once the matching run is identified, fetches and returns its log text.
+    Checks the shared cache (~/.cache/aind_metadata_viz/) first — instant if
+    the server has already warmed it.  On a miss, fetches new runs, updates
+    the cache, and tries again.
 
     Args:
-        asset_name: Name of the raw CO data asset (e.g. behavior_825002_2026-03-11_13-35-19).
+        asset_name: Name of the raw CO data asset.
         pipeline_id: Code Ocean pipeline UUID.
         co: Authenticated CodeOcean client.
 
@@ -101,20 +112,20 @@ def find_log_by_asset_id(
     print(f"  [{time.time()-t0:.1f}s] found raw asset UUID: {asset.id}")
 
     cache = load_cache()
+    pipeline_cache = cache.get(pipeline_id, {})
 
     # Fast path: asset already in cache.
-    run_id = cache["asset_to_run"].get(asset.id)
+    run_id = pipeline_cache.get("asset_to_run", {}).get(asset.id)
     if run_id:
         print(f"  [{time.time()-t0:.1f}s] cache hit — run {run_id}, fetching log...")
     else:
         # Slow path: fetch new runs, update cache, try again.
         print(f"  [{time.time()-t0:.1f}s] not in cache — fetching new runs from pipeline...")
         cache = update_cache(cache, pipeline_id, co, t0)
-        run_id = cache["asset_to_run"].get(asset.id)
+        run_id = cache.get(pipeline_id, {}).get("asset_to_run", {}).get(asset.id)
         if not run_id:
             print(f"  [{time.time()-t0:.1f}s] no run found with asset '{asset_name}' as input")
             return None
-        run_created = None  # we don't store created per-run in the cache
 
     urls = co.computations.get_result_file_urls(run_id, "output")
     r = requests.get(urls.view_url, timeout=30)

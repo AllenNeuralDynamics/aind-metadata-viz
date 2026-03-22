@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import time as _time
 from pathlib import Path
 
 import requests as req
@@ -28,7 +29,8 @@ _CO_RUN_CACHE_FILE = Path.home() / ".cache" / "aind_metadata_viz" / "co_pipeline
 
 # Keyed by pipeline_id so each pipeline maintains its own asset→run mapping and
 # newest_created watermark. Structure:
-#   { pipeline_id: { "asset_to_run": {asset_uuid: run_id}, "newest_created": int } }
+#   { pipeline_id: { "asset_to_run": {asset_uuid: run_id},
+#                    "newest_created": int, "last_updated": float } }
 _co_run_cache: dict[str, dict] = {}
 
 
@@ -93,23 +95,34 @@ def _update_co_run_cache(pipeline_id: str) -> None:
             pipeline_cache["newest_created"] = run.created
         new_count += 1
 
+    pipeline_cache["last_updated"] = _time.time()
     logger.info("CO run cache updated for pipeline %s: %d new runs, %d total entries",
                 pipeline_id, new_count, len(asset_to_run))
     _save_co_run_cache()
+
+
+_CO_RUN_CACHE_TTL = 600  # seconds — skip refresh if cache is this fresh
 
 
 def _get_run_id_for_asset(asset_uuid: str, pipeline_id: str) -> str | None:
     """
     Return the computation run ID for a given raw asset UUID and pipeline.
 
-    Checks the in-memory cache for that pipeline first. On a miss, refreshes
-    the cache from the pipeline's computation history and tries again.
+    Checks the in-memory cache first.  On a miss, refreshes from CO only if
+    the cache is stale (> 10 min since last update).  If the cache was
+    recently refreshed (e.g. by the background warmup at table-load time),
+    the miss is authoritative — no pipeline run exists — and we return None
+    immediately without the expensive list_computations call.
     """
-    run_id = _co_run_cache.get(pipeline_id, {}).get("asset_to_run", {}).get(asset_uuid)
+    pipeline_cache = _co_run_cache.get(pipeline_id, {})
+    run_id = pipeline_cache.get("asset_to_run", {}).get(asset_uuid)
     if run_id:
         return run_id
-    _update_co_run_cache(pipeline_id)
-    return _co_run_cache.get(pipeline_id, {}).get("asset_to_run", {}).get(asset_uuid)
+    age = _time.time() - pipeline_cache.get("last_updated", 0)
+    if age > _CO_RUN_CACHE_TTL:
+        _update_co_run_cache(pipeline_id)
+        return _co_run_cache.get(pipeline_id, {}).get("asset_to_run", {}).get(asset_uuid)
+    return None
 
 
 def get_co_output_url(asset_name: str) -> str | None:
