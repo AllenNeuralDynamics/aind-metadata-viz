@@ -45,8 +45,6 @@ URL PARAMETERS:
 import json
 import logging
 import os
-import re
-from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 import html as _html
@@ -57,319 +55,33 @@ import panel as pn
 
 from urllib.parse import quote
 
-from codeocean import CodeOcean
-from codeocean.data_asset import DataAssetSearchParams, DataAssetState
 from dotenv import load_dotenv
-from aind_data_access_api.document_db import MetadataDbClient
-from aind_metadata_viz.utils import TTL_HOUR
+
+from aind_session_utils.naming import (
+    get_session_name, parse_session_name, session_date,
+    session_datetime, get_modalities, _DERIVED_MARKERS,
+)
+from aind_session_utils.sources.docdb import (
+    get_project_records, get_raw_records_by_names,
+    get_full_record, filter_records_by_date,
+)
+from aind_session_utils.sources.dts import (
+    get_dts_jobs, DTS_BASE_URL, DTS_MAX_LOOKBACK_DAYS, DTS_CACHE_TTL,
+)
+from aind_session_utils.sources.codeocean import (
+    get_co_output_url, get_raw_co_asset_id, get_co_computation_status,
+    _get_co_client, _co_url_cache, _co_raw_id_cache, _co_derived_id_cache,
+    _get_run_id_for_asset, _CO_DOMAIN,
+)
+from aind_session_utils.sources.watchdog import fetch_watchdog_events
+from aind_session_utils.sources.manifests import (
+    load_manifest_sessions, AIND_LOGS_DIR, MANIFEST_DIR, _MANIFEST_LINE_RE,
+)
+from aind_session_utils.sources.rig_logs import find_rig_log
 
 load_dotenv()  # picks up .env in the working directory (or any parent)
 
-# ---------------------------------------------------------------------------
-# Code Ocean client (optional — columns degrade gracefully if not configured)
-# ---------------------------------------------------------------------------
-
-_CO_DOMAIN: str = os.environ.get("CODEOCEAN_DOMAIN", "")
-_co_client: CodeOcean | None = None
-_co_url_cache: dict[str, str | None] = {}
-_co_derived_id_cache: dict[str, str | None] = {}
-
-
-def _get_co_client() -> CodeOcean | None:
-    """Return a singleton CodeOcean client if credentials are configured."""
-    global _co_client
-    if _co_client is None:
-        token = os.environ.get("CODEOCEAN_API_TOKEN")
-        if _CO_DOMAIN and token:
-            _co_client = CodeOcean(domain=_CO_DOMAIN, token=token)
-    return _co_client
-
-
-def get_co_output_url(asset_name: str) -> str | None:
-    """
-    Return the Code Ocean output log URL for a derived asset name.
-
-    Returns:
-        A URL string  — if the CO data asset is Ready
-        'pending'     — if the asset exists but is not yet complete
-        None          — if not found or CO is unavailable
-
-    Results are cached in memory for the server lifetime (CO asset states
-    are effectively immutable once Ready).
-    """
-    if asset_name in _co_url_cache:
-        return _co_url_cache[asset_name]
-    co = _get_co_client()
-    if co is None:
-        return None
-    try:
-        results = co.data_assets.search_data_assets(
-            DataAssetSearchParams(query=asset_name, limit=5)
-        )
-        asset = next(
-            (a for a in results.results if a.name == asset_name), None
-        )
-        if asset is None:
-            result: str | None = None
-            _co_derived_id_cache[asset_name] = None
-        elif asset.state != DataAssetState.Ready:
-            result = "pending"
-            _co_derived_id_cache[asset_name] = asset.id
-        else:
-            result = f"{_CO_DOMAIN}/data-assets/{asset.id}/{asset.name}/output"
-            _co_derived_id_cache[asset_name] = asset.id
-    except Exception as e:
-        logger.warning("CO log lookup failed for %s: %s", asset_name, e)
-        result = None
-    _co_url_cache[asset_name] = result
-    return result
-
-
-_co_raw_id_cache: dict[str, str | None] = {}
-_co_computation_status_cache: dict[tuple[str, str], str | None] = {}
-
-# Cache mapping input asset UUID -> computation run ID, built from list_computations.
-# Persisted to disk so it survives server restarts.
-_CO_RUN_CACHE_FILE = Path.home() / ".cache" / "aind_metadata_viz" / "co_pipeline_run_cache.json"
-
-# Keyed by pipeline_id so each pipeline maintains its own asset→run mapping and
-# newest_created watermark. Structure:
-#   { pipeline_id: { "asset_to_run": {asset_uuid: run_id}, "newest_created": int } }
-_co_run_cache: dict[str, dict] = {}
-
-
-def _load_co_run_cache() -> None:
-    """Load the per-pipeline run cache from disk into module-level state."""
-    global _co_run_cache
-    if _CO_RUN_CACHE_FILE.exists():
-        try:
-            _co_run_cache = json.loads(_CO_RUN_CACHE_FILE.read_text())
-            total = sum(len(v.get("asset_to_run", {})) for v in _co_run_cache.values())
-            logger.info("Loaded CO run cache: %d entries across %d pipeline(s)", total, len(_co_run_cache))
-        except Exception as e:
-            logger.warning("Failed to load CO run cache: %s", e)
-
-
-def _save_co_run_cache() -> None:
-    """Persist the per-pipeline run cache to disk."""
-    try:
-        _CO_RUN_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _CO_RUN_CACHE_FILE.write_text(json.dumps(_co_run_cache))
-    except Exception as e:
-        logger.warning("Failed to save CO run cache: %s", e)
-
-
-def _update_co_run_cache(pipeline_id: str) -> None:
-    """
-    Fetch new runs for a specific pipeline and add them to that pipeline's cache.
-
-    Each pipeline has its own asset→run mapping and newest_created watermark,
-    so updating one pipeline never affects the watermark of another.
-    """
-    co = _get_co_client()
-    if co is None:
-        return
-    try:
-        all_runs = co.capsules.list_computations(pipeline_id)
-    except Exception as e:
-        logger.warning("list_computations failed for %s: %s", pipeline_id, e)
-        return
-
-    pipeline_cache = _co_run_cache.setdefault(pipeline_id, {"asset_to_run": {}, "newest_created": 0})
-    newest_cached = pipeline_cache["newest_created"]
-    asset_to_run = pipeline_cache["asset_to_run"]
-
-    new_count = 0
-    for run in all_runs:
-        if run.created <= newest_cached:
-            break  # everything from here is already cached
-        for da in (run.data_assets or []):
-            asset_to_run[da.id] = run.id
-        if run.created > pipeline_cache["newest_created"]:
-            pipeline_cache["newest_created"] = run.created
-        new_count += 1
-
-    logger.info("CO run cache updated for pipeline %s: %d new runs, %d total entries",
-                pipeline_id, new_count, len(asset_to_run))
-    _save_co_run_cache()
-
-
-def _get_run_id_for_asset(asset_uuid: str, pipeline_id: str) -> str | None:
-    """
-    Return the computation run ID for a given raw asset UUID and pipeline.
-
-    Checks the in-memory cache for that pipeline first. On a miss, refreshes
-    the cache from the pipeline's computation history and tries again.
-    """
-    run_id = _co_run_cache.get(pipeline_id, {}).get("asset_to_run", {}).get(asset_uuid)
-    if run_id:
-        return run_id
-    _update_co_run_cache(pipeline_id)
-    return _co_run_cache.get(pipeline_id, {}).get("asset_to_run", {}).get(asset_uuid)
-
-
-def get_raw_co_asset_id(raw_asset_name: str) -> str | None:
-    """Look up the Code Ocean UUID for a raw asset by exact name. Cached."""
-    if raw_asset_name in _co_raw_id_cache:
-        return _co_raw_id_cache[raw_asset_name]
-    co = _get_co_client()
-    if co is None:
-        return None
-    try:
-        results = co.data_assets.search_data_assets(
-            DataAssetSearchParams(query=raw_asset_name, limit=5)
-        )
-        asset = next(
-            (a for a in results.results if a.name == raw_asset_name), None
-        )
-        result: str | None = asset.id if asset else None
-    except Exception as e:
-        logger.warning("CO raw asset lookup failed for %s: %s", raw_asset_name, e)
-        result = None
-    _co_raw_id_cache[raw_asset_name] = result
-    return result
-
-
-def get_co_computation_status(
-    raw_asset_co_id: str,
-    pipeline_capsule_id: str,
-    session_ts: float,
-) -> str | None:
-    """
-    Scan the pipeline capsule's computation history for one that used
-    raw_asset_co_id as input.
-
-    Returns:
-        'failed'  — computation found, exit_code != 0 or no results
-        'running' — computation found, still in progress
-        None      — no matching computation found (not yet triggered)
-
-    Results are cached by (raw_asset_co_id, pipeline_capsule_id).
-    None is not cached so we retry on the next table load.
-    """
-    cache_key = (raw_asset_co_id, pipeline_capsule_id)
-    if cache_key in _co_computation_status_cache:
-        return _co_computation_status_cache[cache_key]
-    co = _get_co_client()
-    if co is None:
-        return None
-    window_start = session_ts - 86400        # 1 day before session
-    window_end = session_ts + 4 * 86400     # 4 days after (trigger delay + run)
-    result: str | None = None
-    try:
-        for comp in co.capsules.list_computations(pipeline_capsule_id):
-            if comp.created < window_start:
-                break  # list is newest-first; gone past the window
-            if comp.created > window_end:
-                continue
-            input_ids = {da.id for da in (comp.data_assets or [])}
-            if raw_asset_co_id not in input_ids:
-                continue
-            if comp.state.value in ("running", "initializing"):
-                result = "running"
-            elif comp.exit_code != 0 or not comp.has_results:
-                result = "failed"
-            break
-    except Exception as e:
-        logger.warning("CO computation status lookup failed: %s", e)
-    if result is not None:
-        _co_computation_status_cache[cache_key] = result
-    return result
-
-
 pn.extension("tabulator", "modal")
-
-# ---------------------------------------------------------------------------
-# Watchdog log integration  (eng-logtools:8080)
-# ---------------------------------------------------------------------------
-
-_WATCHDOG_URL = "http://eng-logtools:8080/dstest"
-_watchdog_cache: dict[str, tuple[float, dict[str, list]]] = {}
-_WATCHDOG_TTL = 300  # 5 minutes
-
-
-def _query_watchdog_dstest(message_filter: str, length: int = 2000) -> list:
-    """POST to the eng-logtools DataTables endpoint. Returns list of row arrays."""
-    cols = ["date", "source", "channel", "version", "level", "location", "message", "count"]
-    body: dict[str, str] = {
-        "draw": "1", "start": "0", "length": str(length),
-        "search[value]": "", "search[regex]": "false",
-        "order[0][column]": "0", "order[0][dir]": "desc",
-    }
-    for i, name in enumerate(cols):
-        body[f"columns[{i}][data]"] = str(i)
-        body[f"columns[{i}][name]"] = name
-        body[f"columns[{i}][searchable]"] = "true"
-        body[f"columns[{i}][orderable]"] = "true"
-        body[f"columns[{i}][search][regex]"] = "true"
-        if name == "channel":
-            body[f"columns[{i}][search][value]"] = "watchdog"
-        elif name == "message":
-            body[f"columns[{i}][search][value]"] = message_filter
-        else:
-            body[f"columns[{i}][search][value]"] = ""
-    try:
-        r = req.post(
-            _WATCHDOG_URL, data=body,
-            headers={"X-Requested-With": "XMLHttpRequest"},
-            timeout=10,
-        )
-        return r.json().get("data", [])
-    except Exception as e:
-        logger.warning("Watchdog query failed: %s", e)
-        return []
-
-
-def fetch_watchdog_events(date_from, date_to) -> dict[str, list[dict]]:
-    """
-    Fetch watchdog log events for sessions whose names contain dates in
-    [date_from, date_to].  Returns {sname: [event_dict, ...]} newest-first.
-    Cached for _WATCHDOG_TTL seconds.
-    """
-    import re as _re
-    import time as _time
-
-    cache_key = f"{date_from}|{date_to}"
-    cached = _watchdog_cache.get(cache_key)
-    if cached and (_time.time() - cached[0]) < _WATCHDOG_TTL:
-        return cached[1]
-
-    # Build a regex that matches any YYYY-MM-DD in the date range.
-    dates: list[str] = []
-    d = date_from
-    while d <= date_to:
-        dates.append(d.strftime("%Y-%m-%d"))
-        d += timedelta(days=1)
-    date_regex = "|".join(dates)
-
-    rows = _query_watchdog_dstest(message_filter=date_regex)
-
-    events_by_session: dict[str, list[dict]] = {}
-    for row in rows:
-        msg = row[6] if len(row) > 6 else ""
-        m = _re.search(r"name,\s*([^\s,][^,]*)", msg)
-        if not m:
-            continue
-        raw_name = m.group(1).strip()
-        sname = get_session_name(raw_name)
-        if not sname:
-            continue
-        # Normalize T/Z timestamp format: '841302_2026-03-17T202227Z'
-        #   → '841302_2026-03-17_20-22-27' to match DTS/DocDB session keys.
-        tz_m = _re.match(r"^(\d+_\d{4}-\d{2}-\d{2})T(\d{2})(\d{2})(\d{2})Z$", sname)
-        if tz_m:
-            sname = f"{tz_m.group(1)}_{tz_m.group(2)}-{tz_m.group(3)}-{tz_m.group(4)}"
-        action_m = _re.match(r"(Action|Error),\s*([^,]+)", msg)
-        event = {
-            "datetime": row[0] if row else "",
-            "source": row[1] if len(row) > 1 else "",
-            "action": action_m.group(2).strip() if action_m else msg[:50],
-            "message": msg,
-        }
-        events_by_session.setdefault(sname, []).append(event)
-
-    _watchdog_cache[cache_key] = (_time.time(), events_by_session)
-    return events_by_session
 
 
 def watchdog_cell(events: list[dict]) -> str:
@@ -390,36 +102,7 @@ def watchdog_cell(events: list[dict]) -> str:
 # Constants
 # ---------------------------------------------------------------------------
 
-DTS_BASE_URL = "http://aind-data-transfer-service"
 METADATA_PORTAL_BASE = "https://metadata-portal.allenneuraldynamics-test.org"
-DTS_MAX_LOOKBACK_DAYS = 14
-DTS_CACHE_TTL = 5 * 60  # 5 minutes — DTS data changes frequently
-
-# Suffixes that mark a derived (processed) asset name
-_DERIVED_MARKERS = ("_processed_", "_videoprocessed_", "_sorted_")
-
-# ---------------------------------------------------------------------------
-# Rig-side manifest detection
-#
-# Alex Piet's cron job (AllenNeuralDynamics/behavior_communication) SSHs into
-# every behavior rig at 6am and captures a Windows `dir` listing of two folders:
-#   manifest/          — sessions staged for the watchdog, not yet picked up
-#   manifest_complete/ — sessions the watchdog has processed (submitted to DTS)
-#
-# The results are written as {RIG}.txt and {RIG}_complete.txt to MANIFEST_DIR.
-# We read these files to surface sessions that never made it to the DTS.
-# ---------------------------------------------------------------------------
-
-AIND_LOGS_DIR = (
-    "/allen/programs/mindscope/workgroups/behavioral-dynamics/aind_logs"
-)
-MANIFEST_DIR = os.path.join(AIND_LOGS_DIR, "watchdog_manifests")
-
-# Matches a file-entry line in a Windows `dir` listing, e.g.:
-#   03/18/2026  09:35 AM     764 manifest_behavior_841859_2026-03-18_09-35-42.yml
-_MANIFEST_LINE_RE = re.compile(
-    r"^\s*\d{2}/\d{2}/\d{4}\s+\d{1,2}:\d{2} [AP]M\s+[\d,]+\s+(manifest_\S+\.yml)\s*$"
-)
 
 # ---------------------------------------------------------------------------
 # PROJECT_CONFIG
@@ -463,11 +146,9 @@ PROJECT_CONFIG: dict[str, dict] = {
             "dynamic_foraging_compression":        {"expected_pipelines": {"behavior"}},
             "dynamic_foraging":                    {"expected_pipelines": {"behavior"}},
         },
-        # Dynamic Foraging sessions span many DocDB project names across different PIs,
-        # so filtering by project name is unreliable.  Instead, all dynamic foraging raw
-        # assets in V1 share the "behavior_" name prefix — use that as the filter.
+        # Dynamic Foraging sessions span many DocDB project names across different PIs.
+        # Project names are auto-discovered at query time from the DTS raw record lookup.
         "docdb_project_names": [],
-        "docdb_name_regex": "^behavior_",
         "docdb_versions": ["v1", "v2"],
         # Enable rig-side manifest detection: reads Alex Piet's daily manifest snapshots
         # from MANIFEST_DIR to surface sessions that never reached the DTS.
@@ -484,23 +165,12 @@ PROJECT_CONFIG: dict[str, dict] = {
     },
 }
 
-# ---------------------------------------------------------------------------
-# DocDB clients (V1 and V2)
-# ---------------------------------------------------------------------------
-
-docdb_client_v1 = MetadataDbClient(host="api.allenneuraldynamics.org", version="v1")
-docdb_client_v2 = MetadataDbClient(host="api.allenneuraldynamics.org", version="v2")
-
-_DOCDB_CLIENTS = {"v1": docdb_client_v1, "v2": docdb_client_v2}
-
 logger = logging.getLogger("session_viewer")
 logger.setLevel(logging.INFO)
 if not logger.handlers:
     _h = logging.StreamHandler()
     _h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
     logger.addHandler(_h)
-
-_load_co_run_cache()
 
 # ---------------------------------------------------------------------------
 # Tier 2 extension point: rig-side manifest / log detection
@@ -552,86 +222,6 @@ class FileSystemRigLogSource(RigLogSource):
         raise NotImplementedError("FileSystemRigLogSource not yet implemented")
 
 
-# ---------------------------------------------------------------------------
-# Name parsing helpers
-# ---------------------------------------------------------------------------
-
-def get_session_name(asset_name: str) -> str:
-    """
-    Extract the canonical session key ({subject_id}_{date}_{time}) from any asset name.
-
-    Handles all naming conventions observed in DocDB:
-      New raw:     '822683_2026-02-26_16-59-38'                              → '822683_2026-02-26_16-59-38'
-      Old raw:     'behavior_789919_2025-07-11_19-48-01'                     → '789919_2025-07-11_19-48-01'
-      New derived: '822683_2026-02-26_16-59-38_processed_2026-02-27_...'     → '822683_2026-02-26_16-59-38'
-      Old derived: 'behavior_789919_2025-07-11_19-48-01_processed_2025-...'  → '789919_2025-07-11_19-48-01'
-    """
-    # Step 1: strip processing suffix
-    for marker in _DERIVED_MARKERS:
-        if marker in asset_name:
-            asset_name = asset_name.split(marker)[0]
-            break
-    # Step 2: strip modality prefix (non-numeric first component)
-    parts = asset_name.split("_")
-    if parts and not parts[0].isdigit():
-        return "_".join(parts[1:])
-    return asset_name
-
-
-def parse_session_name(session_name: str) -> tuple[str, str]:
-    """
-    Return (subject_id, display_datetime) from a session name.
-
-    '822683_2026-02-26_16-59-38' → ('822683', '2026-02-26 16:59:38')
-    """
-    parts = session_name.split("_")
-    subject_id = parts[0] if parts else session_name
-    if len(parts) >= 3:
-        dt_str = f"{parts[1]} {parts[2].replace('-', ':')}"
-    elif len(parts) >= 2:
-        dt_str = parts[1]
-    else:
-        dt_str = ""
-    return subject_id, dt_str
-
-
-def session_date(session_name: str) -> datetime | None:
-    """Parse the session date from a session name as a UTC datetime, or None."""
-    parts = session_name.split("_")
-    if len(parts) >= 2:
-        try:
-            return datetime.strptime(parts[1], "%Y-%m-%d").replace(tzinfo=timezone.utc)
-        except ValueError:
-            pass
-    return None
-
-
-def session_datetime(session_name: str) -> datetime | None:
-    """Parse full acquisition datetime (date + time) from a session name, or None."""
-    parts = session_name.split("_")
-    if len(parts) >= 3:
-        try:
-            return datetime.strptime(
-                f"{parts[1]} {parts[2]}", "%Y-%m-%d %H-%M-%S"
-            ).replace(tzinfo=timezone.utc)
-        except ValueError:
-            pass
-    return session_date(session_name)
-
-
-def get_modalities(record: dict) -> list[str]:
-    """
-    Return lowercased modality abbreviations from a DocDB record.
-
-    Handles both V2 schema ("modalities") and V1 schema ("modality").
-    """
-    try:
-        dd = record.get("data_description", {})
-        # V2 uses "modalities", V1 uses "modality" (same list structure)
-        mods = dd.get("modalities") or dd.get("modality") or []
-        return [m["abbreviation"].lower() for m in mods if isinstance(m, dict)]
-    except Exception:
-        return []
 
 
 # ---------------------------------------------------------------------------
@@ -764,60 +354,6 @@ def co_asset_link_cell(asset_id: str | None, asset_name: str) -> str:
     return "⬜"
 
 
-_gui_dir_cache: dict[str, list[str]] = {}  # rig → sorted list of all .txt paths
-
-
-def find_gui_log_path(rig: str, session_name: str) -> str | None:
-    """
-    Find the GUI acquisition log file for a session on a given rig, or None.
-
-    GUI logs live at {AIND_LOGS_DIR}/{rig}_gui_log/ and are named:
-        {RIG}-{BOX}_gui_log_{YYYY-MM-DD}_{HH-MM-SS}.txt
-
-    The filename timestamp is the GUI *launch* time, which is always before
-    the session timestamp.  We find all logs on the session date, parse their
-    timestamps, and return the one with the latest start time that is still
-    at or before the session timestamp (i.e. the GUI that was running when
-    the session was saved).
-
-    Directory listings are cached per rig in _gui_dir_cache so that repeated
-    calls for different sessions on the same rig do not re-scan the network share.
-    """
-    import glob as _glob
-    from datetime import datetime as _dt
-    parts = session_name.split("_")
-    if len(parts) < 3:
-        return None
-    date_str, time_str = parts[1], parts[2]
-
-    if rig not in _gui_dir_cache:
-        all_files = _glob.glob(os.path.join(AIND_LOGS_DIR, f"{rig}_gui_log", "*.txt"))
-        _gui_dir_cache[rig] = sorted(all_files)
-
-    matches = [p for p in _gui_dir_cache[rig] if date_str in os.path.basename(p)]
-    if not matches:
-        return None
-    if len(matches) == 1:
-        return matches[0]
-    try:
-        session_ts = _dt.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H-%M-%S")
-    except ValueError:
-        return matches[0]
-    candidates: list[tuple] = []
-    for path in matches:
-        fname = os.path.basename(path)
-        try:
-            ts_str = fname.replace(".txt", "").split("_gui_log_")[-1]
-            ts = _dt.strptime(ts_str, "%Y-%m-%d_%H-%M-%S")
-            candidates.append((ts, path))
-        except (ValueError, IndexError):
-            continue
-    if not candidates:
-        return matches[0]
-    before = [(ts, p) for ts, p in candidates if ts <= session_ts]
-    if before:
-        return max(before, key=lambda x: x[0])[1]
-    return min(candidates, key=lambda x: x[0])[1]
 
 
 def gui_log_cell(path: str | None) -> str:
@@ -853,309 +389,6 @@ def rig_log_cell(manifest_entry: dict | None) -> str:
             f"⏳ {rig}</span>"
         )
     return "⬜"
-
-
-# ---------------------------------------------------------------------------
-# Data fetching — both server-side
-# ---------------------------------------------------------------------------
-
-@pn.cache(ttl=TTL_HOUR)
-def get_project_records(
-    project_names: tuple[str, ...],
-    versions: tuple[str, ...],
-    name_regex: str = "",
-) -> list[dict]:
-    """
-    Fetch all DocDB records (raw + derived) for the given project, across the
-    specified DB versions.  Results are merged by asset name; V2 takes precedence
-    over V1 when the same asset exists in both.  Cached for 1 hour.
-
-    If name_regex is provided, records are filtered by asset name pattern instead
-    of project name.  Useful when a project spans many unpredictable project names
-    (e.g. Dynamic Foraging, where all raw assets share the "behavior_" prefix).
-    """
-    logger.info(
-        "Querying DocDB for project records",
-        extra={"projects": project_names, "versions": versions, "name_regex": name_regex},
-    )
-    projection = {
-        "name": 1,
-        "_id": 1,
-        "subject.subject_id": 1,
-        "data_description.data_level": 1,
-        "data_description.modalities": 1,
-        "data_description.modality": 1,
-        "acquisition.acquisition_start_time": 1,
-        "session.session_start_time": 1,
-    }
-    # Collect V1 first, then V2 so V2 naturally overwrites on name collision.
-    by_name: dict[str, dict] = {}
-    for version in ("v1", "v2"):
-        if version not in versions:
-            continue
-        client = _DOCDB_CLIENTS[version]
-        if name_regex:
-            records = client.retrieve_docdb_records(
-                filter_query={"name": {"$regex": name_regex}},
-                projection=projection,
-                limit=0,
-                paginate_batch_size=500,
-            )
-            for r in records:
-                by_name[r.get("name", "")] = r
-        else:
-            for project_name in project_names:
-                records = client.retrieve_docdb_records(
-                    filter_query={"data_description.project_name": project_name},
-                    projection=projection,
-                    limit=0,
-                    paginate_batch_size=500,
-                )
-                for r in records:
-                    by_name[r.get("name", "")] = r
-    result = list(by_name.values())
-    logger.info("DocDB query complete", extra={"count": len(result)})
-    return result
-
-
-_DOCDB_BATCH_SIZE = 50  # max names per $in query to stay under URL size limits
-
-
-def _chunked(seq, size):
-    seq = list(seq)
-    for i in range(0, len(seq), size):
-        yield seq[i:i + size]
-
-
-@pn.cache(ttl=DTS_CACHE_TTL)
-def get_raw_records_by_names(
-    names: tuple[str, ...],
-    versions: tuple[str, ...],
-) -> list[dict]:
-    """
-    Fast $in lookup for raw records by exact asset name.
-
-    Used in Phase 1 of two-phase loading: DTS job names are the exact
-    DocDB raw asset names, so this query uses the name index (<0.2s).
-    Batched into chunks of _DOCDB_BATCH_SIZE to avoid 431 URL-too-large errors.
-    Cached for 5 minutes to match DTS cache lifetime.
-    """
-    if not names:
-        return []
-    projection = {
-        "name": 1,
-        "_id": 1,
-        "subject.subject_id": 1,
-        "data_description.data_level": 1,
-        "data_description.modalities": 1,
-        "data_description.modality": 1,
-        "acquisition.acquisition_start_time": 1,
-        "session.session_start_time": 1,
-    }
-    by_name: dict[str, dict] = {}
-    for version in ("v1", "v2"):
-        if version not in versions:
-            continue
-        client = _DOCDB_CLIENTS[version]
-        for chunk in _chunked(names, _DOCDB_BATCH_SIZE):
-            records = client.retrieve_docdb_records(
-                filter_query={"name": {"$in": chunk}},
-                projection=projection,
-                limit=0,
-            )
-            for r in records:
-                by_name[r.get("name", "")] = r
-    logger.info("Phase 1 raw $in query", extra={"count": len(by_name), "names_queried": len(names)})
-    return list(by_name.values())
-
-
-@pn.cache(ttl=TTL_HOUR)
-def get_derived_records_by_input_names(
-    input_names: tuple[str, ...],
-    versions: tuple[str, ...],
-) -> list[dict]:
-    """
-    Fetch derived DocDB records by their input_data_name field.
-
-    Derived assets store the name of their source raw asset in
-    data_description.input_data_name.  Using $in on this field gives us
-    exactly the derived records for the sessions found in Phase 1.
-    This field is not indexed so the query is slow (~5-8s) — call from
-    a background thread.  Batched to avoid 431 URL-too-large errors.
-    Cached for 1 hour.
-    """
-    if not input_names:
-        return []
-    projection = {
-        "name": 1,
-        "_id": 1,
-        "subject.subject_id": 1,
-        "data_description.data_level": 1,
-        "data_description.modalities": 1,
-        "data_description.modality": 1,
-        "acquisition.acquisition_start_time": 1,
-        "session.session_start_time": 1,
-    }
-    by_name: dict[str, dict] = {}
-    for version in ("v1", "v2"):
-        if version not in versions:
-            continue
-        client = _DOCDB_CLIENTS[version]
-        for chunk in _chunked(input_names, _DOCDB_BATCH_SIZE):
-            records = client.retrieve_docdb_records(
-                filter_query={"data_description.input_data_name": {"$in": chunk}},
-                projection=projection,
-                limit=0,
-                paginate_batch_size=500,
-            )
-            for r in records:
-                by_name[r.get("name", "")] = r
-    logger.info("Phase 2 derived input_data_name $in query", extra={"count": len(by_name)})
-    return list(by_name.values())
-
-
-@pn.cache(ttl=TTL_HOUR)
-def get_full_record(name: str) -> dict | None:
-    """
-    Fetch the complete DocDB record for a single asset by name.
-
-    Tries V2 first (newer schema), falls back to V1.  Returns None if not found.
-    Cached for 1 hour — individual records rarely change.
-    """
-    for version in ("v2", "v1"):
-        client = _DOCDB_CLIENTS[version]
-        records = client.retrieve_docdb_records(
-            filter_query={"name": name},
-            limit=1,
-        )
-        if records:
-            return records[0]
-    return None
-
-
-def filter_records_by_date(
-    records: list[dict],
-    date_from: datetime,
-    date_to: datetime,
-) -> list[dict]:
-    """Filter records by the date encoded in the asset name."""
-    result = []
-    for r in records:
-        d = session_date(get_session_name(r.get("name", "")))
-        if d and date_from <= d <= date_to:
-            result.append(r)
-    return result
-
-
-@pn.cache(ttl=DTS_CACHE_TTL)
-def get_dts_jobs(date_from_iso: str, date_to_iso: str) -> tuple[list[dict], str | None]:
-    """
-    Fetch DTS jobs server-side, paginating as needed.
-
-    Returns (jobs_list, error_message_or_None).
-    Cached for 5 minutes since DTS data changes frequently.
-    """
-    all_jobs: list[dict] = []
-    offset = 0
-    page_limit = 500
-    total: int | None = None
-
-    try:
-        while total is None or len(all_jobs) < total:
-            params: dict = {
-                "execution_date_gte": date_from_iso,
-                "execution_date_lte": date_to_iso,
-                "page_limit": page_limit,
-                "page_offset": offset,
-                "order_by": "-execution_date",
-            }
-            resp = req.get(
-                f"{DTS_BASE_URL}/api/v1/get_job_status_list",
-                params=params,
-                timeout=30,
-            )
-            resp.raise_for_status()
-            data = resp.json().get("data", {})
-            jobs: list[dict] = data.get("job_status_list", [])
-            if total is None:
-                total = data.get("total_entries", 0)
-            all_jobs.extend(jobs)
-            offset += len(jobs)
-            if not jobs:
-                break
-        return all_jobs, None
-    except Exception as e:
-        return [], str(e)
-
-
-# ---------------------------------------------------------------------------
-# Rig manifest loader
-# ---------------------------------------------------------------------------
-
-@pn.cache(ttl=TTL_HOUR)
-def load_manifest_sessions() -> dict[str, dict]:
-    """
-    Parse all per-rig manifest listing files from MANIFEST_DIR and return a
-    dict mapping canonical session name → manifest metadata.
-
-    Return value: {session_name: {"rig": str, "status": str, "session_raw": str}}
-        status "complete" — manifest was in manifest_complete/ (watchdog processed it)
-        status "pending"  — manifest was in manifest/ (staged, not yet picked up)
-        session_raw       — full asset name from the manifest filename, e.g.
-                            "behavior_822683_2026-03-18_09-35-42"
-
-    Files are Windows `dir` listings written by Alex Piet's 6am cron job:
-        {RIG}.txt          → manifest/ (pending)
-        {RIG}_complete.txt → manifest_complete/ (complete)
-
-    "complete" takes precedence if the same session appears in both.
-    Cached for 1 hour since files are only refreshed once daily.
-    """
-    sessions: dict[str, dict] = {}
-    try:
-        filenames = os.listdir(MANIFEST_DIR)
-    except OSError as e:
-        logger.warning("Manifest directory not accessible (%s): %s", MANIFEST_DIR, e)
-        return sessions
-
-    for filename in filenames:
-        if not filename.endswith(".txt"):
-            continue
-        if filename == "processed.txt":
-            continue
-        if filename.endswith("_complete.txt"):
-            rig = filename[: -len("_complete.txt")]
-            status = "complete"
-        else:
-            rig = filename[: -len(".txt")]
-            status = "pending"
-
-        filepath = os.path.join(MANIFEST_DIR, filename)
-        try:
-            with open(filepath, encoding="utf-8", errors="replace") as f:
-                for line in f:
-                    m = _MANIFEST_LINE_RE.match(line.rstrip("\n"))
-                    if not m:
-                        continue
-                    manifest_fname = m.group(1)
-                    # e.g. "manifest_behavior_822683_2026-03-18_09-35-42.yml"
-                    # → session_raw = "behavior_822683_2026-03-18_09-35-42"
-                    session_raw = manifest_fname[len("manifest_") : -len(".yml")]
-                    sname = get_session_name(session_raw)
-                    if not sname:
-                        continue
-                    # "complete" takes precedence if the session appears in both files
-                    if sname not in sessions or status == "complete":
-                        sessions[sname] = {
-                            "rig": rig,
-                            "status": status,
-                            "session_raw": session_raw,
-                        }
-        except OSError as e:
-            logger.warning("Could not read manifest file %s: %s", filepath, e)
-
-    logger.info("Loaded %d sessions from rig manifests", len(sessions))
-    return sessions
 
 
 # ---------------------------------------------------------------------------
@@ -1360,7 +593,7 @@ def build_session_table(
         wd_events = watchdog_events.get(sname, [])
         manifest_entry = manifest_sessions.get(sname) if manifest_sessions else None
         rig = manifest_entry["rig"] if manifest_entry else ""
-        gui_log_path = find_gui_log_path(rig, sname) if rig else None
+        gui_log_path = find_rig_log(rig, sname) if rig else None
         row: dict = {
             "Subject": subject_id,
             "Session Date": dt_str,
@@ -1447,7 +680,7 @@ def build_session_table(
             dts_html, _ = dts_cell(None, within_14d)
             display_name = mentry.get("session_raw", sname)
             mrig = mentry.get("rig", "")
-            m_gui_log_path = find_gui_log_path(mrig, sname) if mrig else None
+            m_gui_log_path = find_rig_log(mrig, sname) if mrig else None
             manifest_row: dict = {
                 "Subject": subject_id,
                 "Session Date": dt_str,
@@ -1574,7 +807,6 @@ def build_panel_app():
         job_type_names: set[str] = set(job_types.keys())
         docdb_project_names: tuple[str, ...] = tuple(cfg["docdb_project_names"])
         docdb_versions: tuple[str, ...] = tuple(cfg["docdb_versions"])
-        docdb_name_regex: str = cfg.get("docdb_name_regex", "")
         derived_columns: list[dict] = cfg["derived_columns"]
 
         load_button.disabled = True
@@ -1603,12 +835,51 @@ def build_panel_app():
         dts_to = date_to
         dts_jobs, dts_error = get_dts_jobs(dts_from.isoformat(), dts_to.isoformat()) if dts_from <= dts_to else ([], None)
 
-        # DocDB — queried independently of DTS, by project config.
-        # DTS results are joined in afterwards; they don't constrain what DocDB returns.
+        # DocDB — query by project name + date range (server-side filtering).
+        #
+        # For projects with known project names, query directly.
+        # For projects with no configured names (e.g. Dynamic Foraging, which
+        # spans many PI-specific project names), do a fast DTS-names lookup first
+        # to discover the project names from the raw records themselves, then use
+        # those discovered names for the full project+date query.
+        date_from_iso = date_from.isoformat()
+        date_to_iso = date_to.isoformat()
         try:
+            bootstrap_modalities: frozenset[str] = frozenset()
+            if not docdb_project_names:
+                # Bootstrap: fast indexed lookup to discover project names AND
+                # the modalities those sessions actually have.  Project names can
+                # span multiple modalities (e.g. a PI who runs both behavior and
+                # SmartSPIM under the same project name), so we use the modalities
+                # from the bootstrap records as a post-fetch filter.
+                dts_names = tuple(
+                    j["name"] for j in dts_jobs if j.get("job_type") in job_type_names
+                )
+                bootstrap_records = get_raw_records_by_names(dts_names, docdb_versions)
+                docdb_project_names = tuple(sorted({
+                    r.get("data_description", {}).get("project_name")
+                    for r in bootstrap_records
+                    if r.get("data_description", {}).get("project_name")
+                }))
+                bootstrap_modalities = frozenset(
+                    m for r in bootstrap_records for m in get_modalities(r)
+                )
+                logger.info(
+                    "Discovered project names: %s, modalities: %s",
+                    docdb_project_names, bootstrap_modalities,
+                )
+
             all_records = get_project_records(
-                docdb_project_names, docdb_versions, docdb_name_regex
+                docdb_project_names, docdb_versions, date_from_iso, date_to_iso
             )
+
+            # If we bootstrapped project names, filter out records with unrelated
+            # modalities (e.g. SmartSPIM sessions under the same project name).
+            if bootstrap_modalities:
+                all_records = [
+                    r for r in all_records
+                    if not get_modalities(r) or set(get_modalities(r)) & bootstrap_modalities
+                ]
         except Exception as exc:
             status_md.object = f"❌ DocDB query failed: {exc}"
             load_button.disabled = False
