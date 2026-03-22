@@ -1,4 +1,16 @@
-"""Data Transfer Service queries."""
+"""Data Transfer Service (DTS) job queries.
+
+Talks to the AIND Data Transfer Service REST API at ``DTS_BASE_URL``
+(``http://aind-data-transfer-service``).  Requires AIND network or VPN.
+
+The DTS enforces a 14-day lookback window (``DTS_MAX_LOOKBACK_DAYS``); queries
+for older date ranges return an empty list without error.
+
+Primary entry point: ``get_dts_jobs(date_from_iso, date_to_iso)`` — paginates
+through all matching job records and returns ``(jobs_list, error_or_None)``.
+Results are cached in memory for ``_DTS_CACHE_TTL`` seconds so repeated loads
+of the same date range don't re-hit the API.
+"""
 
 import logging
 import time as _time

@@ -1,4 +1,16 @@
-"""Rig-side session log lookup."""
+"""Rig-side acquisition GUI log file lookup.
+
+Reads log files from the AIND network share at ``AIND_LOGS_DIR``.
+Requires the AIND on-prem network share to be mounted.
+
+Each rig writes GUI log files to ``{AIND_LOGS_DIR}/{rig}_gui_log/`` named:
+  ``{RIG}-{BOX}_gui_log_{YYYY-MM-DD}_{HH-MM-SS}.txt``
+
+The timestamp in the filename is the GUI launch time, which precedes the
+session start.  ``find_rig_log(rig, session_name)`` matches the most recent
+GUI log that started at or before the session timestamp on the session date.
+Directory listings are cached per rig to avoid repeated network-share scans.
+"""
 
 import logging
 import os

@@ -1,4 +1,17 @@
-"""Rig-side manifest file parsing."""
+"""Rig-side watchdog manifest file parsing.
+
+Reads per-rig directory listing files from the AIND network share at
+``MANIFEST_DIR`` (under ``AIND_LOGS_DIR``).  Requires the AIND on-prem
+network share to be mounted.
+
+Alex Piet's 6am cron job writes two files per rig each day:
+  - ``{RIG}.txt``          — sessions in ``manifest/`` (watchdog staged, pending pickup)
+  - ``{RIG}_complete.txt`` — sessions in ``manifest_complete/`` (watchdog processed)
+
+Primary entry point: ``load_manifest_sessions()`` — parses all listing files
+and returns ``{session_name: {rig, status, session_raw}}``.  Used to surface
+sessions that are on-rig but haven't yet reached DTS or DocDB.
+"""
 
 import logging
 import os

@@ -1,4 +1,17 @@
-"""Watchdog log events from eng-logtools."""
+"""Watchdog log events from the eng-logtools DataTables endpoint.
+
+Talks to ``http://eng-logtools:8080/dstest`` (``_WATCHDOG_URL``).
+Requires AIND on-prem network access.
+
+Watchdog is the Windows service on each rig that monitors the session directory
+and uploads a manifest when a session is complete.  Its log messages are
+forwarded to eng-logtools and indexed there.
+
+Primary entry point: ``fetch_watchdog_events(date_from, date_to)`` — queries
+the DataTables endpoint for watchdog-channel messages whose dates fall in the
+requested range and returns ``{session_name: [event_dict, ...]}`` newest-first.
+Results are cached for ``_WATCHDOG_TTL`` seconds.
+"""
 
 import logging
 import re as _re
