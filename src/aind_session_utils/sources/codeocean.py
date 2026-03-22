@@ -101,28 +101,22 @@ def _update_co_run_cache(pipeline_id: str) -> None:
     _save_co_run_cache()
 
 
-_CO_RUN_CACHE_TTL = 600  # seconds — skip refresh if cache is this fresh
-
-
 def _get_run_id_for_asset(asset_uuid: str, pipeline_id: str) -> str | None:
     """
     Return the computation run ID for a given raw asset UUID and pipeline.
 
-    Checks the in-memory cache first.  On a miss, refreshes from CO only if
-    the cache is stale (> 10 min since last update).  If the cache was
-    recently refreshed (e.g. by the background warmup at table-load time),
-    the miss is authoritative — no pipeline run exists — and we return None
-    immediately without the expensive list_computations call.
+    Cache hit (asset already known): instant dict lookup.
+    Cache miss: fetches any new runs added since the last update (newest_created
+    watermark), then checks again.  The slow list_computations call is only made
+    on a genuine miss — once the cache is built it is never expired.
     """
     pipeline_cache = _co_run_cache.get(pipeline_id, {})
     run_id = pipeline_cache.get("asset_to_run", {}).get(asset_uuid)
     if run_id:
         return run_id
-    age = _time.time() - pipeline_cache.get("last_updated", 0)
-    if age > _CO_RUN_CACHE_TTL:
-        _update_co_run_cache(pipeline_id)
-        return _co_run_cache.get(pipeline_id, {}).get("asset_to_run", {}).get(asset_uuid)
-    return None
+    # Cache miss: pull any new runs since last update, then re-check.
+    _update_co_run_cache(pipeline_id)
+    return _co_run_cache.get(pipeline_id, {}).get("asset_to_run", {}).get(asset_uuid)
 
 
 def get_co_output_url(asset_name: str) -> str | None:

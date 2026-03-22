@@ -45,6 +45,8 @@ URL PARAMETERS:
 import json
 import logging
 import os
+import threading
+import time as _time_mod
 from datetime import datetime, timedelta, timezone
 import html as _html
 
@@ -67,8 +69,8 @@ from aind_session_utils.sources.dts import (
     get_dts_jobs, DTS_MAX_LOOKBACK_DAYS, DTS_CACHE_TTL,
 )
 from aind_session_utils.sources.codeocean import (
-    _get_co_client, _co_raw_id_cache,
-    _get_run_id_for_asset, _update_co_run_cache, _CO_DOMAIN,
+    _get_co_client, _co_raw_id_cache, _co_run_cache,
+    _get_run_id_for_asset, _CO_DOMAIN,
     get_pipeline_log,
 )
 from aind_session_utils.sources.manifests import (
@@ -77,8 +79,11 @@ from aind_session_utils.sources.manifests import (
 from aind_session_utils.config import list_project_configs, to_viewer_config
 from aind_session_utils.session import SessionResult, build_sessions
 from aind_session_utils.completeness import check_completeness
+from aind_session_utils.store import ParquetSessionStore
 
 load_dotenv()  # picks up .env in the working directory (or any parent)
+
+_session_store = ParquetSessionStore()
 
 pn.extension("tabulator", "modal")
 
@@ -244,11 +249,10 @@ def _col_co_asset_name(col: dict) -> str:
 def co_log_cell(co_url: str | None) -> str:
     """Render a Code Ocean log cell based on the URL lookup result."""
     if co_url == "pending":
-        return "⏳ pending"
+        return "⏳"
     if co_url:
-        # Clickable span — opens in modal (same UX as failed/pending logs).
-        return '<span style="cursor:pointer;color:#1a73e8;text-decoration:underline">🔗 view log</span>'
-    return "⬜"
+        return '<span style="cursor:pointer" title="View pipeline log">✅ view log</span>'
+    return ""
 
 
 def _log_modal_pane(log_text: str) -> pn.viewable.Viewable:
@@ -412,24 +416,36 @@ def build_session_table(
                         and bool(col.get("co_pipeline_capsule_id"))
                     )
                     if is_pending:
-                        session_ts = (
-                            sr.acquisition_datetime.timestamp()
-                            if sr.acquisition_datetime
-                            else 0.0
+                        # Direct cache lookup — no API call.  The cache is built
+                        # from list_computations on demand (when the user clicks a
+                        # cell) and never expires; miss here means ⊘ (not yet known).
+                        capsule_id = col.get("co_pipeline_capsule_id", "")
+                        run_id = (
+                            _co_run_cache.get(capsule_id, {})
+                            .get("asset_to_run", {})
+                            .get(sr.raw_co_asset_id)
+                            if sr.raw_co_asset_id and capsule_id
+                            else None
                         )
-                        age_hours = (_now_ts - session_ts) / 3600
-                        if age_hours > 8:
-                            row[co_log_col] = (
-                                '<span style="cursor:pointer;color:#a60">'
-                                "⚠️ check log?</span>"
+                        if run_id:
+                            # A pipeline run exists but produced no derived asset.
+                            # Use age to distinguish still-running from failed.
+                            session_ts = (
+                                sr.acquisition_datetime.timestamp()
+                                if sr.acquisition_datetime else 0.0
                             )
+                            if (_now_ts - session_ts) / 3600 < 2:
+                                row[co_log_col] = "⏳"
+                            else:
+                                row[co_log_col] = (
+                                    '<span style="cursor:pointer" title="Pipeline ran but produced no output — click to check log">❌ view log</span>'
+                                )
                         else:
-                            row[co_log_col] = (
-                                '<span style="cursor:pointer">⏳ running</span>'
-                            )
+                            # No run found: pipeline was never triggered.
+                            row[co_log_col] = '<span style="color:#aaa" title="No pipeline run found">⊘</span>'
                         row[comp_id_key] = ""
                     else:
-                        row[co_log_col] = "⬜"
+                        row[co_log_col] = '<span style="color:#aaa" title="Not in Code Ocean">⊘</span>'
                         row[comp_id_key] = ""
 
                 row[co_asset_col] = co_asset_link_cell(
@@ -526,6 +542,7 @@ def build_panel_app():
             status_md.object = "❌ Please select a date range."
             return
 
+        # Capture all widget values on the main thread before launching background work.
         project_name = project_select.value
         cfg = PROJECT_CONFIG[project_name]
         job_types: dict[str, dict] = cfg["job_types"]
@@ -534,10 +551,7 @@ def build_panel_app():
         docdb_versions: tuple[str, ...] = tuple(cfg["docdb_versions"])
         derived_columns: list[dict] = cfg["derived_columns"]
         no_derived_expected: frozenset[str] = cfg.get("no_derived_expected", frozenset())
-
-        load_button.disabled = True
-        status_md.object = "⏳ Loading..."
-        table_col[:] = []
+        subject = subject_input.value.strip()
 
         date_from = datetime(
             date_from_picker.value.year,
@@ -553,136 +567,154 @@ def build_panel_app():
             tzinfo=timezone.utc,
         )
 
-        subject = subject_input.value.strip()
+        load_button.disabled = True
+        table_col[:] = []
 
-        # DTS — server-side, clamped to its 14-day lookback window.
-        dts_cutoff = datetime.now(tz=timezone.utc) - timedelta(days=DTS_MAX_LOOKBACK_DAYS - 1)
-        dts_from = max(date_from, dts_cutoff)
-        dts_to = date_to
-        dts_jobs, dts_error = get_dts_jobs(dts_from.isoformat(), dts_to.isoformat()) if dts_from <= dts_to else ([], None)
+        # --- Progress ticker ---
+        _t0 = _time_mod.time()
+        _step = ["⏳ Starting…"]
 
-        # Rig-side manifest sessions (loaded before DocDB so their session names
-        # can be included in the bootstrap project-name discovery below).
-        manifest_sessions: dict = {}
-        if cfg.get("use_manifests"):
-            try:
-                manifest_sessions = load_manifest_sessions()
-                if subject:
-                    manifest_sessions = {
-                        k: v for k, v in manifest_sessions.items() if subject in k
-                    }
-            except Exception as e:
-                logger.warning("Manifest session load failed: %s", e)
+        def _tick():
+            elapsed = _time_mod.time() - _t0
+            status_md.object = f"{_step[0]} _{elapsed:.0f}s_"
 
-        # DocDB — query by project name.
-        #
-        # For projects with known project names, query directly.
-        # For projects with no configured names (e.g. Dynamic Foraging, which
-        # spans many PI-specific project names), bootstrap project-name discovery
-        # from DTS job names AND manifest session names (manifest covers sessions
-        # older than the 14-day DTS window, e.g. subjects whose first appearance
-        # in DTS is recent but whose older sessions are in the manifest).
-        try:
-            bootstrap_modalities: frozenset[str] = frozenset()
-            if not docdb_project_names:
-                # Collect all session asset-names we know about: DTS jobs in the
-                # 14-day window + manifest sessions in the selected date range.
-                dts_names = tuple(
-                    j["name"] for j in dts_jobs if j.get("job_type") in job_type_names
-                )
-                manifest_names = tuple(
-                    mentry.get("session_raw", sname)
-                    for sname, mentry in manifest_sessions.items()
-                    if (d := session_date(sname)) is not None
-                    and date_from <= d <= date_to
-                )
-                bootstrap_names = tuple(set(dts_names) | set(manifest_names))
-                bootstrap_records = get_raw_records_by_names(bootstrap_names, docdb_versions)
-                docdb_project_names = tuple(sorted({
-                    r.get("data_description", {}).get("project_name")
-                    for r in bootstrap_records
-                    if r.get("data_description", {}).get("project_name")
-                }))
-                bootstrap_modalities = frozenset(
-                    m for r in bootstrap_records for m in get_modalities(r)
-                )
-                logger.info(
-                    "Discovered project names: %s, modalities: %s",
-                    docdb_project_names, bootstrap_modalities,
-                )
+        _ticker = pn.state.add_periodic_callback(_tick, 500)
 
-            all_records = get_project_records(docdb_project_names, docdb_versions)
+        def _set_step(msg: str) -> None:
+            """Update the step label immediately (ticker keeps elapsed refreshed)."""
+            _step[0] = msg
+            pn.state.execute(_tick)
 
-            # If we bootstrapped project names, filter out records with unrelated
-            # modalities (e.g. SmartSPIM sessions under the same project name).
-            if bootstrap_modalities:
-                all_records = [
-                    r for r in all_records
-                    if not get_modalities(r) or set(get_modalities(r)) & bootstrap_modalities
-                ]
-        except Exception as exc:
-            status_md.object = f"❌ DocDB query failed: {exc}"
-            load_button.disabled = False
-            return
+        def _stop_ticker_and_set(msg: str) -> None:
+            _ticker.stop()
+            status_md.object = msg
 
-        records_in_range = filter_records_by_date(all_records, date_from, date_to)
-
-        if dts_error:
-            base_status = (
-                f"⚠️ **DTS unavailable** _(requires AIND network or VPN)_: {dts_error}\n\n"
-                f"Showing {len(records_in_range)} DocDB records only."
-            )
-        else:
-            n_dts = sum(1 for j in dts_jobs if j.get("job_type") in job_type_names)
-            base_status = (
-                f"**{n_dts} DTS jobs** · "
-                f"**{len(records_in_range)} DocDB records** · "
-                f"{date_from.date()} → {date_to.date()} · "
-                f"_DTS cache: 5min, DocDB cache: 1hr_"
-            )
-
-        if subject:
-            dts_jobs = [j for j in dts_jobs if subject in j.get("name", "")]
-            all_records = [r for r in all_records if subject in r.get("name", "")]
-
-        status_md.object = base_status
-
-        try:
-            sessions = build_sessions(
-                dts_jobs, all_records, job_types, date_from, date_to,
-                manifest_sessions=manifest_sessions,
-            )
-            watchdog_events = {
-                sr.session_name: list(sr.watchdog_events) for sr in sessions
-            }
-
-            # Warm the CO run cache in a background thread so ⚠️/⏳ cell clicks
-            # are instant.  Mirrors the get_log_for_session.py caching strategy:
-            # list_computations is slow but only called once; subsequent lookups
-            # hit the in-memory/disk cache immediately.
-            _pipeline_ids = {
-                c["co_pipeline_capsule_id"]
-                for c in derived_columns
-                if c.get("co_pipeline_capsule_id")
-            }
-            if _pipeline_ids and _get_co_client() is not None:
-                import threading
-                def _warm_run_caches(_ids=_pipeline_ids):
-                    for pid in _ids:
-                        _update_co_run_cache(pid)
-                threading.Thread(target=_warm_run_caches, daemon=True).start()
-
-            df = build_session_table(sessions, derived_columns, no_derived_expected)
-        except Exception as exc:
+        # --- Background load ---
+        def _do_load():
             import traceback
-            logger.error("build_session_table failed: %s", traceback.format_exc())
-            status_md.object = f"❌ Table build failed: {exc}"
-            load_button.disabled = False
-            return
 
-        if df.empty:
-            table_col[:] = [pn.pane.Markdown("_No sessions found for the selected filters._")]
-        else:
+            try:
+                # DTS — server-side, clamped to its 14-day lookback window.
+                dts_cutoff = datetime.now(tz=timezone.utc) - timedelta(days=DTS_MAX_LOOKBACK_DAYS - 1)
+                dts_from = max(date_from, dts_cutoff)
+                dts_to = date_to
+                _set_step("⏳ Querying DTS…")
+                dts_jobs, dts_error = (
+                    get_dts_jobs(dts_from.isoformat(), dts_to.isoformat())
+                    if dts_from <= dts_to else ([], None)
+                )
+
+                # Rig-side manifest sessions.
+                manifest_sessions: dict = {}
+                if cfg.get("use_manifests"):
+                    _set_step("⏳ Loading rig manifests…")
+                    try:
+                        manifest_sessions = load_manifest_sessions()
+                        if subject:
+                            manifest_sessions = {
+                                k: v for k, v in manifest_sessions.items() if subject in k
+                            }
+                    except Exception as e:
+                        logger.warning("Manifest session load failed: %s", e)
+
+                # DocDB — query by project name.
+                _set_step("⏳ Querying DocDB…")
+                try:
+                    bootstrap_modalities: frozenset[str] = frozenset()
+                    _docdb_names = docdb_project_names  # may be overridden below
+                    if not _docdb_names:
+                        dts_names = tuple(
+                            j["name"] for j in dts_jobs if j.get("job_type") in job_type_names
+                        )
+                        manifest_names = tuple(
+                            mentry.get("session_raw", sname)
+                            for sname, mentry in manifest_sessions.items()
+                            if (d := session_date(sname)) is not None
+                            and date_from <= d <= date_to
+                        )
+                        bootstrap_names = tuple(set(dts_names) | set(manifest_names))
+                        bootstrap_records = get_raw_records_by_names(bootstrap_names, docdb_versions)
+                        _docdb_names = tuple(sorted({
+                            r.get("data_description", {}).get("project_name")
+                            for r in bootstrap_records
+                            if r.get("data_description", {}).get("project_name")
+                        }))
+                        bootstrap_modalities = frozenset(
+                            m for r in bootstrap_records for m in get_modalities(r)
+                        )
+                        logger.info(
+                            "Discovered project names: %s, modalities: %s",
+                            _docdb_names, bootstrap_modalities,
+                        )
+
+                    all_records = get_project_records(_docdb_names, docdb_versions)
+
+                    if bootstrap_modalities:
+                        all_records = [
+                            r for r in all_records
+                            if not get_modalities(r) or set(get_modalities(r)) & bootstrap_modalities
+                        ]
+                except Exception as exc:
+                    pn.state.execute(lambda: _stop_ticker_and_set(f"❌ DocDB query failed: {exc}"))
+                    pn.state.execute(lambda: setattr(load_button, "disabled", False))
+                    return
+
+                records_in_range = filter_records_by_date(all_records, date_from, date_to)
+
+                if dts_error:
+                    base_status = (
+                        f"⚠️ **DTS unavailable** _(requires AIND network or VPN)_: {dts_error}\n\n"
+                        f"Showing {len(records_in_range)} DocDB records only."
+                    )
+                else:
+                    n_dts = sum(1 for j in dts_jobs if j.get("job_type") in job_type_names)
+                    base_status = (
+                        f"**{n_dts} DTS jobs** · "
+                        f"**{len(records_in_range)} DocDB records** · "
+                        f"{date_from.date()} → {date_to.date()}"
+                    )
+
+                if subject:
+                    dts_jobs = [j for j in dts_jobs if subject in j.get("name", "")]
+                    all_records = [r for r in all_records if subject in r.get("name", "")]
+
+                # Build session objects.
+                _set_step("⏳ Building session list…")
+                try:
+                    sessions = build_sessions(
+                        dts_jobs, all_records, job_types, date_from, date_to,
+                        manifest_sessions=manifest_sessions,
+                        store=_session_store,
+                        no_derived_expected=no_derived_expected,
+                    )
+                    watchdog_events = {
+                        sr.session_name: list(sr.watchdog_events) for sr in sessions
+                    }
+
+                    _set_step(f"⏳ Building table ({len(sessions)} sessions)…")
+                    df = build_session_table(sessions, derived_columns, no_derived_expected)
+                except Exception as exc:
+                    logger.error("build_session_table failed: %s", traceback.format_exc())
+                    pn.state.execute(lambda: _stop_ticker_and_set(f"❌ Table build failed: {exc}"))
+                    pn.state.execute(lambda: setattr(load_button, "disabled", False))
+                    return
+
+                # Hand off to main thread for UI construction.
+                pn.state.execute(lambda: _finish(df, base_status, watchdog_events))
+
+            except Exception as exc:
+                logger.error("on_load thread failed: %s", traceback.format_exc())
+                pn.state.execute(lambda: _stop_ticker_and_set(f"❌ Load failed: {exc}"))
+                pn.state.execute(lambda: setattr(load_button, "disabled", False))
+
+        # --- Main-thread finish (UI construction — runs on the main thread) ---
+        def _finish(df, base_status, watchdog_events):
+            _ticker.stop()
+            if df.empty:
+                table_col[:] = [pn.pane.Markdown("_No sessions found for the selected filters._")]
+                status_md.object = base_status
+                load_button.disabled = False
+                return
             co_log_col_names = {_col_co_log_name(c) for c in derived_columns}
             # Map CO log column → hidden comp_id column for failed log lookups.
             co_log_comp_id_col = {
@@ -930,7 +962,10 @@ def build_panel_app():
 
             tab.on_click(on_cell_click)
             table_col[:] = [tab]
-        load_button.disabled = False
+            status_md.object = base_status
+            load_button.disabled = False
+
+        threading.Thread(target=_do_load, daemon=True).start()
 
     load_button.on_click(on_load)
 

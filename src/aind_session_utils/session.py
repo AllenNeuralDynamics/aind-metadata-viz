@@ -38,6 +38,12 @@ from aind_session_utils.sources.codeocean import (
 from aind_session_utils.sources.dts import DTS_BASE_URL, DTS_MAX_LOOKBACK_DAYS
 from aind_session_utils.sources.rig_logs import find_rig_log
 from aind_session_utils.sources.watchdog import fetch_watchdog_events
+from aind_session_utils.store import (
+    ParquetSessionStore,
+    derived_asset_to_rows,
+    session_result_from_row,
+    session_result_to_row,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +124,75 @@ def _build_dts_url(job: dict) -> str:
     return ""
 
 
+def _load_settled_from_store(
+    store: ParquetSessionStore,
+    dts_jobs: list[dict],
+    all_docdb_records: list[dict],
+    job_types: dict[str, dict],
+    date_from: datetime,
+    date_to: datetime,
+    manifest_sessions: Optional[dict],
+) -> dict[str, SessionResult]:
+    """Return settled SessionResults from the store for sessions in scope.
+
+    Only returns sessions that are in the requested date range AND appear in
+    the current DTS/DocDB data (so we don't surface stale phantom sessions).
+    The watchdog events are intentionally left empty here — they are merged
+    in from the live fetch after build_sessions returns.
+    """
+    # Gather all session names that are in scope for this request.
+    in_scope: set[str] = set()
+    for j in dts_jobs:
+        if j.get("job_type") in job_types:
+            sname = get_session_name(j["name"])
+            d = session_date(sname)
+            if d is not None and date_from <= d <= date_to:
+                in_scope.add(sname)
+
+    for r in all_docdb_records:
+        sname = get_session_name(r.get("name", ""))
+        in_scope.add(sname)
+
+    if manifest_sessions:
+        for sname in manifest_sessions:
+            d = session_date(sname)
+            if d is not None and date_from <= d <= date_to:
+                in_scope.add(sname)
+
+    if not in_scope:
+        return {}
+
+    settled_names = store.get_settled_names(in_scope)
+    if not settled_names:
+        return {}
+
+    sessions_df = store.load_sessions(settled_names)
+    derived_df = store.load_derived_assets(settled_names)
+
+    if sessions_df.empty:
+        return {}
+
+    derived_by_session: dict[str, list[dict]] = {}
+    if not derived_df.empty:
+        for row in derived_df.to_dict("records"):
+            derived_by_session.setdefault(row["session_name"], []).append(row)
+
+    result: dict[str, SessionResult] = {}
+    for row in sessions_df.to_dict("records"):
+        sname = row["session_name"]
+        try:
+            sr = session_result_from_row(
+                row=row,
+                derived_rows=derived_by_session.get(sname, []),
+                watchdog_events_dict={},  # filled in later from live fetch
+            )
+            result[sname] = sr
+        except Exception as exc:
+            logger.warning("store: failed to reconstruct %s (skipped): %s", sname, exc)
+
+    return result
+
+
 def build_sessions(
     dts_jobs: list[dict],
     all_docdb_records: list[dict],
@@ -125,6 +200,8 @@ def build_sessions(
     date_from: datetime,
     date_to: datetime,
     manifest_sessions: Optional[dict] = None,
+    store: Optional[ParquetSessionStore] = None,
+    no_derived_expected: frozenset[str] = frozenset(),
 ) -> list[SessionResult]:
     """Join DTS jobs, DocDB records, watchdog events, and rig data.
 
@@ -149,6 +226,24 @@ def build_sessions(
         logger.info("build_sessions [%.2fs] %s", _time.time() - t0, msg)
 
     now_utc = datetime.now(tz=timezone.utc)
+
+    # ------------------------------------------------------------------ #
+    # 0. Fast path: load settled sessions from parquet store.             #
+    # ------------------------------------------------------------------ #
+    # Settled sessions won't change — return them from disk and only      #
+    # re-query unsettled or new sessions from DTS / DocDB.                #
+    stored_settled: dict[str, SessionResult] = {}
+    if store is not None:
+        try:
+            stored_settled = _load_settled_from_store(
+                store, dts_jobs, all_docdb_records, job_types,
+                date_from, date_to, manifest_sessions,
+            )
+            if stored_settled:
+                _log(f"store: {len(stored_settled)} settled sessions loaded from parquet")
+        except Exception as exc:
+            logger.warning("build_sessions: store load failed (non-fatal): %s", exc)
+            stored_settled = {}
     cutoff_14d = now_utc - timedelta(days=DTS_MAX_LOOKBACK_DAYS)
     _epoch = datetime.min.replace(tzinfo=timezone.utc)
 
@@ -200,8 +295,11 @@ def build_sessions(
             if d is not None and date_from <= d <= date_to:
                 docdb_only.add(sname)
 
-    all_sessions = dts_in_range | docdb_only
-    _log(f"session sets: {len(dts_in_range)} DTS + {len(docdb_only)} DocDB-only")
+    all_sessions = (dts_in_range | docdb_only) - set(stored_settled)
+    _log(
+        f"session sets: {len(dts_in_range)} DTS + {len(docdb_only)} DocDB-only"
+        f" ({len(stored_settled)} settled from store, skipped)"
+    )
 
     # ------------------------------------------------------------------ #
     # 4. Parallel CO lookup (pre-populate caches for all sessions).        #
@@ -349,7 +447,7 @@ def build_sessions(
             key=lambda kv: session_datetime(kv[0]) or _epoch,
             reverse=True,
         ):
-            if sname in all_sessions:
+            if sname in all_sessions or sname in stored_settled:
                 continue
             d = session_date(sname)
             if d is None or not (date_from <= d <= date_to):
@@ -380,5 +478,66 @@ def build_sessions(
                 derived_assets=(),
             ))
 
-    _log(f"done: {len(results)} sessions total")
+    # ------------------------------------------------------------------ #
+    # 8. Merge settled sessions from store back in (with fresh watchdog). #
+    # ------------------------------------------------------------------ #
+    if stored_settled:
+        # Update watchdog_events on settled sessions from the current fetch.
+        merged_settled = []
+        for sname, sr in stored_settled.items():
+            fresh_wd = tuple(watchdog_events_dict.get(sname, []))
+            if fresh_wd != sr.watchdog_events:
+                from dataclasses import replace
+                sr = replace(sr, watchdog_events=fresh_wd)
+            merged_settled.append(sr)
+        results.extend(merged_settled)
+
+    # Re-sort everything newest-first after merge.
+    results.sort(
+        key=lambda s: s.acquisition_datetime or _epoch,
+        reverse=True,
+    )
+    _log(f"done: {len(results)} sessions total ({len(stored_settled)} from store)")
+
+    # ------------------------------------------------------------------ #
+    # 9. Persist freshly queried results to parquet store.                #
+    # ------------------------------------------------------------------ #
+    if store is not None:
+        # Only save freshly queried sessions (store sessions are already on disk).
+        fresh_results = [r for r in results if r.session_name not in stored_settled]
+        if fresh_results:
+            try:
+                _save_to_store(store, fresh_results, no_derived_expected, watchdog_events_dict)
+            except Exception as exc:
+                logger.warning("build_sessions: store save failed (non-fatal): %s", exc)
+
     return results
+
+
+def _save_to_store(
+    store: ParquetSessionStore,
+    results: list[SessionResult],
+    no_derived_expected: frozenset[str],
+    watchdog_events_dict: dict[str, list[dict]],
+) -> None:
+    """Persist freshly built sessions to the store, marking complete ones settled."""
+    from aind_session_utils.completeness import check_completeness
+
+    session_rows = []
+    derived_rows = []
+    settled_names: set[str] = set()
+
+    for sr in results:
+        row = session_result_to_row(sr)
+        completeness = check_completeness(sr, no_derived_expected)
+        if completeness.status == "complete":
+            row["_settled"] = True
+            settled_names.add(sr.session_name)
+        session_rows.append(row)
+        derived_rows.extend(derived_asset_to_rows(sr))
+
+    store.save_sessions(session_rows)
+    store.save_derived_assets(derived_rows)
+    logger.info(
+        "store: saved %d sessions (%d settled)", len(session_rows), len(settled_names)
+    )
