@@ -69,12 +69,14 @@ from aind_session_utils.sources.dts import (
 from aind_session_utils.sources.codeocean import (
     _get_co_client, _co_raw_id_cache,
     _get_run_id_for_asset, _update_co_run_cache, _CO_DOMAIN,
+    get_pipeline_log,
 )
 from aind_session_utils.sources.manifests import (
     load_manifest_sessions, AIND_LOGS_DIR, MANIFEST_DIR, _MANIFEST_LINE_RE,
 )
 from aind_session_utils.config import list_project_configs, to_viewer_config
 from aind_session_utils.session import SessionResult, build_sessions
+from aind_session_utils.completeness import check_completeness
 
 load_dotenv()  # picks up .env in the working directory (or any parent)
 
@@ -244,10 +246,8 @@ def co_log_cell(co_url: str | None) -> str:
     if co_url == "pending":
         return "⏳ pending"
     if co_url:
-        return (
-            f'<a href="{co_url}" target="_blank" rel="noopener noreferrer" '
-            f'style="color:#1a73e8;text-decoration:underline">🔗 view log</a>'
-        )
+        # Clickable span — opens in modal (same UX as failed/pending logs).
+        return '<span style="cursor:pointer;color:#1a73e8;text-decoration:underline">🔗 view log</span>'
     return "⬜"
 
 
@@ -337,6 +337,7 @@ def rig_log_cell(manifest_entry: dict | None) -> str:
 def build_session_table(
     sessions: list[SessionResult],
     derived_columns: list[dict],
+    no_derived_expected: frozenset[str] = frozenset(),
 ) -> pd.DataFrame:
     """Convert SessionResult objects to a DataFrame with HTML cells.
 
@@ -352,6 +353,7 @@ def build_session_table(
         _, dt_str = parse_session_name(sr.session_name)
         raw_name = sr.raw_asset_name or ""
         dts_html, dts_url = dts_cell(sr.dts_status, sr.dts_job_url, sr.within_14d)
+        completeness = check_completeness(sr, no_derived_expected)
         row: dict = {
             "Subject": sr.subject_id,
             "Session Date": dt_str,
@@ -373,8 +375,19 @@ def build_session_table(
             co_log_col = _col_co_log_name(col)
             co_asset_col = _col_co_asset_name(col)
             expected = sr.expected_pipelines
-            if expected is not None and not col["modalities"] & expected:
-                # N/A: this job type doesn't produce this derived asset.
+            col_mods = col["modalities"]
+            # Determine whether this pipeline column applies to this session.
+            # Prefer expected_pipelines (from DTS job type) for precision; fall
+            # back to raw_modalities when there's no DTS job (e.g. >14 days).
+            # If neither is known, leave it as ⬜ (unknown).
+            if expected is not None:
+                not_applicable = not col_mods & expected
+            elif sr.raw_modalities:
+                not_applicable = not col_mods & sr.raw_modalities
+            else:
+                not_applicable = False
+            if not_applicable:
+                # N/A: this session's modalities don't include this pipeline.
                 row[co_log_col] = "—"
                 row[co_asset_col] = "—"
                 row[col["label"]] = "—"
@@ -427,6 +440,7 @@ def build_session_table(
                 row[col["label"]] = asset_cell(asset_name or None)
                 row[f"_name_{col['label']}"] = asset_name
 
+        row["_completeness_status"] = completeness.status
         rows.append(row)
 
     fixed_cols = [
@@ -441,21 +455,12 @@ def build_session_table(
         derived_col_list.append(_col_co_asset_name(c))
     hidden_cols = (
         ["_dts_url", "_watchdog_sname", "_name_Raw Asset Metadata",
-         "_rig_log_path", "_rig_manifest_rig", "_has_derived"]
+         "_rig_log_path", "_rig_manifest_rig", "_completeness_status"]
         + [f"_name_{c['label']}" for c in derived_columns]
         + [f"_comp_id_{c['label']}" for c in derived_columns]
     )
 
-    # Compute _has_derived: True if any derived asset name column is non-empty.
-    derived_name_cols = [f"_name_{c['label']}" for c in derived_columns]
     df = pd.DataFrame(rows, columns=fixed_cols + derived_col_list + hidden_cols)
-    if derived_name_cols:
-        df["_has_derived"] = df[derived_name_cols].apply(
-            lambda row: any(str(v).strip() for v in row), axis=1
-        )
-    else:
-        df["_has_derived"] = False
-
     return df
 
 
@@ -495,7 +500,7 @@ def build_panel_app():
         full_df = _full_df_holder[0]
         if tab is None or full_df is None:
             return
-        tab.value = full_df[~full_df["_has_derived"]] if event.new else full_df
+        tab.value = full_df[full_df["_completeness_status"] != "complete"] if event.new else full_df
 
     orphan_toggle.param.watch(_apply_orphan_filter, "value")
 
@@ -530,6 +535,7 @@ def build_panel_app():
         docdb_project_names: tuple[str, ...] = tuple(cfg["docdb_project_names"])
         docdb_versions: tuple[str, ...] = tuple(cfg["docdb_versions"])
         derived_columns: list[dict] = cfg["derived_columns"]
+        no_derived_expected: frozenset[str] = cfg.get("no_derived_expected", frozenset())
 
         load_button.disabled = True
         status_md.object = "⏳ Loading..."
@@ -668,7 +674,7 @@ def build_panel_app():
                         _update_co_run_cache(pid)
                 threading.Thread(target=_warm_run_caches, daemon=True).start()
 
-            df = build_session_table(sessions, derived_columns)
+            df = build_session_table(sessions, derived_columns, no_derived_expected)
         except Exception as exc:
             import traceback
             logger.error("build_session_table failed: %s", traceback.format_exc())
@@ -708,13 +714,13 @@ def build_panel_app():
             )
             hidden_cols = (
                 ["_dts_url", "_watchdog_sname", "_name_Raw Asset Metadata",
-                 "_rig_log_path", "_rig_manifest_rig", "_has_derived"]
+                 "_rig_log_path", "_rig_manifest_rig", "_completeness_status"]
                 + [f"_name_{c['label']}" for c in derived_columns]
                 + [f"_comp_id_{c['label']}" for c in derived_columns]
             )
             # Apply orphan filter in Python before building the Tabulator — more reliable
             # than Tabulator's client-side boolean filter which has serialization issues.
-            display_df = df[~df["_has_derived"]] if orphan_toggle.value else df
+            display_df = df[df["_completeness_status"] != "complete"] if orphan_toggle.value else df
             tab = pn.widgets.Tabulator(
                 display_df,
                 formatters={c: {"type": "html"} for c in html_cols if c in df.columns},
@@ -744,99 +750,41 @@ def build_panel_app():
                 col = event.column
 
                 if col in _co_log_cols:
-                    # If the cell has a CO link (<a href>), the browser already
-                    # handles the click — skip the modal entirely.
+                    # All CO log cells (successful, pending, failed) open in modal.
                     name_col = _co_log_name.get(col, "")
-                    if name_col and str(row.get(name_col, "")):
-                        return
+                    has_derived = bool(name_col and str(row.get(name_col, "")))
 
-                    # For failed/pending computations open the pipeline log in modal.
                     comp_id_col = _co_log_comp_id.get(col, "")
                     if not comp_id_col or comp_id_col not in tab.value.columns:
                         return
                     comp_id = str(row.get(comp_id_col, ""))
 
-                    if not comp_id:
-                        # ⚠️ / ⏳ cell — show modal immediately then search.
-                        capsule_id = _co_log_capsule.get(col, "")
-                        sname = str(row.get("_watchdog_sname", ""))
-                        raw_name = str(row.get("_name_Raw Asset Metadata", ""))
-                        if not capsule_id or not sname:
-                            return
-                        sdt = session_datetime(sname)
-                        if sdt is None:
-                            return
-                        session_ts = sdt.timestamp()
-                        co = _get_co_client()
-                        if co is None:
-                            return
-
-                        # Show modal immediately so the user gets feedback.
-                        _modal_body[:] = [pn.pane.Markdown(
-                            "🔍 Searching for pipeline log…",
-                            styles={"padding": "16px"},
-                        )]
-                        _inspector_modal.show()
-
-                        def _find_comp() -> tuple[str, str]:
-                            """Find the computation run for this session by raw asset UUID.
-
-                            Checks the in-memory/disk cache first (instant). On a cache
-                            miss, refreshes from the pipeline's full computation history
-                            and tries again. No time window — works for reprocessed sessions
-                            regardless of how long ago they ran.
-
-                            Returns (run_id, message) where run_id is empty on failure.
-                            """
-                            raw_uuid = _co_raw_id_cache.get(raw_name)
-                            if not raw_uuid:
-                                return "", "Raw asset not found in Code Ocean."
-                            run_id = _get_run_id_for_asset(raw_uuid, capsule_id)
-                            if not run_id:
-                                return "", (
-                                    "No pipeline run found for this session. "
-                                    "The pipeline may not have been triggered."
-                                )
-                            return run_id, ""
-
-                        loop = asyncio.get_event_loop()
-                        comp_id, msg = await loop.run_in_executor(None, _find_comp)
-                        if not comp_id:
-                            _modal_body[:] = [pn.pane.Markdown(
-                                msg or "No pipeline log found for this session.",
-                                styles={"padding": "16px"},
-                            )]
-                            return
-                    else:
-                        # ❌ comp_id already known — show loading modal now.
-                        _modal_body[:] = [pn.pane.Markdown(
-                            "🔍 Loading pipeline log…",
-                            styles={"padding": "16px"},
-                        )]
-                        _inspector_modal.show()
-
-                    co = _get_co_client()
-                    if co is None:
+                    capsule_id = _co_log_capsule.get(col, "")
+                    raw_name = str(row.get("_name_Raw Asset Metadata", ""))
+                    if not capsule_id or not raw_name:
                         return
 
-                    def _fetch_log_text():
-                        urls = co.computations.get_result_file_urls(comp_id, "output")
-                        r = req.get(urls.view_url, timeout=30)
-                        r.raise_for_status()
-                        return r.text
+                    loading_msg = (
+                        "🔍 Loading pipeline log…"
+                        if has_derived
+                        else "🔍 Searching for pipeline log…"
+                    )
+                    _modal_body[:] = [pn.pane.Markdown(
+                        loading_msg, styles={"padding": "16px"}
+                    )]
+                    _inspector_modal.show()
 
                     loop = asyncio.get_event_loop()
-                    try:
-                        log_text = await loop.run_in_executor(None, _fetch_log_text)
-                        _modal_body[:] = [pn.pane.HTML(
-                            _log_modal_html(log_text),
-                            sizing_mode="stretch_both",
-                        )]
-                    except Exception as exc:
-                        logger.warning("Failed to get computation log: %s", exc)
+                    log_text, err = await loop.run_in_executor(
+                        None, get_pipeline_log, raw_name, capsule_id
+                    )
+                    if log_text is None:
                         _modal_body[:] = [pn.pane.Markdown(
-                            f"Failed to load pipeline log: {exc}",
-                            styles={"padding": "16px"},
+                            err, styles={"padding": "16px"}
+                        )]
+                    else:
+                        _modal_body[:] = [pn.pane.HTML(
+                            _log_modal_html(log_text), sizing_mode="stretch_both"
                         )]
                     return
 

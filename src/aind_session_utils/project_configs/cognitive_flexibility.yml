@@ -13,6 +13,11 @@ query:
     vr_foraging_v2:
       expected_pipelines: [behavior]
 
+# Modalities collected but never expected to have standalone derived output.
+# Used as fallback when no DTS job type is known for a session.
+no_derived_expected:
+  - behavior-videos
+
 # One entry per derived asset column rendered in the session table.
 pipelines:
   - label: "Behavior Metadata Record"

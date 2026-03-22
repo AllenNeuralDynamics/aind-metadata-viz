@@ -234,5 +234,50 @@ def get_co_computation_status(
     return result
 
 
+def get_pipeline_log(
+    raw_asset_name: str,
+    capsule_id: str,
+) -> tuple[str | None, str]:
+    """Fetch the pipeline log for a session given its raw asset name and capsule.
+
+    Encapsulates the full lookup chain:
+      1. Resolve raw asset name → CO UUID (from _co_raw_id_cache, pre-populated
+         at table-load time by build_sessions).
+      2. Resolve UUID → computation run ID (from _co_run_cache, warmed by the
+         background thread at table-load time — instant for found runs).
+      3. Fetch the log text via the computation result file URL.
+
+    Args:
+        raw_asset_name: DocDB/CO name of the raw data asset.
+        capsule_id:     Code Ocean pipeline capsule UUID.
+
+    Returns:
+        ``(log_text, "")`` on success, or ``(None, error_message)`` on failure.
+    """
+    co = _get_co_client()
+    if co is None:
+        return None, "Code Ocean client not configured."
+
+    raw_uuid = _co_raw_id_cache.get(raw_asset_name)
+    if not raw_uuid:
+        return None, "Raw asset not found in Code Ocean."
+
+    run_id = _get_run_id_for_asset(raw_uuid, capsule_id)
+    if not run_id:
+        return None, (
+            "No pipeline run found for this session. "
+            "The pipeline may not have been triggered."
+        )
+
+    try:
+        urls = co.computations.get_result_file_urls(run_id, "output")
+        r = req.get(urls.view_url, timeout=30)
+        r.raise_for_status()
+        return r.text, ""
+    except Exception as exc:
+        logger.warning("Failed to fetch pipeline log for %s: %s", raw_asset_name, exc)
+        return None, f"Failed to load pipeline log: {exc}"
+
+
 # Load disk cache on module import
 _load_co_run_cache()
