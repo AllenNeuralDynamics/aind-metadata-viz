@@ -1028,22 +1028,6 @@ def build_panel_app():
         sizing_mode="stretch_width",
     )
 
-    legend = pn.pane.Markdown(
-        "**Status:** ✅ complete/registered &nbsp;&nbsp; "
-        "❌ failed &nbsp;&nbsp; "
-        "⏳ running/queued/pending &nbsp;&nbsp; "
-        "⬜ not yet reached &nbsp;&nbsp; "
-        "— not applicable &nbsp;&nbsp; "
-        "_Rig Log opens the GUI acquisition log; Rig Manifest shows watchdog status and opens the watchdog service log. DTS and asset cells open an inline viewer._",
-        styles={
-            "background": "#f0f4ff",
-            "padding": "8px 12px",
-            "border-radius": "5px",
-            "font-size": "0.9em",
-        },
-        sizing_mode="stretch_width",
-    )
-
     controls = pn.Row(
         pn.Column("**Project**", project_select),
         pn.Spacer(width=20),
@@ -1059,7 +1043,6 @@ def build_panel_app():
 
     return pn.Column(
         header,
-        legend,
         pn.layout.Divider(),
         controls,
         pn.Spacer(height=8),
