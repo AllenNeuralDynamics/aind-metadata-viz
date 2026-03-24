@@ -57,6 +57,7 @@ from aind_session_utils import (
     ParquetSessionStore,
     list_platform_configs,
     to_viewer_config,
+    get_pipeline_column_names,
 )
 
 load_dotenv()  # picks up .env in the working directory (or any parent)
@@ -268,24 +269,11 @@ def _log_modal_pane(log_text: str) -> pn.viewable.Viewable:
     return pn.pane.HTML(html, sizing_mode="stretch_both")
 
 
-# Column name helpers — derive display column names from pipeline config dicts.
+# Column name helper — all three column names derived from pipeline_descriptor.
 
-def _co_log_col(col: dict) -> str:
-    """Return the CO log column name for a pipeline config dict.
-
-    Uses the ``co_log_col`` override if present, otherwise derives it from
-    the pipeline label (e.g. ``'Behavior Metadata Record'`` → ``'Behavior CO Log'``).
-    """
-    return col.get("co_log_col") or f"{col['label'].split()[0]} CO Log"
-
-
-def _co_asset_col(col: dict) -> str:
-    """Return the CO derived asset column name for a pipeline config dict.
-
-    Uses the ``co_asset_col`` override if present, otherwise derives it from
-    the pipeline label (e.g. ``'Behavior'`` → ``'CO Derived Behavior Asset'``).
-    """
-    return col.get("co_asset_col") or f"CO Derived {col['label'].split()[0]} Asset"
+def _col_names(col: dict):
+    """Return (log_col, asset_col, derived_col) for a pipeline config dict."""
+    return get_pipeline_column_names(col)
 
 
 # ---------------------------------------------------------------------------
@@ -333,19 +321,18 @@ def build_session_table(
             "CO Raw Asset": co_asset_link_cell(row.raw_co_data_url),
         }
         for i, col in enumerate(derived_columns):
-            co_log_col = _co_log_col(col)
-            co_asset_col = _co_asset_col(col)
+            cn = _col_names(col)
             ps = row.pipeline_statuses[i]
             if ps.status == "not_applicable":
-                html_row[co_log_col] = "—"
-                html_row[co_asset_col] = "—"
-                html_row[col["label"]] = "—"
-                html_row[f"_name_{col['label']}"] = ""
+                html_row[cn.log_col] = "—"
+                html_row[cn.asset_col] = "—"
+                html_row[cn.derived_col] = "—"
+                html_row[f"_name_{cn.derived_col}"] = ""
             else:
-                html_row[co_log_col] = _pipeline_log_cell(ps)
-                html_row[co_asset_col] = co_asset_link_cell(ps.co_data_url)
-                html_row[col["label"]] = asset_cell(ps.derived_asset_name or None)
-                html_row[f"_name_{col['label']}"] = ps.derived_asset_name
+                html_row[cn.log_col] = _pipeline_log_cell(ps)
+                html_row[cn.asset_col] = co_asset_link_cell(ps.co_data_url)
+                html_row[cn.derived_col] = asset_cell(ps.derived_asset_name or None)
+                html_row[f"_name_{cn.derived_col}"] = ps.derived_asset_name
 
         html_row["_completeness_status"] = row.completeness_status
         table_rows.append(html_row)
@@ -357,13 +344,14 @@ def build_session_table(
     ]
     derived_col_list = []
     for c in derived_columns:
-        derived_col_list.append(_co_log_col(c))
-        derived_col_list.append(c["label"])
-        derived_col_list.append(_co_asset_col(c))
+        cn = _col_names(c)
+        derived_col_list.append(cn.log_col)
+        derived_col_list.append(cn.derived_col)
+        derived_col_list.append(cn.asset_col)
     hidden_cols = (
         ["_dts_url", "_watchdog_sname", "_name_Raw Asset Metadata",
          "_rig_log_path", "_rig_manifest_rig", "_completeness_status"]
-        + [f"_name_{c['label']}" for c in derived_columns]
+        + [f"_name_{_col_names(c).derived_col}" for c in derived_columns]
     )
 
     df = pd.DataFrame(table_rows, columns=fixed_cols + derived_col_list + hidden_cols)
@@ -522,30 +510,29 @@ def build_panel_app():
                 status_md.object = base_status
                 load_button.disabled = False
                 return
-            co_log_col_names = {_co_log_col(c) for c in derived_columns}
-            # Map CO log column → hidden comp_id column for failed log lookups.
+            co_log_col_names = {_col_names(c).log_col for c in derived_columns}
             # Map CO log column → capsule_id for on-demand log fetch.
             co_log_capsule_col = {
-                _co_log_col(c): c.get("co_pipeline_capsule_id", "")
+                _col_names(c).log_col: c.get("co_pipeline_capsule_id", "")
                 for c in derived_columns
             }
             # Map CO log column → hidden asset name column.
             # Non-empty name means the cell has a <a href> link — browser handles it.
             co_log_name_col = {
-                _co_log_col(c): f"_name_{c['label']}"
+                _col_names(c).log_col: f"_name_{_col_names(c).derived_col}"
                 for c in derived_columns
             }
             html_cols = (
                 ["Rig Log", "Rig Manifest", "Watchdog", "DTS Upload",
                  "Raw Asset Metadata", "CO Raw Asset"]
                 + list(co_log_col_names)
-                + [c["label"] for c in derived_columns]
-                + [_co_asset_col(c) for c in derived_columns]
+                + [_col_names(c).derived_col for c in derived_columns]
+                + [_col_names(c).asset_col for c in derived_columns]
             )
             hidden_cols = (
                 ["_dts_url", "_watchdog_sname", "_name_Raw Asset Metadata",
                  "_rig_log_path", "_rig_manifest_rig", "_completeness_status"]
-                + [f"_name_{c['label']}" for c in derived_columns]
+                + [f"_name_{_col_names(c).derived_col}" for c in derived_columns]
             )
             # Rename multi-word visible columns to use <br> so headers wrap to
             # data-content width instead of header-text width.
