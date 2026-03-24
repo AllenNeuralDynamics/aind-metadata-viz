@@ -7,7 +7,7 @@ DocDB/DTS/CO client calls, no caching logic, and no session name parsing live
 here — those concerns belong to the library.
 
 DATA FLOW:
-    1. User selects project, date range, and subject filter, then clicks Load.
+    1. User selects platform, date range, and subject filter, then clicks Load.
     2. ``fetch_and_build_sessions`` queries DTS, rig manifests, and DocDB,
        assembles ``SessionResult`` objects (using the parquet store for
        settled sessions), and returns them along with a status summary.
@@ -20,12 +20,12 @@ LIMITATIONS:
     - Rig manifests require the AIND on-prem network share to be mounted.
     - Code Ocean features require CODEOCEAN_DOMAIN and CODEOCEAN_API_TOKEN.
 
-ADDING A PROJECT:
-    Create a YAML file in ``aind_session_utils/project_configs/``.
+ADDING A PLATFORM:
+    Create a YAML file in ``aind_session_utils/platform_configs/``.
     See ``aind_session_utils/config.py`` for the schema.
 
 URL PARAMETERS:
-    - project:   pre-select project (e.g. ?project=Dynamic+Foraging)
+    - platform:  pre-select platform (e.g. ?platform=Dynamic+Foraging)
     - subject:   pre-fill subject ID filter (e.g. ?subject=822683)
     - date_from: pre-fill start date (e.g. ?date_from=2026-03-04)
     - date_to:   pre-fill end date   (e.g. ?date_to=2026-03-11)
@@ -55,7 +55,7 @@ from aind_session_utils import (
     fetch_and_build_sessions,
     build_session_rows,
     ParquetSessionStore,
-    list_project_configs,
+    list_platform_configs,
     to_viewer_config,
 )
 
@@ -68,13 +68,13 @@ if not logger.handlers:
     _h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
     logger.addHandler(_h)
 
-# Project configs loaded from YAML files in aind_session_utils/project_configs/.
-# To add a project, create a new YAML file there.
+# Platform configs loaded from YAML files in aind_session_utils/platform_configs/.
+# To add a platform, create a new YAML file there.
 # To override a bundled config, set AIND_SESSION_USER_CONFIG_DIR to a directory
 # containing a YAML file with the same 'name' field.
-PROJECT_CONFIG: dict[str, dict] = {
+PLATFORM_CONFIG: dict[str, dict] = {
     cfg["name"]: to_viewer_config(cfg)
-    for cfg in list_project_configs()
+    for cfg in list_platform_configs()
 }
 
 _session_store = ParquetSessionStore()
@@ -305,7 +305,7 @@ def build_session_table(
     Args:
         rows:            List of ``SessionTableRow`` objects from
                          ``build_session_rows()``.
-        derived_columns: Pipeline column configs from the project config.
+        derived_columns: Pipeline column configs from the platform config.
 
     Returns:
         DataFrame with HTML-formatted cells and hidden metadata columns,
@@ -378,9 +378,9 @@ def build_panel_app():
     today = datetime.now(tz=timezone.utc).date()
     default_from = today - timedelta(days=7)
 
-    project_select = pn.widgets.Select(
+    platform_select = pn.widgets.Select(
         name="",
-        options=list(PROJECT_CONFIG.keys()),
+        options=list(PLATFORM_CONFIG.keys()),
         width=380,
     )
     date_from_picker = pn.widgets.DatePicker(name="", value=default_from, width=130)
@@ -435,8 +435,8 @@ def build_panel_app():
             return
 
         # Capture all widget values on the main thread before launching background work.
-        project_name = project_select.value
-        cfg = PROJECT_CONFIG[project_name]
+        platform_name = platform_select.value
+        cfg = PLATFORM_CONFIG[platform_name]
         derived_columns: list[dict] = cfg["derived_columns"]
         no_derived_expected: frozenset[str] = cfg.get("no_derived_expected", frozenset())
         subject = subject_input.value.strip()
@@ -483,7 +483,7 @@ def build_panel_app():
 
             try:
                 sessions, base_status = fetch_and_build_sessions(
-                    project_config=cfg,
+                    platform_config=cfg,
                     date_from=date_from,
                     date_to=date_to,
                     subject=subject,
@@ -769,12 +769,12 @@ def build_panel_app():
             table_col[:] = []
             status_md.object = ""
 
-    for widget in (project_select, date_from_picker, date_to_picker, subject_input):
+    for widget in (platform_select, date_from_picker, date_to_picker, subject_input):
         widget.param.watch(_on_input_change, "value")
 
     if pn.state.location:
         # Keep sync so URL stays updated when the user changes widgets and re-runs.
-        pn.state.location.sync(project_select, {"value": "project"})
+        pn.state.location.sync(platform_select, {"value": "platform"})
         pn.state.location.sync(subject_input, {"value": "subject"})
         pn.state.location.sync(date_from_picker, {"value": "date_from"})
         pn.state.location.sync(date_to_picker, {"value": "date_to"})
@@ -793,10 +793,10 @@ def build_panel_app():
             params = parse_qs(event.new.lstrip("?"))
             if not params:
                 return
-            if "project" in params:
-                project = params["project"][0]
-                if project in PROJECT_CONFIG:
-                    project_select.value = project
+            if "platform" in params:
+                platform = params["platform"][0]
+                if platform in PLATFORM_CONFIG:
+                    platform_select.value = platform
             if "subject" in params:
                 subject_input.value = params["subject"][0]
             if "date_from" in params:
@@ -824,7 +824,7 @@ def build_panel_app():
     )
 
     controls = pn.Row(
-        pn.Column("**Project**", project_select),
+        pn.Column("**Platform**", platform_select),
         pn.Spacer(width=12),
         pn.Column("**Date range**", pn.Row("From", date_from_picker, pn.Spacer(width=6), "To", date_to_picker)),
         pn.Spacer(width=12),
