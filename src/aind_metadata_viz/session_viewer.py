@@ -47,14 +47,13 @@ from dotenv import load_dotenv
 
 from aind_session_utils import (
     SessionResult,
-    check_completeness,
-    CO_DOMAIN,
-    get_cached_run_id,
+    SessionTableRow,
+    PipelineColumnStatus,
     get_pipeline_log,
     get_full_record,
     AIND_LOGS_DIR,
     fetch_and_build_sessions,
-    parse_session_name,
+    build_session_rows,
     ParquetSessionStore,
     list_project_configs,
     to_viewer_config,
@@ -158,20 +157,36 @@ def co_log_cell(co_url: str | None) -> str:
     return ""
 
 
-def co_asset_link_cell(asset_id: str | None, asset_name: str) -> str:
-    """Render a Code Ocean data-asset folder link.
+def co_asset_link_cell(url: str) -> str:
+    """Render a Code Ocean data-asset folder link from a pre-built URL.
 
     Args:
-        asset_id:   CO data-asset UUID, or None if not in CO.
-        asset_name: Asset name used to build the URL path.
+        url: Pre-built CO data-asset URL, or empty string.
     """
-    if asset_id and asset_name:
-        url = f"{CO_DOMAIN}/data-assets/{asset_id}/{asset_name}/data"
+    if url:
         return (
             f'<a href="{url}" target="_blank" rel="noopener noreferrer" '
             f'style="color:#1a73e8;text-decoration:underline">🔗 view data</a>'
         )
     return "⬜"
+
+
+def _pipeline_log_cell(ps: "PipelineColumnStatus") -> str:
+    """Render the CO pipeline log cell from a PipelineColumnStatus."""
+    if ps.status == "not_applicable":
+        return "—"
+    if ps.status == "complete":
+        return co_log_cell(ps.co_log_url)
+    if ps.status == "pending":
+        return "⏳"
+    if ps.status == "failed":
+        return (
+            '<span style="cursor:pointer" '
+            'title="Pipeline ran but produced no output — click to check log">'
+            "❌ view log</span>"
+        )
+    # never_triggered or not in CO
+    return '<span style="color:#aaa" title="No pipeline run found">⊘</span>'
 
 
 def gui_log_cell(path: str | None) -> str:
@@ -185,24 +200,22 @@ def gui_log_cell(path: str | None) -> str:
     return "⬜"
 
 
-def rig_log_cell(manifest_entry: dict | None) -> str:
+def rig_log_cell(manifest_status: str | None, manifest_rig: str) -> str:
     """Render the Rig Manifest cell based on watchdog manifest status.
 
     Args:
-        manifest_entry: Dict with keys ``status`` (``'complete'`` or
-            ``'pending'``), ``rig`` (hostname), and ``session_raw``
-            (original asset name); or None if no manifest was found.
+        manifest_status: ``'complete'``, ``'pending'``, or None.
+        manifest_rig:    Hostname of the rig that staged the manifest.
     """
-    if manifest_entry is None:
+    if manifest_status is None:
         return "⬜"
-    status = manifest_entry.get("status", "")
-    rig = manifest_entry.get("rig", "")
-    if status == "complete":
+    rig = manifest_rig
+    if manifest_status == "complete":
         return (
             f'<span title="Manifest processed by watchdog on {rig}">'
             f"✅ {rig}</span>"
         )
-    if status == "pending":
+    if manifest_status == "pending":
         return (
             f'<span style="color:#a60" '
             f'title="Manifest staged on {rig}, awaiting watchdog pickup">'
@@ -211,19 +224,17 @@ def rig_log_cell(manifest_entry: dict | None) -> str:
     return "⬜"
 
 
-def watchdog_cell(events: list[dict]) -> str:
-    """Render the Watchdog cell from a list of watchdog events (newest-first).
+def watchdog_cell(summary: str | None, has_error: bool) -> str:
+    """Render the Watchdog cell from pre-computed summary fields.
 
     Args:
-        events: List of watchdog event dicts with ``source`` and ``action`` keys.
+        summary:   Rig name from the latest watchdog event, or None.
+        has_error: True if the latest event action starts with "error".
     """
-    if not events:
+    if summary is None:
         return "⬜"
-    latest = events[0]
-    rig = latest["source"].split("/")[0].strip()
-    action = latest["action"]
-    icon = "❌" if action.lower().startswith("error") else "✅"
-    return f'<span style="cursor:pointer;white-space:nowrap">{icon} {rig}</span>'
+    icon = "❌" if has_error else "✅"
+    return f'<span style="cursor:pointer;white-space:nowrap">{icon} {summary}</span>'
 
 
 def _log_modal_pane(log_text: str) -> pn.viewable.Viewable:
@@ -282,134 +293,62 @@ def _co_asset_col(col: dict) -> str:
 # ---------------------------------------------------------------------------
 
 def build_session_table(
-    sessions: list[SessionResult],
+    rows: list[SessionTableRow],
     derived_columns: list[dict],
-    no_derived_expected: frozenset[str] = frozenset(),
 ) -> pd.DataFrame:
-    """Convert ``SessionResult`` objects to an HTML-cell DataFrame for Tabulator.
+    """Convert ``SessionTableRow`` objects to an HTML-cell DataFrame for Tabulator.
 
-    Pure presentation — no querying, no joining.  Each field is rendered by
-    one of the ``*_cell()`` helpers.  Hidden ``_``-prefixed columns carry
+    Pure presentation — wraps structured data in HTML.  Each field is rendered
+    by one of the ``*_cell()`` helpers.  Hidden ``_``-prefixed columns carry
     raw values for click handlers and filters.
 
     Args:
-        sessions:             List of assembled ``SessionResult`` objects.
-        derived_columns:      Pipeline column configs from the project config
-                              (each dict has ``label``, ``modalities``,
-                              ``co_pipeline_capsule_id``, etc.).
-        no_derived_expected:  Modalities never expected to produce derived
-                              assets — used to compute completeness status.
+        rows:            List of ``SessionTableRow`` objects from
+                         ``build_session_rows()``.
+        derived_columns: Pipeline column configs from the project config.
 
     Returns:
         DataFrame with HTML-formatted cells and hidden metadata columns,
         ordered: fixed columns → derived triples → hidden columns.
     """
-    _now_ts = _time_mod.time()
-
-    rows = []
-    for sr in sessions:
-        _, dt_str = parse_session_name(sr.session_name)
-        raw_name = sr.raw_asset_name or ""
-        dts_html, dts_url = dts_cell(sr.dts_status, sr.dts_job_url, sr.within_14d)
-        completeness = check_completeness(sr, no_derived_expected)
-        row: dict = {
-            "Subject": sr.subject_id,
-            "Session Date": dt_str,
-            "Modalities": ", ".join(sorted(sr.raw_modalities)),
-            "Session Name": sr.display_name,
-            "Rig Log": gui_log_cell(sr.rig_log_path),
-            "_rig_log_path": sr.rig_log_path or "",
-            "Rig Manifest": rig_log_cell(sr.manifest_entry),
-            "_rig_manifest_rig": (sr.manifest_entry or {}).get("rig", ""),
-            "Watchdog": watchdog_cell(list(sr.watchdog_events)),
-            "_watchdog_sname": sr.session_name,
+    table_rows = []
+    for row in rows:
+        raw_name = row.raw_asset_name or ""
+        dts_html, dts_url = dts_cell(row.dts_status, row.dts_url, row.within_14d)
+        html_row: dict = {
+            "Subject": row.subject_id,
+            "Session Date": row.session_datetime_display,
+            "Modalities": ", ".join(row.modalities),
+            "Session Name": row.display_name,
+            "Rig Log": gui_log_cell(row.rig_log_path),
+            "_rig_log_path": row.rig_log_path or "",
+            "Rig Manifest": rig_log_cell(row.manifest_status, row.manifest_rig),
+            "_rig_manifest_rig": row.manifest_rig,
+            "Watchdog": watchdog_cell(row.watchdog_summary, row.watchdog_has_error),
+            "_watchdog_sname": row.session_name,
             "DTS Upload": dts_html,
             "_dts_url": dts_url,
             "Raw Asset Metadata": asset_cell(raw_name or None),
             "_name_Raw Asset Metadata": raw_name,
-            "CO Raw Asset": co_asset_link_cell(sr.raw_co_asset_id, raw_name),
+            "CO Raw Asset": co_asset_link_cell(row.raw_co_data_url),
         }
-        for col in derived_columns:
+        for i, col in enumerate(derived_columns):
             co_log_col = _co_log_col(col)
             co_asset_col = _co_asset_col(col)
-            expected = sr.expected_pipelines
-            col_mods = col["modalities"]
-            # Determine whether this pipeline column applies to this session.
-            # Prefer expected_pipelines (from DTS job type) for precision; fall
-            # back to raw_modalities when there's no DTS job (e.g. >14 days).
-            # If neither is known, leave it as ⬜ (unknown).
-            if expected is not None:
-                not_applicable = not col_mods & expected
-            elif sr.raw_modalities:
-                not_applicable = not col_mods & sr.raw_modalities
+            ps = row.pipeline_statuses[i]
+            if ps.status == "not_applicable":
+                html_row[co_log_col] = "—"
+                html_row[co_asset_col] = "—"
+                html_row[col["label"]] = "—"
+                html_row[f"_name_{col['label']}"] = ""
             else:
-                not_applicable = False
-            if not_applicable:
-                # N/A: this session's modalities don't include this pipeline.
-                row[co_log_col] = "—"
-                row[co_asset_col] = "—"
-                row[col["label"]] = "—"
-                row[f"_name_{col['label']}"] = ""
-                row[f"_comp_id_{col['label']}"] = ""
-            else:
-                # Find the matching derived asset for this column's modalities.
-                da = next(
-                    (d for d in sr.derived_assets if col["modalities"] & d.modalities),
-                    None,
-                )
-                asset_name = da.asset_name if da else ""
-                comp_id_key = f"_comp_id_{col['label']}"
-                if asset_name:
-                    row[co_log_col] = co_log_cell(da.co_log_url if da else None)
-                    row[comp_id_key] = ""
-                else:
-                    # Show ⏳/⚠️ if the raw asset reached CO but no derived asset
-                    # exists yet.  Use raw_co_asset_id (not dts_status) as the
-                    # signal — DTS status is unavailable for sessions >14 days old
-                    # or DocDB-only sessions, yet the pipeline may still have run.
-                    is_pending = (
-                        sr.raw_co_asset_id is not None
-                        and bool(col.get("co_pipeline_capsule_id"))
-                    )
-                    if is_pending:
-                        # Direct cache lookup — no API call.  The cache is built
-                        # from list_computations on demand (when the user clicks a
-                        # cell) and never expires; miss here means ⊘ (not yet known).
-                        capsule_id = col.get("co_pipeline_capsule_id", "")
-                        run_id = (
-                            get_cached_run_id(sr.raw_co_asset_id, capsule_id)
-                            if sr.raw_co_asset_id and capsule_id
-                            else None
-                        )
-                        if run_id:
-                            # A pipeline run exists but produced no derived asset.
-                            # Use age to distinguish still-running from failed.
-                            session_ts = (
-                                sr.acquisition_datetime.timestamp()
-                                if sr.acquisition_datetime else 0.0
-                            )
-                            if (_now_ts - session_ts) / 3600 < 2:
-                                row[co_log_col] = "⏳"
-                            else:
-                                row[co_log_col] = (
-                                    '<span style="cursor:pointer" title="Pipeline ran but produced no output — click to check log">❌ view log</span>'
-                                )
-                        else:
-                            # No run found: pipeline was never triggered.
-                            row[co_log_col] = '<span style="color:#aaa" title="No pipeline run found">⊘</span>'
-                        row[comp_id_key] = ""
-                    else:
-                        row[co_log_col] = '<span style="color:#aaa" title="Not in Code Ocean">⊘</span>'
-                        row[comp_id_key] = ""
+                html_row[co_log_col] = _pipeline_log_cell(ps)
+                html_row[co_asset_col] = co_asset_link_cell(ps.co_data_url)
+                html_row[col["label"]] = asset_cell(ps.derived_asset_name or None)
+                html_row[f"_name_{col['label']}"] = ps.derived_asset_name
 
-                row[co_asset_col] = co_asset_link_cell(
-                    da.co_asset_id if da else None, asset_name
-                )
-                row[col["label"]] = asset_cell(asset_name or None)
-                row[f"_name_{col['label']}"] = asset_name
-
-        row["_completeness_status"] = completeness.status
-        rows.append(row)
+        html_row["_completeness_status"] = row.completeness_status
+        table_rows.append(html_row)
 
     fixed_cols = [
         "Subject", "Session Date", "Modalities", "Session Name",
@@ -425,10 +364,9 @@ def build_session_table(
         ["_dts_url", "_watchdog_sname", "_name_Raw Asset Metadata",
          "_rig_log_path", "_rig_manifest_rig", "_completeness_status"]
         + [f"_name_{c['label']}" for c in derived_columns]
-        + [f"_comp_id_{c['label']}" for c in derived_columns]
     )
 
-    df = pd.DataFrame(rows, columns=fixed_cols + derived_col_list + hidden_cols)
+    df = pd.DataFrame(table_rows, columns=fixed_cols + derived_col_list + hidden_cols)
     return df
 
 
@@ -553,13 +491,15 @@ def build_panel_app():
                     no_derived_expected=no_derived_expected,
                     step_callback=_set_step,
                 )
-                watchdog_events = {
-                    sr.session_name: list(sr.watchdog_events) for sr in sessions
-                }
 
                 _set_step(f"⏳ Building table ({len(sessions)} sessions)…")
+                table_rows = build_session_rows(sessions, derived_columns, no_derived_expected)
+                watchdog_events = {
+                    tr.session_name: list(tr.watchdog_events) for tr in table_rows
+                }
+
                 try:
-                    df = build_session_table(sessions, derived_columns, no_derived_expected)
+                    df = build_session_table(table_rows, derived_columns)
                 except Exception as exc:
                     logger.error("build_session_table failed: %s", traceback.format_exc())
                     pn.state.execute(lambda: _stop_ticker_and_set(f"❌ Table build failed: {exc}"))
@@ -584,11 +524,7 @@ def build_panel_app():
                 return
             co_log_col_names = {_co_log_col(c) for c in derived_columns}
             # Map CO log column → hidden comp_id column for failed log lookups.
-            co_log_comp_id_col = {
-                _co_log_col(c): f"_comp_id_{c['label']}"
-                for c in derived_columns
-            }
-            # Map CO log column → capsule_id for on-demand pending lookups.
+            # Map CO log column → capsule_id for on-demand log fetch.
             co_log_capsule_col = {
                 _co_log_col(c): c.get("co_pipeline_capsule_id", "")
                 for c in derived_columns
@@ -610,7 +546,6 @@ def build_panel_app():
                 ["_dts_url", "_watchdog_sname", "_name_Raw Asset Metadata",
                  "_rig_log_path", "_rig_manifest_rig", "_completeness_status"]
                 + [f"_name_{c['label']}" for c in derived_columns]
-                + [f"_comp_id_{c['label']}" for c in derived_columns]
             )
             # Rename multi-word visible columns to use <br> so headers wrap to
             # data-content width instead of header-text width.
@@ -623,7 +558,6 @@ def build_panel_app():
             col_unrename = {v: k for k, v in col_rename.items()}
             html_cols = [col_rename.get(c, c) for c in html_cols]
             co_log_col_names = {col_rename.get(c, c) for c in co_log_col_names}
-            co_log_comp_id_col = {col_rename.get(k, k): v for k, v in co_log_comp_id_col.items()}
             co_log_capsule_col = {col_rename.get(k, k): v for k, v in co_log_capsule_col.items()}
             co_log_name_col = {col_rename.get(k, k): v for k, v in co_log_name_col.items()}
             _rig_log_col = col_rename.get("Rig Log", "Rig Log")
@@ -658,7 +592,6 @@ def build_panel_app():
             async def on_cell_click(
                 event, _co_log_cols=co_log_col_names,
                 _wd_events=watchdog_events,
-                _co_log_comp_id=co_log_comp_id_col,
                 _co_log_capsule=co_log_capsule_col,
                 _co_log_name=co_log_name_col,
                 _col_unrename=col_unrename,
@@ -675,11 +608,6 @@ def build_panel_app():
                     # All CO log cells (successful, pending, failed) open in modal.
                     name_col = _co_log_name.get(col, "")
                     has_derived = bool(name_col and str(row.get(name_col, "")))
-
-                    comp_id_col = _co_log_comp_id.get(col, "")
-                    if not comp_id_col or comp_id_col not in tab.value.columns:
-                        return
-                    comp_id = str(row.get(comp_id_col, ""))
 
                     capsule_id = _co_log_capsule.get(col, "")
                     raw_name = str(row.get("_name_Raw Asset Metadata", ""))
