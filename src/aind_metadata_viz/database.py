@@ -19,8 +19,7 @@ from aind_metadata_validator.mappings import (
 from aind_metadata_viz.utils import METASTATE_MAP, hd_style
 
 DEV_OR_PROD = "prod"
-REDSHIFT_SECRETS = f"/aind/{DEV_OR_PROD}/redshift/credentials/readonly"
-RDS_TABLE_NAME = f"metadata_status_{DEV_OR_PROD}_v2"
+VALIDATOR_TABLE_NAME = f"metadata_status_{DEV_OR_PROD}_v2"
 
 CHUNK_SIZE = 1000
 
@@ -273,7 +272,7 @@ class Database(param.Parameterized):
 @pn.cache(ttl=CACHE_RESET_DAY)
 def _get_status() -> pd.DataFrame:
     """Get the status of the metadata"""
-    response = custom(RDS_TABLE_NAME)
+    response = custom(VALIDATOR_TABLE_NAME)
 
     # replace values using the int -> string map
     response.replace(METASTATE_MAP, inplace=True)
