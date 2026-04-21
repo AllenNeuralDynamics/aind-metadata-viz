@@ -7,7 +7,9 @@ import param
 import numpy as np
 import io
 import logging
+import time
 from io import StringIO
+from pathlib import Path
 
 from aind_data_schema.core.metadata import CORE_FILES
 from aind_data_schema_models.modalities import (
@@ -22,6 +24,7 @@ DEV_OR_PROD = "prod"
 VALIDATOR_TABLE_NAME = f"metadata_status_{DEV_OR_PROD}_v2"
 
 CHUNK_SIZE = 1000
+PARQUET_CACHE_PATH = Path.home() / "metadata_cache.parquet"
 
 docdb_api_client = MetadataDbClient(
     host="api.allenneuraldynamics.org",
@@ -52,16 +55,7 @@ class Database(param.Parameterized):
         test_mode=False,
     ):
         """Initialize"""
-        # get data
-        self._file_data = _get_metadata(test_mode=test_mode)
-        self._status_data = _get_status()
-
-        # inner join only keeps records that are in both dataframes
-        self.data = pd.merge(
-            self._file_data, self._status_data, on="_id", how="inner"
-        )
-
-        # setup
+        self.data = _load_data(test_mode=test_mode)
         self.set_file(CORE_FILES[0])
         self.set_field("")
 
@@ -74,22 +68,15 @@ class Database(param.Parameterized):
         _type_
             _description_
         """
-        mod_filter = not (self.modality_filter == "all")
+        mask = pd.Series(True, index=self.data.index)
 
-        filtered_df = self.data.copy()
-
-        # Filter by modality
-        if mod_filter:
-            filtered_df = filtered_df[
-                filtered_df["modalities"].str.contains(self.modality_filter)
-            ]
+        if not (self.modality_filter == "all"):
+            mask = mask & self.data["modalities"].str.contains(self.modality_filter)
 
         if not (self.derived_filter == "All assets"):
-            filtered_df = filtered_df[
-                filtered_df["derived"] == (self.derived_filter == "Derived")
-            ]
+            mask = mask & (self.data["derived"] == (self.derived_filter == "Derived"))
 
-        return filtered_df
+        return self.data[mask]
 
     def data_modality_filtered(self, modality: str):
         """Pull out only data records which include a particular modality
@@ -101,20 +88,14 @@ class Database(param.Parameterized):
         modality : str
             Modality.ONE_OF
         """
-        filtered_df = self.data.copy()
+        mask = pd.Series(True, index=self.data.index)
 
-        # Apply derived filter
         if not (self.derived_filter == "All assets"):
-            filtered_df = filtered_df[
-                filtered_df["derived"] == (self.derived_filter == "Derived")
-            ]
+            mask = mask & (self.data["derived"] == (self.derived_filter == "Derived"))
 
-        filtered_df = filtered_df[CORE_FILES + EXTRA_FIELDS]
-        filtered_df = filtered_df[
-            filtered_df["modalities"].apply(lambda x: modality in x.split(","))
-        ]
+        mask = mask & self.data["modalities"].apply(lambda x: modality in x.split(","))
 
-        return filtered_df
+        return self.data.loc[mask, CORE_FILES + EXTRA_FIELDS]
 
     def get_overall_valid(self):
         """Get the percentage of valid records"""
@@ -133,9 +114,7 @@ class Database(param.Parameterized):
             List of expected metadata filenames, by default EXPECTED_FILES
         """
         # Melt to long form
-        df = self.data_filtered.copy()
-        df.drop(EXTRA_FIELDS, axis=1, inplace=True)
-        df = df[CORE_FILES]
+        df = self.data_filtered[CORE_FILES]
 
         df_melted = df.melt(var_name="file", value_name="state")
         # Get sum
@@ -197,23 +176,19 @@ class Database(param.Parameterized):
 
     def get_file_field_presence(self):
         """Get the presence of fields in a specific file"""
-        field_df = self.data.filter(regex=rf"^{self.file}\.").rename(
-            columns=lambda col: col.replace(f"{self.file}.", "")
-        )
+        mask = pd.Series(True, index=self.data.index)
 
-        # we need to filter by the derived/modality filters here but they are in the other dataframe
         if not (self.derived_filter == "All assets"):
-            field_df = field_df[
-                self._file_data["derived"]
-                == (self.derived_filter == "Derived")
-            ]
+            mask = mask & (self.data["derived"] == (self.derived_filter == "Derived"))
 
         if not self.modality_filter == "all":
-            field_df = field_df[
-                self._file_data["modalities"].apply(
-                    lambda x: self.modality_filter in x.split(",")
-                )
-            ]
+            mask = mask & self.data["modalities"].apply(
+                lambda x: self.modality_filter in x.split(",")
+            )
+
+        field_df = self.data[mask].filter(regex=rf"^{self.file}\.").rename(
+            columns=lambda col: col.replace(f"{self.file}.", "")
+        )
 
         df_melted = field_df.melt(
             id_vars=[], var_name="field", value_name="state"
@@ -241,28 +216,26 @@ class Database(param.Parameterized):
         csv
             CSV file with name, _id, location, and subject_id (if available)
         """
-        # For everybody who is missing the currently active file/field
-        df = self.data_filtered
-
-        df = df[["name", "_id", "location"]]
+        df_filtered = self.data_filtered
 
         type0 = "missing" if vp_state == "Missing" else "present"
         type1 = "optional" if vp_state == "Missing" else "valid"
 
         if self.field:
-            filter = (
-                (self.data_filtered[self.file] == type0)
-                | (self.data_filtered[self.file] == type1)
+            field_col = f"{self.file}.{self.field}"
+            row_filter = (
+                (df_filtered[self.file] == type0)
+                | (df_filtered[self.file] == type1)
             ) | (
-                (self._field_data[self.field] == type0)
-                | (self._field_data[self.field] == type1)
+                (df_filtered[field_col] == type0)
+                | (df_filtered[field_col] == type1)
             )
         else:
-            filter = (self.data_filtered[self.file] == type0) | (
-                self.data_filtered[self.file] == type1
+            row_filter = (df_filtered[self.file] == type0) | (
+                df_filtered[self.file] == type1
             )
 
-        df = df[filter]
+        df = df_filtered.loc[row_filter, ["name", "_id", "location"]]
 
         sio = StringIO()
         df.to_csv(sio, index=False)
@@ -277,6 +250,10 @@ def _get_status() -> pd.DataFrame:
     # replace values using the int -> string map
     response.replace(METASTATE_MAP, inplace=True)
 
+    # Convert value columns to category dtype (~8x less memory than object strings)
+    cat_cols = [c for c in response.columns if c != "_id"]
+    response[cat_cols] = response[cat_cols].astype("category")
+
     return response
 
 
@@ -287,6 +264,27 @@ def _get_metadata(test_mode=False) -> pd.DataFrame:
     df["derived"] = df["data_level"] != "raw"
     df.drop(columns=["data_level"], inplace=True)
     return df
+
+
+def _load_data(test_mode=False) -> pd.DataFrame:
+    """Load the merged DataFrame from a parquet cache if fresh, otherwise fetch from the API.
+
+    The parquet file is stored at ~/metadata_cache.parquet and is considered fresh
+    if it is less than CACHE_RESET_DAY seconds old.
+    """
+    if not test_mode and PARQUET_CACHE_PATH.exists():
+        age = time.time() - PARQUET_CACHE_PATH.stat().st_mtime
+        if age < CACHE_RESET_DAY:
+            return pd.read_parquet(PARQUET_CACHE_PATH)
+
+    file_data = _get_metadata(test_mode=test_mode)
+    status_data = _get_status()
+    data = pd.merge(file_data, status_data, on="_id", how="inner")
+
+    if not test_mode:
+        data.to_parquet(PARQUET_CACHE_PATH)
+
+    return data
 
 
 @pn.cache(ttl=CACHE_RESET_HOUR)
