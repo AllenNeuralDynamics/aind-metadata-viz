@@ -22,7 +22,7 @@ dependencies = [
     'altair',
     'aind-data-schema>=2.6.0,<3',
     'aind-data-access-api[docdb]',
-    'zombie-squirrel>=0.16.3,<1',
+    'zombie-squirrel>=0.17.0,<1',
     'aind-metadata-validator>=0.11.6,<2',
     'flask',
     'langchain',
