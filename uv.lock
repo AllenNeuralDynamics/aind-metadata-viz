@@ -115,7 +115,7 @@ dependencies = [
     { name = "aind-metadata-upgrader" },
     { name = "aind-metadata-validator" },
     { name = "altair" },
-    { name = "biodata-query" },
+    { name = "biodata-query", extra = ["panel"] },
     { name = "flask" },
     { name = "langchain", version = "0.3.27", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "langchain", version = "1.1.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
@@ -148,7 +148,7 @@ requires-dist = [
     { name = "aind-metadata-upgrader", specifier = ">=0.11.3,<1" },
     { name = "aind-metadata-validator", specifier = ">=0.11.6,<2" },
     { name = "altair" },
-    { name = "biodata-query", git = "https://github.com/AllenNeuralDynamics/biodata-query.git?rev=v0.3.0" },
+    { name = "biodata-query", extras = ["panel"], git = "https://github.com/AllenNeuralDynamics/biodata-query.git?rev=v0.3.1" },
     { name = "black", marker = "extra == 'dev'" },
     { name = "coverage", marker = "extra == 'dev'" },
     { name = "flake8", marker = "extra == 'dev'" },
@@ -319,12 +319,18 @@ wheels = [
 
 [[package]]
 name = "biodata-query"
-version = "0.3.0"
-source = { git = "https://github.com/AllenNeuralDynamics/biodata-query.git?rev=v0.3.0#a3fce808b82d8257e637edeec739c5fbb89a9efc" }
+version = "0.3.1"
+source = { git = "https://github.com/AllenNeuralDynamics/biodata-query.git?rev=v0.3.1#9179601a2a1d99c988a57e37302ac6e95531f2f5" }
 dependencies = [
     { name = "aind-data-access-api", extra = ["docdb"] },
     { name = "aind-data-schema" },
     { name = "zombie-squirrel" },
+]
+
+[package.optional-dependencies]
+panel = [
+    { name = "panel" },
+    { name = "panel-material-ui" },
 ]
 
 [[package]]
@@ -2021,7 +2027,7 @@ wheels = [
 
 [[package]]
 name = "panel"
-version = "1.8.4"
+version = "1.8.10"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "bleach" },
@@ -2040,9 +2046,23 @@ dependencies = [
     { name = "tqdm" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/1b/62/9147e3e5b8a4971606c1aa1ecf66d889ea7529914899e4192f4c5125430b/panel-1.8.4.tar.gz", hash = "sha256:c4d6e7e3a895d3a42b6b69ee30d3acc191580619a2d1b8cd18f7f6684246a67f", size = 32098216, upload-time = "2025-12-02T18:08:02.51Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/dd/c6/9e0de5cab6eac1416a76bf94e0fcec229423526eeb25558e44ba7bdc506c/panel-1.8.10.tar.gz", hash = "sha256:762881b06efb99f3d201749a3634c6b5f18f46cfca520970c2c1bb31bed42c90", size = 32186528, upload-time = "2026-03-16T12:59:00.448Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/27/39/796ffe83cf6a1a6458f42db0a5c2ea7671478651e8945386e89625af5fdc/panel-1.8.4-py3-none-any.whl", hash = "sha256:d0e0f316c78159c87544a403d4600f7f056a6cafdc035df5b13c9c8667c36c96", size = 30184708, upload-time = "2025-12-02T18:07:59.568Z" },
+    { url = "https://files.pythonhosted.org/packages/58/85/3290cc84bb35503293ea23d2a0b39a78cf02c560ae1455502b042975c951/panel-1.8.10-py3-none-any.whl", hash = "sha256:b1de9304e729b87fdeee59a5be5b0d3ce7786dc301626cb728f69fbc4c136693", size = 30270089, upload-time = "2026-03-16T12:58:57.03Z" },
+]
+
+[[package]]
+name = "panel-material-ui"
+version = "0.9.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "bokeh" },
+    { name = "packaging" },
+    { name = "panel" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/21/63/bb5abc5b5cc693e89e4398b3cef762a693cb7e3d330b4a007d940e0d3fd7/panel_material_ui-0.9.1.tar.gz", hash = "sha256:2e0409b807451a7a28acee2e3055e90123eae4eb118392a9610b8596d5d14595", size = 3886912, upload-time = "2026-03-16T16:13:27.88Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/78/40/ba1854a795b3bc40953e251ea7c7c7d34221e105eb6e386c45d454fe7dc9/panel_material_ui-0.9.1-py3-none-any.whl", hash = "sha256:c83a74e6490ce8aad25170fed957a580f67b26f0e19d9a58a9e2b637785f9d67", size = 1652977, upload-time = "2026-03-16T16:13:26.092Z" },
 ]
 
 [[package]]

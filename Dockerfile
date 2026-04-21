@@ -3,6 +3,7 @@ FROM python:3.10-slim
 WORKDIR /app
 
 ENV FOREST_TYPE="s3"
+ENV BIODATA_QUERY_LLM_URL="https://metadata-portal.allenneuraldynamics.org/get-query"
 
 ADD src ./src
 ADD pyproject.toml .

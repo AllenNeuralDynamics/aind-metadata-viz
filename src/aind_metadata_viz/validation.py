@@ -17,6 +17,8 @@ import json
 import requests
 import logging
 
+from biodata_query.llm.endpoint import handle_get_query
+
 
 CLASS_MAPPING = {
     "Metadata": Metadata,
@@ -477,10 +479,35 @@ INDIVIDUAL_ROUTES = [
     for name, cls in CLASS_MAPPING.items()
 ]
 
+
+class GetQueryHandler(RequestHandler):
+
+    def set_default_headers(self):
+        self.set_header("Access-Control-Allow-Origin", "*")
+        self.set_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+        self.set_header("Access-Control-Allow-Headers", "Content-Type")
+
+    def options(self):
+        self.set_status(204)
+
+    def get(self):
+        event = {
+            "queryStringParameters": {
+                k: self.get_argument(k)
+                for k in self.request.arguments
+            }
+        }
+        response = handle_get_query(event)
+        self.set_status(response["statusCode"])
+        self.set_header("Content-Type", "application/json")
+        self.write(response["body"])
+
+
 ROUTES = [
     (r"/gather", GatherHandler),
     (r"/validate/metadata", UploadMetadataHandler),
     (r"/validate/files", ValidateFilesHandler),
+    (r"/get-query", GetQueryHandler),
 ] + INDIVIDUAL_ROUTES
 
 # Export ROUTES for Panel server to discover
