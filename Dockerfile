@@ -9,6 +9,7 @@ ADD pyproject.toml .
 ADD setup.py .
 
 RUN apt-get update
+RUN apt-get install -y git
 RUN apt-get install -y postgresql
 RUN pip install . --no-cache-dir
 RUN mkdir /root/.aws && \
