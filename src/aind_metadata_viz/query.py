@@ -2,24 +2,7 @@
 
 import panel as pn
 
-import math
-
 from aind_metadata_viz.utils import outer_style, AIND_COLORS
-import zombie_squirrel.acorn_helpers.unique_project_names as _upn_module
-
-_original_unique_project_names = _upn_module.unique_project_names
-
-
-def _patched_unique_project_names(*args, **kwargs):
-    return [p for p in _original_unique_project_names(*args, **kwargs)
-            if isinstance(p, str) or (p is not None and not (isinstance(p, float) and math.isnan(p)))]
-
-
-_upn_module.unique_project_names = _patched_unique_project_names
-
-import zombie_squirrel as _zs
-_zs.unique_project_names = _patched_unique_project_names
-
 from biodata_query.panel.builder import QueryBuilder
 from biodata_query.panel.results import QueryResults
 
