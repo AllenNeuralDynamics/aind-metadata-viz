@@ -503,12 +503,14 @@ class GetQueryHandler(RequestHandler):
         self.write(response["body"])
 
 
+from aind_metadata_viz.contributions.handlers import CONTRIBUTION_ROUTES
+
 ROUTES = [
     (r"/gather", GatherHandler),
     (r"/validate/metadata", UploadMetadataHandler),
     (r"/validate/files", ValidateFilesHandler),
     (r"/get-query", GetQueryHandler),
-] + INDIVIDUAL_ROUTES
+] + INDIVIDUAL_ROUTES + CONTRIBUTION_ROUTES
 
 # Export ROUTES for Panel server to discover
 __all__ = ["ROUTES"]

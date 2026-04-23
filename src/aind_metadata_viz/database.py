@@ -99,6 +99,8 @@ class Database(param.Parameterized):
 
     def get_overall_valid(self):
         """Get the percentage of valid records"""
+        if len(self.data) == 0:
+            return 0.0
         return (
             np.sum(self.data["metadata"].values == "valid")
             / len(self.data)
@@ -271,14 +273,24 @@ def _load_data(test_mode=False) -> pd.DataFrame:
 
     The parquet file is stored at ~/metadata_cache.parquet and is considered fresh
     if it is less than CACHE_RESET_DAY seconds old.
+
+    Returns an empty DataFrame (with correct columns) if data is unavailable so
+    the app can still start.
     """
     if not test_mode and PARQUET_CACHE_PATH.exists():
         age = time.time() - PARQUET_CACHE_PATH.stat().st_mtime
         if age < CACHE_RESET_DAY:
             return pd.read_parquet(PARQUET_CACHE_PATH)
 
-    file_data = _get_metadata(test_mode=test_mode)
-    status_data = _get_status()
+    try:
+        file_data = _get_metadata(test_mode=test_mode)
+        status_data = _get_status()
+    except Exception as e:
+        logging.warning(f"Could not load metadata: {e}. App will start with no data.")
+        # Return a well-formed empty DataFrame so the rest of the app doesn't crash
+        columns = ["_id", "name", "location", "modalities", "derived", "metadata"] + list(CORE_FILES)
+        return pd.DataFrame(columns=columns)
+
     data = pd.merge(file_data, status_data, on="_id", how="inner")
 
     if not test_mode:

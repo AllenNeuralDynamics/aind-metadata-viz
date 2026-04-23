@@ -15,7 +15,7 @@ import os
 from tornado.testing import AsyncHTTPTestCase
 from tornado.web import Application
 
-from aind_metadata_viz.validation import ROUTES
+from aind_metadata_viz.endpoints import ROUTES
 
 
 def fetch_helper(test_case, url, method="POST", body=None, headers=None):

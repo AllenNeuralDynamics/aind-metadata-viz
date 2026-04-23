@@ -34,8 +34,8 @@ colors = COLOR_OPTIONS.get(
 )
 color_list = list(colors.values())
 
-# Load the database
-db = database.Database()
+# db is loaded lazily in on_load to avoid blocking initial render
+db = None
 
 # Set up selectors and sync with URL
 modality_selector = pn.widgets.Select(
@@ -190,9 +190,7 @@ The download button creates a CSV file with information about the metadata recor
 
 header_pane = pn.pane.Markdown(header, styles=outer_style, width=420)
 
-total_md = f"<p style=\"text-align:center\"><b>{db.get_overall_valid():1.2f}%</b> of all metadata records are fully {hd_style('valid', colors)}</p>"
-
-percent_total = pn.pane.Markdown(total_md, styles=outer_style, width=420)
+percent_total = pn.pane.Markdown("", styles=outer_style, width=420)
 
 download_pane = pn.pane.Markdown(download_md)
 
@@ -227,21 +225,12 @@ def build_row(selected_modality, derived_filter):
     )
 
 
-top_row = pn.bind(
-    build_row,
-    selected_modality=modality_selector,
-    derived_filter=derived_selector,
+# main_col starts with a loading spinner; charts are populated in on_load
+main_col = pn.Column(
+    pn.indicators.LoadingSpinner(value=True, size=50, name="Loading data..."),
+    styles=outer_style,
+    width=515,
 )
-
-mid_plot = pn.bind(
-    field_present_chart,
-    selected_file=top_selector,
-    selected_modality=modality_selector,
-    derived_filter=derived_selector,
-)
-
-# Put everything in a column and buffer it
-main_col = pn.Column(top_row, mid_plot, styles=outer_style, width=515)
 
 main_row = pn.Row(
     pn.HSpacer(),
@@ -261,7 +250,7 @@ validator_name_selector = pn.widgets.TextInput(
 )
 pn.state.location.sync(validator_name_selector, {"value": "validator_name"})
 
-validator = database.RecordValidator(validator_name_selector.value, colors)
+validator = None
 
 
 def build_validator(validator_name):
@@ -276,10 +265,53 @@ def build_validator(validator_name):
     return row
 
 
-validator_row = pn.bind(
-    build_validator, validator_name=validator_name_selector
-)
+validator_row_container = pn.Column()
 
-pn.Column(main_row, validator_row).servable(
+
+def on_load():
+    global db, validator
+    db = database.Database()
+
+    no_data = len(db.data) == 0
+
+    if no_data:
+        percent_total.object = (
+            "<p style=\"text-align:center;color:orange\">"
+            "<b>⚠ Data unavailable</b> — could not load metadata from source. "
+            "Charts will be empty.</p>"
+        )
+    else:
+        # Update the percent-valid stat now that db is loaded
+        total_md = (
+            f"<p style=\"text-align:center\"><b>{db.get_overall_valid():1.2f}%</b>"
+            f" of all metadata records are fully {hd_style('valid', colors)}</p>"
+        )
+        percent_total.object = total_md
+
+    # Wire up the chart bindings
+    top_row = pn.bind(
+        build_row,
+        selected_modality=modality_selector,
+        derived_filter=derived_selector,
+    )
+    mid_plot = pn.bind(
+        field_present_chart,
+        selected_file=top_selector,
+        selected_modality=modality_selector,
+        derived_filter=derived_selector,
+    )
+    main_col[:] = [top_row, mid_plot]
+
+    # Wire up the validator
+    validator = database.RecordValidator(validator_name_selector.value, colors)
+    validator_row = pn.bind(
+        build_validator, validator_name=validator_name_selector
+    )
+    validator_row_container[:] = [validator_row]
+
+
+pn.state.onload(on_load)
+
+pn.Column(main_row, validator_row_container).servable(
     title="Metadata Portal",
 )
