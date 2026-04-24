@@ -3,7 +3,7 @@ FROM python:3.10-slim
 WORKDIR /app
 
 ENV FOREST_TYPE="s3"
-ENV BIODATA_QUERY_LLM_URL="https://metadata-portal.allenneuraldynamics.org/get-query"
+ENV BIODATA_QUERY_LLM_URL="https://metadata-portal.allenneuraldynamics.org/upgrade-query"
 ENV BEDROCK_ROLE_ARN="arn:aws:iam::024848463001:role/bedrock-access-CO"
 
 ADD src ./src
