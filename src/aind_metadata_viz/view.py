@@ -7,26 +7,14 @@ import param
 
 from aind_data_access_api.document_db import MetadataDbClient
 
-from aind_metadata_viz.utils import outer_style, AIND_COLORS
+from aind_metadata_viz.utils import outer_style, BASE_CSS
 from aind_data_schema.core.metadata import CORE_FILES
 from aind_metadata_viz import __version__
 
 
 FIXED_WIDTH = 1200
 
-background_param = pn.state.location.query_params.get(
-    "background", "dark_blue"
-)
-background_color = AIND_COLORS.get(background_param, AIND_COLORS["dark_blue"])
-
-css = f"""
-body {{
-    background-color: {background_color} !important;
-    background-image: url('/images/aind-pattern.svg') !important;
-    background-size: 60%;
-}}
-"""
-pn.config.raw_css.append(css)
+pn.config.raw_css.append(BASE_CSS)
 
 
 docdb_api_client = MetadataDbClient(
@@ -179,7 +167,7 @@ class MetadataView(param.Parameterized):
         """Create a panel for viewing the metadata record"""
         if self.record is None:
             return pn.pane.Markdown(
-                "<span style='color:white;'>No record selected. Set a record by adding ?name={your-asset-name} to the URL</span>"
+                "<span>No record selected. Set a record by adding ?name={your-asset-name} to the URL</span>"
             )
 
         main_col = pn.Column(

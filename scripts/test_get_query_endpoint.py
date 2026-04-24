@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Integration test for the /get-query endpoint.
+Integration test for the /upgrade-query endpoint.
 
 Tests:
 1. Valid message with no existing query -> returns 200 with a query dict
@@ -35,7 +35,7 @@ def main():
         else "http://localhost:5006"
     )
 
-    print(f"Testing /get-query endpoint against: {base_url}")
+    print(f"Testing /upgrade-query endpoint against: {base_url}")
     print("=" * 80)
 
     all_passed = True
@@ -45,7 +45,7 @@ def main():
     # ------------------------------------------------------------------
     print("\n[Test 1] Valid message, no prior query")
     resp = requests.get(
-        f"{base_url}/get-query",
+        f"{base_url}/upgrade-query",
         params={"message": "show me all ecephys sessions"},
         timeout=30,
     )
@@ -68,7 +68,7 @@ def main():
     print("\n[Test 2] Valid message with an existing query")
     existing_query = json.dumps({"subject.genotype": "wt/wt"})
     resp = requests.get(
-        f"{base_url}/get-query",
+        f"{base_url}/upgrade-query",
         params={
             "message": "also filter to sessions from 2024",
             "query": existing_query,
@@ -92,7 +92,7 @@ def main():
     # Test 3: Missing message parameter -> 400
     # ------------------------------------------------------------------
     print("\n[Test 3] Missing message parameter")
-    resp = requests.get(f"{base_url}/get-query", timeout=30)
+    resp = requests.get(f"{base_url}/upgrade-query", timeout=30)
     all_passed &= check("Status is 400", resp.status_code == 400, str(resp.status_code))
 
     # ------------------------------------------------------------------
@@ -100,7 +100,7 @@ def main():
     # ------------------------------------------------------------------
     print("\n[Test 4] Invalid JSON in query parameter")
     resp = requests.get(
-        f"{base_url}/get-query",
+        f"{base_url}/upgrade-query",
         params={"message": "show me all ecephys sessions", "query": "{not valid json}"},
         timeout=30,
     )

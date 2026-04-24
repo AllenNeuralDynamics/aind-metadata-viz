@@ -4,6 +4,7 @@ from aind_data_schema import __version__ as ads_version
 from aind_metadata_viz import database
 from aind_metadata_viz.utils import (
     AIND_COLORS,
+    BASE_CSS,
     COLOR_OPTIONS,
     hd_style,
     outer_style,
@@ -13,20 +14,7 @@ from aind_metadata_viz.charts import file_present_chart, modality_present_chart
 pn.extension("vega", design="material")
 alt.themes.enable("ggplot2")
 
-# Define CSS to set the background color and add to panel
-background_param = pn.state.location.query_params.get(
-    "background", "dark_blue"
-)
-background_color = AIND_COLORS.get(background_param, AIND_COLORS["dark_blue"])
-
-css = f"""
-body {{
-    background-color: {background_color} !important;
-    background-image: url('/images/aind-pattern.svg') !important;
-    background-size: 60%;
-}}
-"""
-pn.config.raw_css.append(css)
+pn.config.raw_css.append(BASE_CSS)
 
 # Get the active color list
 colors = COLOR_OPTIONS.get(

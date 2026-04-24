@@ -4,12 +4,22 @@ from enum import Enum
 
 FIXED_WIDTH = 1200
 
+BASE_CSS = """
+body, .bk-root {
+    background-color: #f5f5f5 !important;
+    background-image: none !important;
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif !important;
+    font-size: 13px !important;
+    color: #111111 !important;
+}
+"""
+
 outer_style = {
     "background": "#ffffff",
-    "border-radius": "5px",
-    "border": "2px solid black",
-    "padding": "10px",
-    "box-shadow": "5px 5px 5px #bcbcbc",
+    "border-radius": "4px",
+    "border": "1px solid #e0e0e0",
+    "padding": "16px",
+    "box-shadow": "0 1px 3px rgba(0,0,0,0.07)",
     "margin": "5px",
 }
 

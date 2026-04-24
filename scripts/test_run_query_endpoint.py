@@ -7,8 +7,9 @@ Tests:
 2. Filter by project_name with names_only  -> returns 200 with asset_names list
 3. Filter by modality with names_only      -> returns 200 with asset_names list
 4. Query with limit                        -> returns 200 with limited asset_names
-5. Invalid JSON body                       -> returns 400
-6. Non-object body (array)                 -> returns 400
+5. Full record retrieval with no projection -> returns 200 with full records
+6. Invalid JSON body                       -> returns 400
+7. Non-object body (array)                 -> returns 400
 
 Usage:
     python test_run_query_endpoint.py --env local    # Test against localhost:5006
@@ -37,7 +38,7 @@ def main():
         else "http://localhost:5006"
     )
 
-    print(f"Testing /get-query endpoint against: {base_url}")
+    print(f"Testing /upgrade-query endpoint against: {base_url}")
     print("=" * 80)
 
     all_passed = True
@@ -135,9 +136,37 @@ def main():
     all_passed &= passed
 
     # ------------------------------------------------------------------
-    # Test 5: Invalid JSON body -> 400
+    # Test 5: Full record retrieval with no projection
     # ------------------------------------------------------------------
-    print("\n[Test 5] Invalid JSON body")
+    print("\n[Test 5] Full record retrieval with no projection")
+    resp = requests.post(
+        f"{base_url}/get-query",
+        json={},
+        params={"limit": "1"},
+        timeout=30,
+    )
+    passed = check("Status is 200", resp.status_code == 200, str(resp.status_code))
+    if passed:
+        try:
+            body = resp.json()
+            passed &= check("Response contains 'records'", "records" in body, str(body))
+            passed &= check("'records' is a list", isinstance(body.get("records"), list))
+            passed &= check("'asset_names' not present", "asset_names" not in body)
+            if body.get("records"):
+                record = body["records"][0]
+                passed &= check(
+                    "Record has data_description", "data_description" in record
+                )
+                passed &= check("Record has subject", "subject" in record)
+        except json.JSONDecodeError as exc:
+            passed = False
+            check("Response is valid JSON", False, str(exc))
+    all_passed &= passed
+
+    # ------------------------------------------------------------------
+    # Test 6: Invalid JSON body -> 400
+    # ------------------------------------------------------------------
+    print("\n[Test 6] Invalid JSON body")
     resp = requests.post(
         f"{base_url}/get-query",
         data="not valid json",
@@ -147,9 +176,9 @@ def main():
     all_passed &= check("Status is 400", resp.status_code == 400, str(resp.status_code))
 
     # ------------------------------------------------------------------
-    # Test 6: Non-object body (array) -> 400
+    # Test 7: Non-object body (array) -> 400
     # ------------------------------------------------------------------
-    print("\n[Test 6] Non-object body (array)")
+    print("\n[Test 7] Non-object body (array)")
     resp = requests.post(
         f"{base_url}/get-query",
         json=["not", "an", "object"],
