@@ -1,6 +1,5 @@
 from aind_data_access_api.document_db import MetadataDbClient
-from aind_data_access_api.rds_tables import RDSCredentials
-from aind_data_access_api.rds_tables import Client
+from zombie_squirrel import custom, asset_basics
 from aind_metadata_validator.metadata_validator import validate_metadata
 import panel as pn
 import pandas as pd
@@ -8,12 +7,13 @@ import param
 import numpy as np
 import io
 import logging
+import time
 from io import StringIO
+from pathlib import Path
 
+from aind_data_schema.core.metadata import CORE_FILES
 from aind_data_schema_models.modalities import (
     Modality,
-    ExpectedFiles,
-    FileRequirement,
 )
 from aind_metadata_validator.mappings import (
     SECOND_LAYER_MAPPING,
@@ -21,37 +21,19 @@ from aind_metadata_validator.mappings import (
 from aind_metadata_viz.utils import METASTATE_MAP, hd_style
 
 DEV_OR_PROD = "prod"
-REDSHIFT_SECRETS = f"/aind/{DEV_OR_PROD}/redshift/credentials/readwrite"
-RDS_TABLE_NAME = f"metadata_status_{DEV_OR_PROD}"
+VALIDATOR_TABLE_NAME = f"metadata_status_{DEV_OR_PROD}_v2"
 
 CHUNK_SIZE = 1000
-
-rds_client = Client(
-        credentials=RDSCredentials(
-            aws_secrets_name=REDSHIFT_SECRETS
-        ),
-    )
+PARQUET_CACHE_PATH = Path.home() / "metadata_cache.parquet"
 
 docdb_api_client = MetadataDbClient(
     host="api.allenneuraldynamics.org",
-    version="v1",
+    version="v2",
 )
 
-ALL_FILES = sorted(
-    [
-        "data_description",
-        "acquisition",
-        "procedures",
-        "subject",
-        "instrument",
-        "processing",
-        "rig",
-        "session",
-        "quality_control",
-    ]
-)
+
 # These are the fields that need to be dropped from that data frame when building charts
-EXTRA_FIELDS = ["modalities", "derived", "name", "_id", "location", "created"]
+EXTRA_FIELDS = ["modalities", "derived", "name", "_id", "location"]
 
 # reset cache every 24 hours
 CACHE_RESET_DAY = 24 * 60 * 60
@@ -73,17 +55,8 @@ class Database(param.Parameterized):
         test_mode=False,
     ):
         """Initialize"""
-
-        # get data
-        self._file_data = _get_metadata(test_mode=test_mode)
-        self._status_data = _get_status()
-
-        # inner join only keeps records that are in both dataframes
-        self.data = pd.merge(self._file_data, self._status_data, on="_id", how="inner")
-
-        # setup
-        (expected_files, _) = self.get_expected_files()
-        self.set_file(expected_files[0])
+        self.data = _load_data(test_mode=test_mode)
+        self.set_file(CORE_FILES[0])
         self.set_field("")
 
     @property
@@ -95,20 +68,15 @@ class Database(param.Parameterized):
         _type_
             _description_
         """
-        mod_filter = not (self.modality_filter == "all")
+        mask = pd.Series(True, index=self.data.index)
 
-        filtered_df = self.data.copy()
-
-        # Filter by modality
-        if mod_filter:
-            filtered_df = filtered_df[
-                filtered_df["modalities"].str.contains(self.modality_filter)
-            ]
+        if not (self.modality_filter == "all"):
+            mask = mask & self.data["modalities"].str.contains(self.modality_filter)
 
         if not (self.derived_filter == "All assets"):
-            filtered_df = filtered_df[filtered_df["derived"] == (self.derived_filter == "Derived")]
+            mask = mask & (self.data["derived"] == (self.derived_filter == "Derived"))
 
-        return filtered_df
+        return self.data[mask]
 
     def data_modality_filtered(self, modality: str):
         """Pull out only data records which include a particular modality
@@ -120,42 +88,24 @@ class Database(param.Parameterized):
         modality : str
             Modality.ONE_OF
         """
-        filtered_df = self.data.copy()
+        mask = pd.Series(True, index=self.data.index)
 
-        # Apply derived filter
         if not (self.derived_filter == "All assets"):
-            filtered_df = filtered_df[filtered_df["derived"] == (self.derived_filter == "Derived")]
+            mask = mask & (self.data["derived"] == (self.derived_filter == "Derived"))
 
-        KEEP_FIELDS = ALL_FILES + EXTRA_FIELDS
-        KEEP_FIELDS = [f for f in KEEP_FIELDS if f in filtered_df.columns]
-        filtered_df = filtered_df[KEEP_FIELDS]
-        filtered_df = filtered_df[filtered_df['modalities'].apply(lambda x: modality in x.split(','))]
+        mask = mask & self.data["modalities"].apply(lambda x: modality in x.split(","))
 
-        return filtered_df
-
-    def get_expected_files(self) -> tuple[list[str], list[str]]:
-        if self.modality_filter == "all":
-            return (ALL_FILES, [])
-
-        expected_files_by_modality = ALL_FILES.copy()
-        excluded_files_by_modality = []
-
-        # get the ExpectedFiles object for this modality
-        expected_files = getattr(
-            ExpectedFiles, str(self.modality_filter).upper()
-        )
-
-        # loop through the actual files and remove any that are not expected
-        for file in expected_files_by_modality:
-            if getattr(expected_files, file) == FileRequirement.EXCLUDED:
-                expected_files_by_modality.remove(file)
-                excluded_files_by_modality.append(file)
-
-        return (expected_files_by_modality, excluded_files_by_modality)
+        return self.data.loc[mask, CORE_FILES + EXTRA_FIELDS]
 
     def get_overall_valid(self):
         """Get the percentage of valid records"""
-        return np.sum(self.data['metadata'].values=='valid') / len(self.data) * 100
+        if len(self.data) == 0:
+            return 0.0
+        return (
+            np.sum(self.data["metadata"].values == "valid")
+            / len(self.data)
+            * 100
+        )
 
     def get_file_presence(self):
         """Get the presence of a list of files
@@ -166,38 +116,38 @@ class Database(param.Parameterized):
             List of expected metadata filenames, by default EXPECTED_FILES
         """
         # Melt to long form
-        df = self.data_filtered.copy()
-
-        # Drop extra fields
-        DROP_FIELDS = [f for f in EXTRA_FIELDS if f in df.columns]
-        df.drop(DROP_FIELDS, axis=1, inplace=True)
-        df = df[ALL_FILES]
+        df = self.data_filtered[CORE_FILES]
 
         df_melted = df.melt(var_name="file", value_name="state")
         # Get sum
-        df_summary = df_melted.groupby(["file", "state"]).size().reset_index(name="sum")
+        df_summary = (
+            df_melted.groupby(["file", "state"]).size().reset_index(name="sum")
+        )
 
         return df_summary
 
     def get_modality_presence(self, modality: str):
-        """Get the presence for a specific modality
-        """
+        """Get the presence for a specific modality"""
 
         df_filtered = self.data_modality_filtered(modality)
-        df_filtered.drop(['derived', 'name', '_id', 'location', 'created', 'modalities'], axis=1, inplace=True)
+        df_filtered.drop(
+            ["derived", "name", "_id", "location", "modalities"],
+            axis=1,
+            inplace=True,
+        )
 
         # Collapse all columns
         df_melted = df_filtered.melt(
-            id_vars=[],
-            var_name="file",
-            value_name="state"
+            id_vars=[], var_name="file", value_name="state"
         )
 
         # Get sum
-        df_summary = df_melted.groupby(["state"]).size().reset_index(name="sum")
+        df_summary = (
+            df_melted.groupby(["state"]).size().reset_index(name="sum")
+        )
         df_summary["sum"] = df_summary["sum"] / np.sum(df_summary["sum"])
 
-        df_summary['modality'] = modality
+        df_summary["modality"] = modality
 
         return df_summary
 
@@ -227,23 +177,29 @@ class Database(param.Parameterized):
         self.field = field
 
     def get_file_field_presence(self):
-        """Get the presence of fields in a specific file
-        """
-        field_df = self.data.filter(regex=rf'^{self.file}\.').rename(columns=lambda col: col.replace(f"{self.file}.", ""))
+        """Get the presence of fields in a specific file"""
+        mask = pd.Series(True, index=self.data.index)
 
-        # we need to filter by the derived/modality filters here but they are in the other dataframe
         if not (self.derived_filter == "All assets"):
-            field_df = field_df[self._file_data["derived"] == (self.derived_filter == "Derived")]
+            mask = mask & (self.data["derived"] == (self.derived_filter == "Derived"))
 
         if not self.modality_filter == "all":
-            field_df = field_df[self._file_data['modalities'].apply(lambda x: self.modality_filter in x.split(','))]
+            mask = mask & self.data["modalities"].apply(
+                lambda x: self.modality_filter in x.split(",")
+            )
+
+        field_df = self.data[mask].filter(regex=rf"^{self.file}\.").rename(
+            columns=lambda col: col.replace(f"{self.file}.", "")
+        )
 
         df_melted = field_df.melt(
-            id_vars=[],
-            var_name="field",
-            value_name="state"
+            id_vars=[], var_name="field", value_name="state"
         )
-        df_summary = df_melted.groupby(["field", "state"]).size().reset_index(name="sum")
+        df_summary = (
+            df_melted.groupby(["field", "state"])
+            .size()
+            .reset_index(name="sum")
+        )
 
         return df_summary
 
@@ -260,23 +216,28 @@ class Database(param.Parameterized):
         Returns
         -------
         csv
-            CSV file with name, _id, location, created date, and subject_id (if available)
+            CSV file with name, _id, location, and subject_id (if available)
         """
-        # For everybody who is missing the currently active file/field
-        df = self.data_filtered
-
-        df = df[["name", "_id", "location", "created"]]
+        df_filtered = self.data_filtered
 
         type0 = "missing" if vp_state == "Missing" else "present"
         type1 = "optional" if vp_state == "Missing" else "valid"
 
         if self.field:
-            filter = ((self.data_filtered[self.file] == type0) | (self.data_filtered[self.file] == type1)) | \
-                      ((self._field_data[self.field] == type0) | (self._field_data[self.field] == type1))
+            field_col = f"{self.file}.{self.field}"
+            row_filter = (
+                (df_filtered[self.file] == type0)
+                | (df_filtered[self.file] == type1)
+            ) | (
+                (df_filtered[field_col] == type0)
+                | (df_filtered[field_col] == type1)
+            )
         else:
-            filter = (self.data_filtered[self.file] == type0) | (self.data_filtered[self.file] == type1)
+            row_filter = (df_filtered[self.file] == type0) | (
+                df_filtered[self.file] == type1
+            )
 
-        df = df[filter]
+        df = df_filtered.loc[row_filter, ["name", "_id", "location"]]
 
         sio = StringIO()
         df.to_csv(sio, index=False)
@@ -285,76 +246,57 @@ class Database(param.Parameterized):
 
 @pn.cache(ttl=CACHE_RESET_DAY)
 def _get_status() -> pd.DataFrame:
-    """Get the status of the metadata
-    """
-    response = rds_client.read_table(RDS_TABLE_NAME)
+    """Get the status of the metadata"""
+    response = custom(VALIDATOR_TABLE_NAME)
 
     # replace values using the int -> string map
     response.replace(METASTATE_MAP, inplace=True)
+
+    # Convert value columns to category dtype (~8x less memory than object strings)
+    cat_cols = [c for c in response.columns if c != "_id"]
+    response[cat_cols] = response[cat_cols].astype("category")
 
     return response
 
 
 @pn.cache(ttl=CACHE_RESET_DAY)
 def _get_metadata(test_mode=False) -> pd.DataFrame:
-    """Get metadata about records in DocDB
+    df = asset_basics()[["_id", "name", "location", "modalities", "data_level"]].copy()
+    df["modalities"] = df["modalities"].fillna("").str.replace(", ", ",", regex=False)
+    df["derived"] = df["data_level"] != "raw"
+    df.drop(columns=["data_level"], inplace=True)
+    return df
 
-    Parameters
-    ----------
-    test_mode : bool, optional
-        _description_, by default False
+
+def _load_data(test_mode=False) -> pd.DataFrame:
+    """Load the merged DataFrame from a parquet cache if fresh, otherwise fetch from the API.
+
+    The parquet file is stored at ~/metadata_cache.parquet and is considered fresh
+    if it is less than CACHE_RESET_DAY seconds old.
+
+    Returns an empty DataFrame (with correct columns) if data is unavailable so
+    the app can still start.
     """
-    record_list = docdb_api_client.retrieve_docdb_records(
-        filter_query={},
-        projection={
-            "data_description.modality": 1,
-            "name": 1,
-            "_id": 1,
-            "location": 1,
-            "created": 1,
-            "schema_version": 1,
-        },
-        limit=0 if not test_mode else 10,
-        paginate_batch_size=500,
-    )
+    if not test_mode and PARQUET_CACHE_PATH.exists():
+        age = time.time() - PARQUET_CACHE_PATH.stat().st_mtime
+        if age < CACHE_RESET_DAY:
+            return pd.read_parquet(PARQUET_CACHE_PATH)
 
-    # Remove all records where the schema major version is 2
-    record_list = [record for record in record_list if not record["schema_version"].startswith("2.")]
+    try:
+        file_data = _get_metadata(test_mode=test_mode)
+        status_data = _get_status()
+    except Exception as e:
+        logging.warning(f"Could not load metadata: {e}. App will start with no data.")
+        # Return a well-formed empty DataFrame so the rest of the app doesn't crash
+        columns = ["_id", "name", "location", "modalities", "derived", "metadata"] + list(CORE_FILES)
+        return pd.DataFrame(columns=columns)
 
-    print(f"Retrieved {len(record_list)} records")
+    data = pd.merge(file_data, status_data, on="_id", how="inner")
 
-    records = []
-    # Now add some information about the records, i.e. modality, derived state, etc.
-    for i, record in enumerate(record_list):
-        if (
-            "data_description" in record
-            and record["data_description"]
-            and "modality" in record["data_description"]
-        ):
-            if isinstance(record["data_description"]["modality"], list):
-                modalities = [
-                    mod["abbreviation"] if isinstance(mod, dict) else mod
-                    for mod in record["data_description"]["modality"]
-                ]
-        else:
-            modalities = []
-        derived = True if record["name"].count("_") <= 3 else False
+    if not test_mode:
+        data.to_parquet(PARQUET_CACHE_PATH)
 
-        info_data = {
-            "modalities": ",".join(modalities),
-            "derived": derived,
-            "name": record["name"],
-            "_id": record["_id"],
-            "location": record["location"],
-            "created": record["created"],
-        }
-
-        records.append(info_data)
-
-    return pd.DataFrame(
-        records,
-        columns=["modalities", "derived", "name", "_id", "location", "created"],
-    )
+    return data
 
 
 @pn.cache(ttl=CACHE_RESET_HOUR)
@@ -364,11 +306,13 @@ def _get_record_by_name(name: str) -> list:
     if not name:
         return []
 
-    records = docdb_api_client.retrieve_docdb_records(filter_query={"name": name})
+    records = docdb_api_client.retrieve_docdb_records(
+        filter_query={"name": name}
+    )
     return records
 
 
-class RecordValidator():
+class RecordValidator:
 
     def __init__(self, id, colors):
         """Populate the validator with a record and run validation
@@ -419,12 +363,16 @@ class RecordValidator():
             return pn.pane.Markdown("No record was found.")
         else:
             print(self.state["metadata"].value)
-            state = pn.pane.Markdown(f"""
+            state = pn.pane.Markdown(
+                f"""
 Overall metadata: {hd_style(METASTATE_MAP[self.state["metadata"].value], self.colors)}
-""")
+"""
+            )
             file_state = {}
-            for file in ALL_FILES:
-                file_state[file] = hd_style(METASTATE_MAP[self.state[file].value], self.colors)
+            for file in CORE_FILES:
+                file_state[file] = hd_style(
+                    METASTATE_MAP[self.state[file].value], self.colors
+                )
             print(file_state)
             df = pd.DataFrame(file_state, index=[0])
             file_state = pn.pane.DataFrame(df, width=920, escape=False)

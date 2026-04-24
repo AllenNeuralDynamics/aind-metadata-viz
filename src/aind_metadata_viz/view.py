@@ -1,63 +1,37 @@
 """App for viewing individual metadata assets"""
-import os
 
+from typing import Optional
 import panel as pn
 import param
 
 
 from aind_data_access_api.document_db import MetadataDbClient
 
-from aind_metadata_viz.utils import outer_style, AIND_COLORS
-from aind_metadata_viz.database import ALL_FILES
+from aind_metadata_viz.utils import outer_style, BASE_CSS
+from aind_data_schema.core.metadata import CORE_FILES
+from aind_metadata_viz import __version__
 
-from aind_metadata_validator.core_validator import validate_core_metadata
-from aind_metadata_validator.utils import MetadataState
 
 FIXED_WIDTH = 1200
 
-background_param = pn.state.location.query_params.get("background", "dark_blue")
-background_color = AIND_COLORS.get(background_param, AIND_COLORS["dark_blue"])
+pn.config.raw_css.append(BASE_CSS)
 
-css = f"""
-body {{
-    background-color: {background_color} !important;
-    background-image: url('/images/aind-pattern.svg') !important;
-    background-size: 60%;
-}}
-"""
-pn.config.raw_css.append(css)
-
-
-API_GATEWAY_HOST = os.getenv("API_GATEWAY_HOST", "api.allenneuraldynamics-test.org")
-DATABASE = os.getenv("DATABASE", "metadata_index")
-COLLECTION = os.getenv("COLLECTION", "data_assets")
 
 docdb_api_client = MetadataDbClient(
-    host=API_GATEWAY_HOST,
-    database=DATABASE,
-    collection=COLLECTION,
+    host="api.allenneuraldynamics.org",
+    version="v2",
 )
 
 
-# State sync
-class Settings(param.Parameterized):
-    """Top-level settings for QC app"""
-
-    name = param.String(default="")
-
-
-settings = Settings()
-pn.state.location.sync(settings, {"name": "name"})
-
-
-def get_record(name):
+def get_record(asset_name: str) -> Optional[dict]:
     """Get a record from the database by name"""
     records = docdb_api_client.retrieve_docdb_records(
-        filter_query={"name": name},
+        filter_query={"name": asset_name},
         limit=1,
     )
 
     if len(records) == 0:
+        print(f"Record with name {asset_name} not found.")
         return None
     return records[0]
 
@@ -65,6 +39,7 @@ def get_record(name):
 class MetadataView(param.Parameterized):
     """Class for viewing metadata records"""
 
+    asset_name = param.String(default="")
     record = param.Dict(default=None)
     files_present = param.List(default=[])
     describedBys = param.Dict(default={})
@@ -82,7 +57,7 @@ class MetadataView(param.Parameterized):
         if not self.record:
             return
 
-        for file in ALL_FILES:
+        for file in CORE_FILES:
 
             self.file_panels[file] = pn.Column(
                 styles=outer_style,
@@ -103,17 +78,47 @@ class MetadataView(param.Parameterized):
 
                 self.file_panel(file)
 
-            self.buttons[file] = pn.widgets.Button(name=f"{file}", button_type="primary" if file in self.files_present else "default", disabled=True)
-            pn.bind(self._toggle_visibility, self.buttons[file], file=file, watch=True)
+            self.buttons[file] = pn.widgets.Button(
+                name=f"{file}",
+                button_type=(
+                    "primary" if file in self.files_present else "default"
+                ),
+                disabled=True,
+            )
+            pn.bind(
+                self._toggle_visibility,
+                self.buttons[file],
+                file=file,
+                watch=True,
+            )
 
     def _toggle_visibility(self, event, file):
         """Toggle the visibility of a file"""
         self.file_panels[file].visible = not self.file_panels[file].visible
+        self.buttons[file].button_type = (
+            "primary"
+            if self.file_panels[file].visible
+            else "default"
+        )
 
     def header_panel(self):
         """Return a header panel with simple metadata information"""
 
-        md = f"## {self.record['name']}"
+        # Turn other_identifiers dict[list[str]] into a little table
+        other_identifiers = self.record["other_identifiers"]
+        other_identifiers["S3 Path"] = [self.record["location"]]
+        if other_identifiers:
+            other_id_md = "### Other Identifiers\n\n"
+            for key, values in other_identifiers.items():
+                other_id_md += f"- **{key}**: {', '.join(values)}\n"
+        else:
+            other_id_md = ""
+
+        md = f"""
+## {self.record['name']}
+{other_id_md}
+
+"""
 
         return pn.pane.Markdown(md)
 
@@ -124,12 +129,10 @@ class MetadataView(param.Parameterized):
         """
         objects = []
 
-        for file in ALL_FILES:
+        for file in CORE_FILES:
             if file in self.buttons.keys():
                 self.buttons[file].disabled = file not in self.files_present
-                objects.append(
-                    self.buttons[file]
-                )
+                objects.append(self.buttons[file])
 
         return pn.Row(*objects)
 
@@ -151,9 +154,9 @@ class MetadataView(param.Parameterized):
 
         md_header = pn.pane.Markdown(
             f"## {file} \n"
-            f"aind-data-schema link: [{file}.py]({self.describedBys[file]})"
+            f'aind-data-schema docs: <a href="https://aind-data-schema.readthedocs.io/en/latest/{file}.html" target="_blank">{file}.json</a>'
         )
-        data = pn.pane.JSON(self.record[file], width=FIXED_WIDTH-50)
+        data = pn.pane.JSON(self.record[file], width=FIXED_WIDTH - 50)
 
         self.file_panels[file].objects = [
             md_header,
@@ -163,7 +166,9 @@ class MetadataView(param.Parameterized):
     def panel(self):
         """Create a panel for viewing the metadata record"""
         if self.record is None:
-            return pn.pane.Markdown("<span style='color:white;'>No record selected. Set a record by adding ?name={your-asset-name} to the URL</span>")
+            return pn.pane.Markdown(
+                "<span>No record selected. Set a record by adding ?name={your-asset-name} to the URL</span>"
+            )
 
         main_col = pn.Column(
             self.header(),
@@ -176,8 +181,14 @@ class MetadataView(param.Parameterized):
 
 
 metadata_view = MetadataView()
-metadata_view.set_record(get_record(settings.name))
+
+pn.state.location.sync(metadata_view, {"asset_name": "name"})
+
+metadata_view.set_record(get_record(metadata_view.asset_name))
 metadata_view_pane = metadata_view.panel()
+
+print(f"AIND Metadata Viz version: {__version__}")
+print(f"Viewing record: {metadata_view.asset_name}")
 
 main_row = pn.Row(
     pn.HSpacer(),

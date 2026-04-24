@@ -1,6 +1,69 @@
-# AIND Metadata Viz
+# AIND Metadata Portal
 
-[metadata visualizations](http://10.128.141.92:5007/app)
+[metadata visualizations](https://metadata-portal.allenneuraldynamics.org/)
+
+## Validation endpoints
+
+The metadata portal hosts validation endpoints for the latest [`aind-data-schema`](https://github.com/AllenNeuralDynamics/aind-data-schema) release. You can hit these endpoints with:
+
+### Example
+
+```python
+import requests
+import json
+
+with open("metadata.json", "r") as f:
+    metadata = json.load(f)
+
+response = requests.post(
+    "https://metadata-portal.allenneuraldynamics-test.org/validate/metadata", 
+    json=metadata
+)
+
+if response.status_code == 200:
+    print("✅ Validation passed!")
+else:
+    print(f"❌ Validation failed: {response.json()}")
+```
+
+### Files endpoint
+
+You can also post a dictionary containing only the core files (i.e. not generated from a `Metadata` object). This can be useful when testing whether your metadata are valid prior to triggering the aind-data-transfer-service on a data asset.
+
+```python
+import requests
+import json
+
+core_files = ["data_description", "acquisition", "instrument", "procedures", "subject"]
+
+metadata = {}
+for core_file in core_files:
+    with open(f"{core_file}.json", "r") as f:
+        metadata[core_file] = json.load(f)
+
+response = requests.post(
+    "https://metadata-portal.allenneuraldynamics-test.org/validate/metadata", 
+    json=metadata
+)
+
+if response.status_code == 200:
+    print("✅ Validation passed!")
+else:
+    print(f"❌ Validation failed: {response.json()}")
+```
+
+### Individual validation endpoints
+
+- `/validate/subject` - Subject metadata
+- `/validate/data_description` - Data description metadata  
+- `/validate/acquisition` - Acquisition metadata
+- `/validate/instrument` - Instrument metadata
+- `/validate/procedures` - Procedures metadata
+- `/validate/processing` - Processing metadata
+- `/validate/quality_control` - Quality control metadata
+- `/validate/model` - Model metadata
+
+Example usage: `requests.post("https://metadata-portal.allenneuraldynamics-test.org/validate/subject", json=subject_data)`
 
 ## Usage
 
@@ -11,40 +74,10 @@ Create a virtual environment and install the package, then launch panel.
 python -m venv .venv
 source .venv/bin/activate (or .venv/bin/Scripts/activate on Windows)
 pip install -e .
-panel serve ./src/aind_metadata_viz/app.py --show
+panel serve ./src/aind_metadata_viz/app.py --show --autoreload
 ```
 
-## Release
-
-We directly expose the process/port on the internal AI network. To update and restart:
-
-To update build
-```
-ssh ibs-davidf-vm2
-cd aind-metadata-viz
-git pull
-```
-
-To restart
-```
-ps aux | grep panel
-kill pid
-./start_viz.sh
-```
-
-`start_viz.sh` is:
-```
-#!/bin/bash -x
-
-cd ~/aind-metadata-viz
-
-source .venv/bin/activate
-pip install -e .
-
-nohup panel serve ./src/aind_metadata_viz/app.py --allow-websocket-origin=10.128.141.92:5006 > ~/logfile.log 2>&1 &
-```
-
-The process (should) auto-restart on reboot. See `crontab -e`
+To launch the `query` and `view` apps replace the `app.py` with the appropriate launcher.
 
 ## CI/CD
 There is a `Dockerfile` which includes the entrypoint to launch the app.
