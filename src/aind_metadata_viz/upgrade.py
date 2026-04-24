@@ -11,7 +11,6 @@ import json
 import traceback
 
 # Redshift settings
-REDSHIFT_SECRETS = "/aind/prod/redshift/credentials/readonly"
 RDS_TABLE_NAME = "metadata_upgrade_status_prod"
 
 pn.extension("tabulator")

@@ -18,6 +18,7 @@ import requests
 import logging
 
 from biodata_query.llm.endpoint import handle_get_query
+from biodata_query.query import run_query
 
 
 CLASS_MAPPING = {
@@ -503,13 +504,62 @@ class GetQueryHandler(RequestHandler):
         self.write(response["body"])
 
 
+class RunQueryHandler(RequestHandler):
+
+    def set_default_headers(self):
+        self.set_header("Access-Control-Allow-Origin", "*")
+        self.set_header("Access-Control-Allow-Methods", "POST, OPTIONS")
+        self.set_header("Access-Control-Allow-Headers", "Content-Type")
+
+    def options(self):
+        self.set_status(204)
+
+    def post(self):
+        self.set_header("Content-Type", "application/json")
+        try:
+            data = json.loads(self.request.body)
+        except json.JSONDecodeError:
+            self.set_status(400)
+            self.write({"error": "Invalid JSON format."})
+            return
+
+        if not isinstance(data, dict):
+            self.set_status(400)
+            self.write({"error": "Request body must be a JSON object."})
+            return
+
+        names_only = self.get_argument("names_only", "false").lower() == "true"
+        limit_str = self.get_argument("limit", "0")
+        try:
+            limit = int(limit_str)
+        except ValueError:
+            self.set_status(400)
+            self.write({"error": "limit must be an integer."})
+            return
+
+        try:
+            result = run_query(data, names_only=names_only, limit=limit)
+            response_body = {
+                "backend": result.backend,
+                "elapsed_seconds": result.elapsed_seconds,
+                "asset_names": result.asset_names,
+            }
+            if result.records is not None:
+                response_body["records"] = result.records
+            self.write(response_body)
+        except Exception as e:
+            self.set_status(500)
+            self.write({"error": "Query execution failed", "details": str(e)})
+
+
 from aind_metadata_viz.contributions.handlers import CONTRIBUTION_ROUTES
 
 ROUTES = [
     (r"/gather", GatherHandler),
     (r"/validate/metadata", UploadMetadataHandler),
     (r"/validate/files", ValidateFilesHandler),
-    (r"/get-query", GetQueryHandler),
+    (r"/upgrade-query", GetQueryHandler),
+    (r"/get-query", RunQueryHandler),
 ] + INDIVIDUAL_ROUTES + CONTRIBUTION_ROUTES
 
 # Export ROUTES for Panel server to discover
