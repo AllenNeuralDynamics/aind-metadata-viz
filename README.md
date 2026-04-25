@@ -83,13 +83,17 @@ print(response.json())
 ### Query endpoints
 
 - `GET /upgrade-query` — Build a query using the LLM query builder. Pass query string parameters as needed.
-- `POST /get-query` — Run a query. Accepts a JSON object as the request body.
+- `POST /retrieve-records` — Run a query. Accepts a JSON object as the request body.
 
-Optional query parameters for `/get-query`: `names_only=true` (return only asset names), `limit=<int>` (limit number of results).
+Optional query parameters for `/retrieve-records`:
+- `names_only=true` — return only asset names
+- `limit=<int>` — limit number of results (default 0 = no limit)
+- `projection=<json>` — JSON object specifying which fields to include/exclude (e.g. `{"subject.subject_id": 1}`)
 
 ```python
 response = requests.post(
-    "https://metadata-portal.allenneuraldynamics-test.org/get-query",
+    "https://metadata-portal.allenneuraldynamics-test.org/retrieve-records",
+    params={"limit": 10, "projection": '{"subject.subject_id": 1, "name": 1}'},
     json={"subject.subject_id": "123456"},
 )
 print(response.json())

@@ -13,6 +13,7 @@ from aind_data_schema_models.organizations import Organization
 from aind_data_schema_models.modalities import Modality
 from datetime import datetime, timezone
 from typing import List, Optional
+import asyncio
 import json
 import requests
 import logging
@@ -514,7 +515,7 @@ class RunQueryHandler(RequestHandler):
     def options(self):
         self.set_status(204)
 
-    def post(self):
+    async def post(self):
         self.set_header("Content-Type", "application/json")
         try:
             data = json.loads(self.request.body)
@@ -537,8 +538,22 @@ class RunQueryHandler(RequestHandler):
             self.write({"error": "limit must be an integer."})
             return
 
+        projection_str = self.get_argument("projection", None)
+        projection = None
+        if projection_str:
+            try:
+                projection = json.loads(projection_str)
+                if not isinstance(projection, dict):
+                    raise ValueError
+            except (json.JSONDecodeError, ValueError):
+                self.set_status(400)
+                self.write({"error": "projection must be a JSON object."})
+                return
+
         try:
-            result = run_query(data, names_only=names_only, limit=limit)
+            result = await asyncio.get_event_loop().run_in_executor(
+                None, lambda: run_query(data, names_only=names_only, limit=limit, projection=projection)
+            )
             response_body = {
                 "backend": result.backend,
                 "elapsed_seconds": result.elapsed_seconds,
@@ -559,7 +574,7 @@ ROUTES = [
     (r"/validate/metadata", UploadMetadataHandler),
     (r"/validate/files", ValidateFilesHandler),
     (r"/upgrade-query", GetQueryHandler),
-    (r"/get-query", RunQueryHandler),
+    (r"/retrieve-records", RunQueryHandler),
 ] + INDIVIDUAL_ROUTES + CONTRIBUTION_ROUTES
 
 # Export ROUTES for Panel server to discover
