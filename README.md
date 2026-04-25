@@ -42,7 +42,7 @@ for core_file in core_files:
         metadata[core_file] = json.load(f)
 
 response = requests.post(
-    "https://metadata-portal.allenneuraldynamics-test.org/validate/metadata", 
+    "https://metadata-portal.allenneuraldynamics-test.org/validate/files", 
     json=metadata
 )
 
@@ -64,6 +64,53 @@ else:
 - `/validate/model` - Model metadata
 
 Example usage: `requests.post("https://metadata-portal.allenneuraldynamics-test.org/validate/subject", json=subject_data)`
+
+### Gather endpoint
+
+Gathers and validates metadata from the metadata service for a given subject.
+
+- `GET /gather?subject_id=<id>&project_name=<name>` — required parameters
+- Optional: `metadata_service_url`, `modalities` (comma-separated), `tags` (comma-separated), `group`, `restrictions`, `data_summary`, `acquisition_start_time`
+
+```python
+response = requests.get(
+    "https://metadata-portal.allenneuraldynamics-test.org/gather",
+    params={"subject_id": "123456", "project_name": "MyProject"},
+)
+print(response.json())
+```
+
+### Query endpoints
+
+- `GET /upgrade-query` — Build a query using the LLM query builder. Pass query string parameters as needed.
+- `POST /retrieve-records` — Run a query. Accepts a JSON object as the request body.
+
+Optional query parameters for `/retrieve-records`:
+- `names_only=true` — return only asset names
+- `limit=<int>` — limit number of results (default 0 = no limit)
+- `projection=<json>` — JSON object specifying which fields to include/exclude (e.g. `{"subject.subject_id": 1}`)
+
+```python
+response = requests.post(
+    "https://metadata-portal.allenneuraldynamics-test.org/retrieve-records",
+    params={"limit": 10, "projection": '{"subject.subject_id": 1, "name": 1}'},
+    json={"subject.subject_id": "123456"},
+)
+print(response.json())
+```
+
+### Contributions endpoints
+
+- `GET /contributions/get?project=<name>[&commit=<hash>]` — Get the latest (or a specific) contribution data for a project.
+- `POST /contributions/post?project=<name>[&message=<msg>]` — Store a new version of contribution data. Body should be JSON or YAML.
+
+```python
+response = requests.get(
+    "https://metadata-portal.allenneuraldynamics-test.org/contributions/get",
+    params={"project": "MyProject"},
+)
+print(response.json())
+```
 
 ## Usage
 
