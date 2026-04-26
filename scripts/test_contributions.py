@@ -41,7 +41,7 @@ BASE_URL = (
 
 PROJECT = "test-contributions-script"
 STORE_DIR = Path.home() / ".aind_contributions"
-CSV_FILE = STORE_DIR / f"{PROJECT}.csv"
+JSON_FILE = STORE_DIR / f"{PROJECT}.json"
 
 print(f"Testing against: {BASE_URL}")
 print("=" * 60)
@@ -53,11 +53,11 @@ def sep(title: str) -> None:
     print(f"{'─' * 60}")
 
 
-def print_csv() -> None:
-    if CSV_FILE.exists():
-        print(CSV_FILE.read_text())
+def print_json_file() -> None:
+    if JSON_FILE.exists():
+        print(JSON_FILE.read_text())
     else:
-        print(f"  (CSV not found at {CSV_FILE})")
+        print(f"  (JSON not found at {JSON_FILE})")
 
 
 def check(response: requests.Response, expected_status: int) -> dict:
@@ -109,8 +109,8 @@ commit_v1 = v1.get("commit", "")
 print(f"  commit v1: {commit_v1[:12]}")
 
 if args.env != "prod":
-    sep("CSV after v1")
-    print_csv()
+    sep("JSON after v1")
+    print_json_file()
 
 # ---------------------------------------------------------------------------
 # Step 2: POST updated data as JSON (add a third contributor)
@@ -170,8 +170,8 @@ commit_v2 = v2.get("commit", "")
 print(f"  commit v2: {commit_v2[:12]}")
 
 if args.env != "prod":
-    sep("CSV after v2")
-    print_csv()
+    sep("JSON after v2")
+    print_json_file()
 
 # ---------------------------------------------------------------------------
 # Step 3: GET HEAD

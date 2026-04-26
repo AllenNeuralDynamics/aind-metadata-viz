@@ -1,39 +1,20 @@
 """Git-backed storage for ProjectContributions.
 
-Each project is stored as a CSV file named ``<project_name>.csv`` inside a
+Each project is stored as a JSON file named ``<project_name>.json`` inside a
 dedicated git repository (default: ``~/.aind_contributions/``).
 
-* ``store_contributions`` writes/updates the CSV and creates a commit.
+* ``store_contributions`` writes/updates the JSON and creates a commit.
 * ``get_contributions`` reads HEAD or a specific commit hash.
-
-CSV layout
-----------
-One row per author.  Columns:
-
-    name, affiliation, email, registry, registry_identifier, <role1>, <role2>, ...
-
-where each role column contains the contribution level ("lead", "supporting",
-"equal") or an empty string when the author has no credit for that role.
 """
 
-import csv
-import io
-import json
 import subprocess
 from pathlib import Path
 from typing import Optional, Union
 
 from .models import (
-    Author,
-    AuthorContribution,
-    ContributionLevel,
-    CreditRole,
     ProjectContributions,
-    RoleContribution,
 )
-from .serializers import load as _load
-
-from aind_data_schema_models.registries import Registry
+from .serializers import load as _load, to_json as _to_json
 
 
 # ---------------------------------------------------------------------------
@@ -41,11 +22,6 @@ from aind_data_schema_models.registries import Registry
 # ---------------------------------------------------------------------------
 
 DEFAULT_STORE_DIR = Path.home() / ".aind_contributions"
-
-# Ordered column names for the CSV
-_FIXED_COLS = ["name", "affiliation", "email", "registry", "registry_identifier"]
-_ROLE_COLS = [role.value for role in CreditRole]
-_ALL_COLS = _FIXED_COLS + _ROLE_COLS
 
 
 # ---------------------------------------------------------------------------
@@ -83,63 +59,19 @@ def _ensure_repo(store_dir: Path) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# CSV serialisation helpers
+# JSON serialisation helpers
 # ---------------------------------------------------------------------------
 
 
-def _contributions_to_csv(contributions: ProjectContributions) -> str:
-    """Serialise *contributions* to a CSV string."""
-    buf = io.StringIO()
-    writer = csv.DictWriter(buf, fieldnames=_ALL_COLS, lineterminator="\n")
-    writer.writeheader()
-    for ac in contributions.contributors:
-        row: dict = {col: "" for col in _ALL_COLS}
-        row["name"] = ac.author.name
-        row["affiliation"] = ac.author.affiliation
-        row["email"] = ac.author.email or ""
-        row["registry"] = (
-            ac.author.registry.value
-            if hasattr(ac.author.registry, "value")
-            else str(ac.author.registry)
-        )
-        row["registry_identifier"] = ac.author.registry_identifier or ""
-        for rc in ac.credit_levels:
-            row[rc.role.value] = rc.level.value
-        writer.writerow(row)
-    return buf.getvalue()
+def _contributions_to_json(contributions: ProjectContributions) -> str:
+    """Serialise *contributions* to a JSON string."""
+    return _to_json(contributions)
 
 
-def _csv_to_contributions(project_name: str, csv_text: str) -> ProjectContributions:
-    """Deserialise a CSV string back into a :class:`ProjectContributions`."""
-    reader = csv.DictReader(io.StringIO(csv_text))
-    contributors = []
-    for row in reader:
-        author_kwargs = {
-            "name": row["name"],
-            "affiliation": row.get("affiliation", ""),
-            "email": row.get("email") or None,
-            "registry_identifier": row.get("registry_identifier") or None,
-        }
-        try:
-            author_kwargs["registry"] = Registry(row.get("registry", Registry.ORCID.value))
-        except ValueError:
-            author_kwargs["registry"] = Registry.ORCID
-        author = Author(**author_kwargs)
-
-        credit_levels = []
-        for role in CreditRole:
-            level_str = row.get(role.value, "")
-            if level_str:
-                try:
-                    credit_levels.append(
-                        RoleContribution(role=role, level=ContributionLevel(level_str))
-                    )
-                except ValueError:
-                    continue
-
-        contributors.append(AuthorContribution(author=author, credit_levels=credit_levels))
-
-    return ProjectContributions(project_name=project_name, contributors=contributors)
+def _json_to_contributions(project_name: str, json_text: str) -> ProjectContributions:
+    """Deserialise a JSON string back into a :class:`ProjectContributions`."""
+    from .serializers import from_json as _from_json
+    return _from_json(json_text)
 
 
 # ---------------------------------------------------------------------------
@@ -163,12 +95,7 @@ def _seed_defaults(store_dir: Path) -> None:
 
 def _safe_filename(project_name: str) -> str:
     """Convert a project name to a safe filename (no path separators)."""
-    return project_name.replace("/", "_").replace("\\", "_") + ".csv"
-
-
-def _headers_filename(project_name: str) -> str:
-    """Return the sidecar filename used to persist the headers list."""
-    return project_name.replace("/", "_").replace("\\", "_") + ".headers.json"
+    return project_name.replace("/", "_").replace("\\", "_") + ".json"
 
 
 def store_contributions(
@@ -208,19 +135,13 @@ def store_contributions(
     else:
         contributions = _load(data)
 
-    csv_text = _contributions_to_csv(contributions)
+    json_text = _contributions_to_json(contributions)
     filename = _safe_filename(project_name)
     file_path = store_dir / filename
-    file_path.write_text(csv_text, encoding="utf-8")
+    file_path.write_text(json_text, encoding="utf-8")
 
-    headers_filename = _headers_filename(project_name)
-    headers_path = store_dir / headers_filename
-    headers_path.write_text(json.dumps(contributions.headers), encoding="utf-8")
+    _run(["git", "add", filename], store_dir)
 
-    _run(["git", "add", filename, headers_filename], store_dir)
-
-    # Check whether there is actually anything staged; if the file is identical
-    # to the last commit we still make a commit (caller explicitly requested).
     commit_message = message or f"Update contributions for {project_name}"
     _run(["git", "commit", "--allow-empty", "-m", commit_message], store_dir)
 
@@ -301,14 +222,4 @@ def get_contributions(
     ref = commit_hash or "HEAD"
 
     result = _run(["git", "show", f"{ref}:{filename}"], store_dir)
-    csv_text = result.stdout
-    contributions = _csv_to_contributions(project_name, csv_text)
-
-    headers_filename = _headers_filename(project_name)
-    try:
-        headers_result = _run(["git", "show", f"{ref}:{headers_filename}"], store_dir)
-        contributions.headers = json.loads(headers_result.stdout)
-    except RuntimeError:
-        pass
-
-    return contributions
+    return _json_to_contributions(project_name, result.stdout)

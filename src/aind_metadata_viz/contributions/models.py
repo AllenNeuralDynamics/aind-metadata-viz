@@ -70,3 +70,4 @@ class ProjectContributions(BaseModel):
         default_factory=list,
         description="Paper headers and subheaders that authors may have contributed to (e.g. Introduction, Methods)",
     )
+    assets: List[str] = Field(default_factory=list, description="List of asset names associated with the project")
