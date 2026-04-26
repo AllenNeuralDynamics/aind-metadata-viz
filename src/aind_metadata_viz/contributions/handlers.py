@@ -2,10 +2,14 @@
 
 Routes
 ------
-GET  /contributions?project=<name>[&commit=<hash>]
+GET  /contributions/get?project=<name>[&commit=<hash>]
     Returns the latest (or specified) contribution data as JSON.
 
-POST /contributions?project=<name>
+GET  /contributions/get?project=<name>&history=true
+    Returns a list of commits for the project, newest first.
+    Each entry: {"commit": "<sha>", "timestamp": "<iso8601>", "message": "<str>"}
+
+POST /contributions/post?project=<name>
     Body: JSON or YAML string of contribution data.
     Stores a new versioned commit and returns the commit hash.
 """
@@ -14,7 +18,7 @@ import json
 
 from tornado.web import RequestHandler
 
-from . import from_json, from_yaml, get_contributions, store_contributions, to_json
+from . import from_json, from_yaml, get_contributions, list_project_commits, store_contributions, to_json, to_yaml
 from .models import ProjectContributions
 
 
@@ -37,7 +41,23 @@ class ContributionsGetHandler(RequestHandler):
             self.write(json.dumps({"error": "project query parameter is required"}))
             return
 
+        if self.get_argument("history", None) == "true":
+            try:
+                commits = list_project_commits(project)
+            except FileNotFoundError as e:
+                self.set_status(404)
+                self.write(json.dumps({"error": str(e)}))
+                return
+            except Exception as e:
+                self.set_status(500)
+                self.write(json.dumps({"error": str(e)}))
+                return
+            self.set_status(200)
+            self.write(json.dumps(commits))
+            return
+
         commit = self.get_argument("commit", None)
+        fmt = self.get_argument("format", "json").lower()
 
         try:
             contributions = get_contributions(project, commit_hash=commit)
@@ -51,7 +71,12 @@ class ContributionsGetHandler(RequestHandler):
             return
 
         self.set_status(200)
-        self.write(to_json(contributions))
+        if fmt == "yaml":
+            self.set_header("Content-Type", "text/plain; charset=utf-8")
+            self.write(to_yaml(contributions))
+        else:
+            self.set_header("Content-Type", "application/json")
+            self.write(to_json(contributions))
 
 
 class ContributionsPostHandler(RequestHandler):

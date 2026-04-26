@@ -21,7 +21,7 @@ from .models import (
     RoleContribution,
 )
 from .serializers import from_json, from_yaml, load, to_json, to_yaml
-from .store import get_contributions, store_contributions
+from .store import get_contributions, list_project_commits, store_contributions
 from .defaults import IBL_PROJECT_NAME, ibl_default_contributions
 
 __all__ = [
@@ -40,6 +40,7 @@ __all__ = [
     # store
     "store_contributions",
     "get_contributions",
+    "list_project_commits",
     # defaults
     "IBL_PROJECT_NAME",
     "ibl_default_contributions",
