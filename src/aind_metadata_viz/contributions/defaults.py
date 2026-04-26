@@ -29,8 +29,15 @@ def _rc(role: CreditRole, level: ContributionLevel) -> RoleContribution:
 
 def ibl_default_contributions() -> ProjectContributions:
     """Return the IBL 2025 paper contributor data."""
+    _headers = [
+        "Introduction",
+        "Working together",
+        "Standardization and building for scale",
+        "Lessons learned: The future of the IBL",
+    ]
     return ProjectContributions(
         project_name=IBL_PROJECT_NAME,
+        headers=_headers,
         contributors=[
             AuthorContribution(
                 author=Author(name="Hannah M Bayer", affiliation="Columbia University, USA"),
@@ -41,6 +48,7 @@ def ibl_default_contributions() -> ProjectContributions:
                     _rc(_WOD, _eq),
                     _rc(_WRE, _eq),
                 ],
+                header_contributions=_headers,
             ),
             AuthorContribution(
                 author=Author(
@@ -55,6 +63,7 @@ def ibl_default_contributions() -> ProjectContributions:
                     _rc(_WOD, _eq),
                     _rc(_WRE, _eq),
                 ],
+                header_contributions=_headers,
             ),
             AuthorContribution(
                 author=Author(name="Gaelle Chapuis", affiliation="University of Geneva, Switzerland"),
@@ -66,6 +75,7 @@ def ibl_default_contributions() -> ProjectContributions:
                     _rc(_WOD, _eq),
                     _rc(_WRE, _eq),
                 ],
+                header_contributions=_headers,
             ),
             AuthorContribution(
                 author=Author(name="Eric E J DeWitt", affiliation="Champalimaud Foundation, Portugal"),
@@ -109,6 +119,7 @@ def ibl_default_contributions() -> ProjectContributions:
                     _rc(_WOD, _sp),
                     _rc(_WRE, _eq),
                 ],
+                header_contributions=_headers,
             ),
             AuthorContribution(
                 author=Author(name="Samuel Picard", affiliation="University College London, UK"),

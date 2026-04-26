@@ -56,6 +56,9 @@ class AuthorContribution(BaseModel):
     contribution_description: Optional[str] = Field(
         default=None, description="Optional free-text description of the contributor's role"
     )
+    header_contributions: Optional[List[str]] = Field(
+        default=None, description="Optional list of paper headers/subheaders that the contributor contributed to (e.g. Introduction, Methods)"
+    )
 
 
 class ProjectContributions(BaseModel):
@@ -63,3 +66,7 @@ class ProjectContributions(BaseModel):
 
     project_name: str = Field(..., description="Unique project identifier used as the storage key")
     contributors: List[AuthorContribution] = Field(default_factory=list)
+    headers: List[str] = Field(
+        default_factory=list,
+        description="Paper headers and subheaders that authors may have contributed to (e.g. Introduction, Methods)",
+    )
