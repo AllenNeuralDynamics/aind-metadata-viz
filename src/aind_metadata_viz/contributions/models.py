@@ -1,9 +1,9 @@
 """Pydantic models for CRediT authorship contributions."""
 
 from enum import Enum
-from typing import List
+from typing import List, Optional
 
-from aind_data_schema.core.data_description import Person
+from aind_data_schema.components.identifiers import Person
 from pydantic import BaseModel, Field
 
 
@@ -41,11 +41,21 @@ class RoleContribution(BaseModel):
     level: ContributionLevel
 
 
+class Author(Person):
+    """A person with an affiliation, used for display purposes."""
+
+    affiliation: str
+    email: Optional[str] = Field(default=None, description="Optional email address for the contributor")
+
+
 class AuthorContribution(BaseModel):
     """One contributor with their CRediT roles."""
 
-    person: Person
+    author: Author
     credit_levels: List[RoleContribution] = Field(default_factory=list)
+    contribution_description: Optional[str] = Field(
+        default=None, description="Optional free-text description of the contributor's role"
+    )
 
 
 class ProjectContributions(BaseModel):

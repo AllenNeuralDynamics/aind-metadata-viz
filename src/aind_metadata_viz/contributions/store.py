@@ -10,7 +10,7 @@ CSV layout
 ----------
 One row per author.  Columns:
 
-    name, registry, registry_identifier, <role1>, <role2>, ...
+    name, affiliation, email, registry, registry_identifier, <role1>, <role2>, ...
 
 where each role column contains the contribution level ("lead", "supporting",
 "equal") or an empty string when the author has no credit for that role.
@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Optional, Union
 
 from .models import (
+    Author,
     AuthorContribution,
     ContributionLevel,
     CreditRole,
@@ -31,12 +32,7 @@ from .models import (
 )
 from .serializers import load as _load
 
-try:
-    from aind_data_schema.core.data_description import Person
-    from aind_data_schema_models.registries import Registry
-except ImportError:  # pragma: no cover
-    Person = None  # type: ignore
-    Registry = None  # type: ignore
+from aind_data_schema_models.registries import Registry
 
 
 # ---------------------------------------------------------------------------
@@ -46,7 +42,7 @@ except ImportError:  # pragma: no cover
 DEFAULT_STORE_DIR = Path.home() / ".aind_contributions"
 
 # Ordered column names for the CSV
-_FIXED_COLS = ["name", "registry", "registry_identifier"]
+_FIXED_COLS = ["name", "affiliation", "email", "registry", "registry_identifier"]
 _ROLE_COLS = [role.value for role in CreditRole]
 _ALL_COLS = _FIXED_COLS + _ROLE_COLS
 
@@ -70,15 +66,19 @@ def _run(args: list, cwd: Path) -> subprocess.CompletedProcess:
     return result
 
 
-def _ensure_repo(store_dir: Path) -> None:
-    """Initialise a bare git repo at *store_dir* if one does not exist."""
+def _ensure_repo(store_dir: Path) -> bool:
+    """Initialise a bare git repo at *store_dir* if one does not exist.
+
+    Returns True if the repo was newly created.
+    """
     store_dir.mkdir(parents=True, exist_ok=True)
     git_dir = store_dir / ".git"
     if not git_dir.exists():
         _run(["git", "init"], store_dir)
-        # Set a local identity so commits always work regardless of global config
         _run(["git", "config", "user.name", "aind-contributions"], store_dir)
         _run(["git", "config", "user.email", "aind-contributions@local"], store_dir)
+        return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -91,16 +91,18 @@ def _contributions_to_csv(contributions: ProjectContributions) -> str:
     buf = io.StringIO()
     writer = csv.DictWriter(buf, fieldnames=_ALL_COLS, lineterminator="\n")
     writer.writeheader()
-    for author in contributions.contributors:
+    for ac in contributions.contributors:
         row: dict = {col: "" for col in _ALL_COLS}
-        row["name"] = author.person.name
+        row["name"] = ac.author.name
+        row["affiliation"] = ac.author.affiliation
+        row["email"] = ac.author.email or ""
         row["registry"] = (
-            author.person.registry.value
-            if hasattr(author.person.registry, "value")
-            else str(author.person.registry)
+            ac.author.registry.value
+            if hasattr(ac.author.registry, "value")
+            else str(ac.author.registry)
         )
-        row["registry_identifier"] = author.person.registry_identifier or ""
-        for rc in author.credit_levels:
+        row["registry_identifier"] = ac.author.registry_identifier or ""
+        for rc in ac.credit_levels:
             row[rc.role.value] = rc.level.value
         writer.writerow(row)
     return buf.getvalue()
@@ -111,16 +113,17 @@ def _csv_to_contributions(project_name: str, csv_text: str) -> ProjectContributi
     reader = csv.DictReader(io.StringIO(csv_text))
     contributors = []
     for row in reader:
-        person_kwargs = {
+        author_kwargs = {
             "name": row["name"],
+            "affiliation": row.get("affiliation", ""),
+            "email": row.get("email") or None,
             "registry_identifier": row.get("registry_identifier") or None,
         }
-        if Registry is not None:
-            try:
-                person_kwargs["registry"] = Registry(row.get("registry", Registry.ORCID.value))
-            except ValueError:
-                person_kwargs["registry"] = Registry.ORCID
-        person = Person(**person_kwargs)
+        try:
+            author_kwargs["registry"] = Registry(row.get("registry", Registry.ORCID.value))
+        except ValueError:
+            author_kwargs["registry"] = Registry.ORCID
+        author = Author(**author_kwargs)
 
         credit_levels = []
         for role in CreditRole:
@@ -133,9 +136,23 @@ def _csv_to_contributions(project_name: str, csv_text: str) -> ProjectContributi
                 except ValueError:
                     continue
 
-        contributors.append(AuthorContribution(person=person, credit_levels=credit_levels))
+        contributors.append(AuthorContribution(author=author, credit_levels=credit_levels))
 
     return ProjectContributions(project_name=project_name, contributors=contributors)
+
+
+# ---------------------------------------------------------------------------
+# Default seeding
+# ---------------------------------------------------------------------------
+
+
+def _seed_defaults(store_dir: Path) -> None:
+    """Seed the store with the IBL default example if not already present."""
+    from .defaults import IBL_PROJECT_NAME, ibl_default_contributions
+
+    filename = _safe_filename(IBL_PROJECT_NAME)
+    if not (store_dir / filename).exists():
+        store_contributions(IBL_PROJECT_NAME, ibl_default_contributions(), store_dir=store_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -176,7 +193,9 @@ def store_contributions(
         The full SHA-1 commit hash of the new commit.
     """
     store_dir = Path(store_dir) if store_dir else DEFAULT_STORE_DIR
-    _ensure_repo(store_dir)
+    is_new = _ensure_repo(store_dir)
+    if is_new:
+        _seed_defaults(store_dir)
 
     if isinstance(data, ProjectContributions):
         contributions = data
@@ -221,11 +240,9 @@ def get_contributions(
     ProjectContributions
     """
     store_dir = Path(store_dir) if store_dir else DEFAULT_STORE_DIR
-    if not (store_dir / ".git").exists():
-        raise FileNotFoundError(
-            f"No contributions store found at {store_dir}. "
-            "Call store_contributions() first."
-        )
+    is_new = _ensure_repo(store_dir)
+    if is_new:
+        _seed_defaults(store_dir)
 
     filename = _safe_filename(project_name)
     ref = commit_hash or "HEAD"
