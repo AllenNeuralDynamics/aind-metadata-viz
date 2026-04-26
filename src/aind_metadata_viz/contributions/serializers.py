@@ -5,6 +5,7 @@ from typing import Union
 import yaml
 
 from .models import (
+    Author,
     AuthorContribution,
     ContributionLevel,
     CreditRole,
@@ -12,12 +13,7 @@ from .models import (
     RoleContribution,
 )
 
-try:
-    from aind_data_schema.core.data_description import Person
-    from aind_data_schema_models.registries import Registry
-except ImportError:  # pragma: no cover
-    Person = None  # type: ignore
-    Registry = None  # type: ignore
+from aind_data_schema_models.registries import Registry
 
 
 # ---------------------------------------------------------------------------
@@ -54,8 +50,9 @@ def to_yaml(contributions: ProjectContributions) -> str:
     contributor_list = []
     for c in contributions.contributors:
         entry = {
-            "name": c.person.name,
-            "orcid": c.person.registry_identifier,
+            "name": c.author.name,
+            "affiliation": c.author.affiliation,
+            "orcid": c.author.registry_identifier,
             "credit_levels": [
                 {"role": r.role.value, "level": r.level.value}
                 for r in c.credit_levels
@@ -86,13 +83,13 @@ def from_yaml(data: str) -> ProjectContributions:
 
     contributors = []
     for raw in raw_contributors:
-        person_kwargs = {
+        author_kwargs = {
             "name": raw["name"],
+            "affiliation": raw.get("affiliation", ""),
             "registry_identifier": raw.get("orcid"),
         }
-        if Registry is not None:
-            person_kwargs["registry"] = Registry.ORCID
-        person = Person(**person_kwargs)
+        author_kwargs["registry"] = Registry.ORCID
+        author = Author(**author_kwargs)
 
         credit_levels = []
         for rc in raw.get("credit_levels", []):
@@ -101,10 +98,9 @@ def from_yaml(data: str) -> ProjectContributions:
                 level = ContributionLevel(rc["level"])
                 credit_levels.append(RoleContribution(role=role, level=level))
             except ValueError:
-                # Skip unrecognised roles / levels rather than crashing
                 continue
 
-        contributors.append(AuthorContribution(person=person, credit_levels=credit_levels))
+        contributors.append(AuthorContribution(author=author, credit_levels=credit_levels))
 
     return ProjectContributions(project_name=project_name, contributors=contributors)
 

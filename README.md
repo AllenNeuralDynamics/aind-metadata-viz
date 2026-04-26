@@ -99,6 +99,27 @@ response = requests.post(
 print(response.json())
 ```
 
+### Contributions endpoint
+
+Stores and retrieves [CRediT](https://credit.niso.org/) authorship contributions for a project, versioned via git.
+
+- `GET /contributions/get?project=<name>` — retrieve latest contributions (add `&commit=<hash>` for a specific version)
+- `POST /contributions/post?project=<name>` — store contributions; body can be JSON or YAML
+
+The body schema mirrors `ProjectContributions`. Pull the seeded IBL example to see a complete payload with all fields:
+
+```python
+import requests, json
+
+r = requests.get(
+    "https://metadata-portal.allenneuraldynamics-test.org/contributions/get",
+    params={"project": "ibl-2025"},
+)
+print(json.dumps(r.json(), indent=2))
+```
+
+Optional fields not shown on every contributor: `email`, `registry_identifier` (ORCID), and `contribution_description` (free-text). These are demonstrated on Daniel Birman's entry in the `ibl-2025` example.
+
 ### Contributions endpoints
 
 - `GET /contributions/get?project=<name>[&commit=<hash>]` — Get the latest (or a specific) contribution data for a project.
