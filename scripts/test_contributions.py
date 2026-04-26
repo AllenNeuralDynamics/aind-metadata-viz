@@ -108,8 +108,9 @@ v1 = check(r, 200)
 commit_v1 = v1.get("commit", "")
 print(f"  commit v1: {commit_v1[:12]}")
 
-sep("CSV after v1")
-print_csv()
+if args.env != "prod":
+    sep("CSV after v1")
+    print_csv()
 
 # ---------------------------------------------------------------------------
 # Step 2: POST updated data as JSON (add a third contributor)
@@ -119,10 +120,11 @@ JSON_BODY = {
     "project_name": PROJECT,
     "contributors": [
         {
-            "person": {
+            "author": {
                 "name": "Alice Nguyen",
                 "registry": "Open Researcher and Contributor ID (ORCID)",
                 "registry_identifier": "0000-0001-2345-6789",
+                "affiliation": "Allen Institute for Neural Dynamics",
             },
             "credit_levels": [
                 {"role": "conceptualization", "level": "lead"},
@@ -131,10 +133,11 @@ JSON_BODY = {
             ],
         },
         {
-            "person": {
+            "author": {
                 "name": "Bob Okafor",
                 "registry": "Open Researcher and Contributor ID (ORCID)",
                 "registry_identifier": "0000-0002-3456-7890",
+                "affiliation": "Allen Institute for Neural Dynamics",
             },
             "credit_levels": [
                 {"role": "data-curation", "level": "equal"},
@@ -142,10 +145,11 @@ JSON_BODY = {
             ],
         },
         {
-            "person": {
+            "author": {
                 "name": "Carmen Silva",
                 "registry": "Open Researcher and Contributor ID (ORCID)",
                 "registry_identifier": "0000-0003-4567-8901",
+                "affiliation": "Allen Institute for Neural Dynamics",
             },
             "credit_levels": [
                 {"role": "visualization", "level": "lead"},
@@ -165,8 +169,9 @@ v2 = check(r, 200)
 commit_v2 = v2.get("commit", "")
 print(f"  commit v2: {commit_v2[:12]}")
 
-sep("CSV after v2")
-print_csv()
+if args.env != "prod":
+    sep("CSV after v2")
+    print_csv()
 
 # ---------------------------------------------------------------------------
 # Step 3: GET HEAD
@@ -186,17 +191,36 @@ r = requests.get(
     f"{BASE_URL}/contributions/get?project={PROJECT}&commit={commit_v1}"
 )
 data = check(r, 200)
-names_v1 = [c["person"]["name"] for c in data.get("contributors", [])]
+names_v1 = [c["author"]["name"] for c in data.get("contributors", [])]
 print(f"  contributors in v1: {names_v1}")
 assert len(names_v1) == 2, f"Expected 2 contributors in v1, got {len(names_v1)}"
 print("  assertion passed: v1 has 2 contributors")
 
 # ---------------------------------------------------------------------------
-# Step 5: GET unknown project → 404
+# Step 5: GET history for the project
+# ---------------------------------------------------------------------------
+
+sep("GET history (all commits for project)")
+r = requests.get(f"{BASE_URL}/contributions/get?project={PROJECT}&history=true")
+history = check(r, 200)
+print(json.dumps(history, indent=2))
+assert len(history) >= 2, f"Expected at least 2 commits in history, got {len(history)}"
+print(f"  assertion passed: {len(history)} commits found")
+commit_hashes = [entry["commit"] for entry in history]
+assert commit_v2 in commit_hashes, "v2 commit not found in history"
+assert commit_v1 in commit_hashes, "v1 commit not found in history"
+print("  assertion passed: both v1 and v2 commits present in history")
+
+# ---------------------------------------------------------------------------
+# Step 6: GET unknown project → 404
 # ---------------------------------------------------------------------------
 
 sep("GET unknown project (expect 404)")
 r = requests.get(f"{BASE_URL}/contributions/get?project=no-such-project-xyz")
+check(r, 404)
+
+sep("GET history for unknown project (expect 404)")
+r = requests.get(f"{BASE_URL}/contributions/get?project=no-such-project-xyz&history=true")
 check(r, 404)
 
 print("\n" + "=" * 60)

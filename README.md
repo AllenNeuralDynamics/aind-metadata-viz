@@ -99,14 +99,21 @@ response = requests.post(
 print(response.json())
 ```
 
-### Contributions endpoint
+### Contributions endpoints
 
 Stores and retrieves [CRediT](https://credit.niso.org/) authorship contributions for a project, versioned via git.
 
-- `GET /contributions/get?project=<name>` — retrieve latest contributions (add `&commit=<hash>` for a specific version)
-- `POST /contributions/post?project=<name>` — store contributions; body can be JSON or YAML
+| Endpoint | Description |
+|---|---|
+| `GET /contributions/get?project=<name>` | Latest contribution data (JSON by default) |
+| `GET /contributions/get?project=<name>&format=yaml` | Latest contribution data as YAML |
+| `GET /contributions/get?project=<name>&commit=<hash>` | Contribution data at a specific commit |
+| `GET /contributions/get?project=<name>&history=true` | List of all commits for the project |
+| `POST /contributions/post?project=<name>[&message=<msg>]` | Store a new version; body is JSON or YAML |
 
-The body schema mirrors `ProjectContributions`. Pull the seeded IBL example to see a complete payload with all fields:
+The `?history=true` response is a list of commits, newest first, each with `commit` (SHA), `timestamp` (ISO-8601), and `message`. Use the returned hashes with `?commit=<hash>` to retrieve any historical version.
+
+Pull the seeded IBL example to see a complete payload with all fields:
 
 ```python
 import requests, json
@@ -118,19 +125,21 @@ r = requests.get(
 print(json.dumps(r.json(), indent=2))
 ```
 
-Optional fields not shown on every contributor: `email`, `registry_identifier` (ORCID), and `contribution_description` (free-text). These are demonstrated on Daniel Birman's entry in the `ibl-2025` example.
-
-### Contributions endpoints
-
-- `GET /contributions/get?project=<name>[&commit=<hash>]` — Get the latest (or a specific) contribution data for a project.
-- `POST /contributions/post?project=<name>[&message=<msg>]` — Store a new version of contribution data. Body should be JSON or YAML.
+Fetch the full history for a project and then retrieve a specific past version:
 
 ```python
-response = requests.get(
+import requests, json
+
+history = requests.get(
     "https://metadata-portal.allenneuraldynamics-test.org/contributions/get",
-    params={"project": "MyProject"},
-)
-print(response.json())
+    params={"project": "MyProject", "history": "true"},
+).json()
+
+oldest_commit = history[-1]["commit"]
+old_version = requests.get(
+    "https://metadata-portal.allenneuraldynamics-test.org/contributions/get",
+    params={"project": "MyProject", "commit": oldest_commit},
+).json()
 ```
 
 ## Usage

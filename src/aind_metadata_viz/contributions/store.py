@@ -218,6 +218,49 @@ def store_contributions(
     return result.stdout.strip()
 
 
+def list_project_commits(
+    project_name: str,
+    store_dir: Optional[Path] = None,
+) -> list:
+    """Return the commit history for a single project file, newest first.
+
+    Parameters
+    ----------
+    project_name:
+        The project name used when calling :func:`store_contributions`.
+    store_dir:
+        Path to the git repository.  Defaults to ``~/.aind_contributions/``.
+
+    Returns
+    -------
+    list of dict
+        Each entry has keys ``commit``, ``timestamp`` (ISO-8601), and
+        ``message``.  The list is ordered newest-first.
+    """
+    store_dir = Path(store_dir) if store_dir else DEFAULT_STORE_DIR
+    _ensure_repo(store_dir)
+
+    filename = _safe_filename(project_name)
+    result = _run(
+        ["git", "log", "--format=%H|||%aI|||%s", "--", filename],
+        store_dir,
+    )
+    commits = []
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split("|||", 2)
+        if len(parts) != 3:
+            continue
+        commits.append({"commit": parts[0], "timestamp": parts[1], "message": parts[2]})
+
+    if not commits:
+        raise FileNotFoundError(f"No commits found for project '{project_name}'")
+
+    return commits
+
+
 def get_contributions(
     project_name: str,
     commit_hash: Optional[str] = None,
