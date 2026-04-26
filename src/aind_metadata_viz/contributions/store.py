@@ -18,6 +18,7 @@ where each role column contains the contribution level ("lead", "supporting",
 
 import csv
 import io
+import json
 import subprocess
 from pathlib import Path
 from typing import Optional, Union
@@ -165,6 +166,11 @@ def _safe_filename(project_name: str) -> str:
     return project_name.replace("/", "_").replace("\\", "_") + ".csv"
 
 
+def _headers_filename(project_name: str) -> str:
+    """Return the sidecar filename used to persist the headers list."""
+    return project_name.replace("/", "_").replace("\\", "_") + ".headers.json"
+
+
 def store_contributions(
     project_name: str,
     data: Union[str, dict, ProjectContributions],
@@ -207,7 +213,11 @@ def store_contributions(
     file_path = store_dir / filename
     file_path.write_text(csv_text, encoding="utf-8")
 
-    _run(["git", "add", filename], store_dir)
+    headers_filename = _headers_filename(project_name)
+    headers_path = store_dir / headers_filename
+    headers_path.write_text(json.dumps(contributions.headers), encoding="utf-8")
+
+    _run(["git", "add", filename, headers_filename], store_dir)
 
     # Check whether there is actually anything staged; if the file is identical
     # to the last commit we still make a commit (caller explicitly requested).
@@ -292,4 +302,13 @@ def get_contributions(
 
     result = _run(["git", "show", f"{ref}:{filename}"], store_dir)
     csv_text = result.stdout
-    return _csv_to_contributions(project_name, csv_text)
+    contributions = _csv_to_contributions(project_name, csv_text)
+
+    headers_filename = _headers_filename(project_name)
+    try:
+        headers_result = _run(["git", "show", f"{ref}:{headers_filename}"], store_dir)
+        contributions.headers = json.loads(headers_result.stdout)
+    except RuntimeError:
+        pass
+
+    return contributions

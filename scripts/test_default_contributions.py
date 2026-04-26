@@ -65,6 +65,16 @@ for c in contributors:
         print(f"    {role}")
 
 sep("Assertions")
+headers = data.get("headers", [])
+expected_headers = [
+    "Introduction",
+    "Working together",
+    "Standardization and building for scale",
+    "Lessons learned: The future of the IBL",
+]
+assert headers == expected_headers, f"Unexpected headers: {headers}"
+print(f"  headers match expected {len(expected_headers)} entries ✓")
+
 names = [c["author"]["name"] for c in contributors]
 assert len(contributors) == 14, f"Expected 14 contributors, got {len(contributors)}"
 print("  contributor count: 14 ✓")
