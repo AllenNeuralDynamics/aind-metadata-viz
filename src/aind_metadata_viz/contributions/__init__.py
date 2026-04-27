@@ -26,6 +26,7 @@ from .examples.defaults import IBL_PROJECT_NAME, ibl_default_contributions
 from .examples.authorship_extractor import AUTHORSHIP_PROJECT_NAME, authorship_extractor_contributions
 from .examples.authorship_extractor_real import AUTHORSHIP_REAL_PROJECT_NAME, authorship_extractor_real_contributions
 from .examples.authorship_extractor_large import AUTHORSHIP_LARGE_PROJECT_NAME, authorship_extractor_large_contributions
+from .examples.ibl_decision import IBL_DECISION_PROJECT_NAME, ibl_decision_contributions
 
 __all__ = [
     # models
@@ -53,4 +54,6 @@ __all__ = [
     "authorship_extractor_real_contributions",
     "AUTHORSHIP_LARGE_PROJECT_NAME",
     "authorship_extractor_large_contributions",
+    "IBL_DECISION_PROJECT_NAME",
+    "ibl_decision_contributions",
 ]

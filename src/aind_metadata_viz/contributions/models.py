@@ -90,4 +90,5 @@ class ProjectContributions(BaseModel):
         default_factory=list,
         description="Publication sections that authors may have contributed to (e.g. Introduction, Methods)",
     )
+    doi: Optional[str] = Field(default=None, description="Optional DOI associated with this set of contributions")
     assets: List[str] = Field(default_factory=list, description="List of asset names associated with the project")
