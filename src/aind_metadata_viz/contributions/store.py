@@ -81,7 +81,7 @@ def _json_to_contributions(project_name: str, json_text: str) -> ProjectContribu
 
 def _seed_defaults(store_dir: Path) -> None:
     """Seed the store with the IBL default example if not already present."""
-    from .defaults import IBL_PROJECT_NAME, ibl_default_contributions
+    from .examples.defaults import IBL_PROJECT_NAME, ibl_default_contributions
 
     filename = _safe_filename(IBL_PROJECT_NAME)
     if not (store_dir / filename).exists():

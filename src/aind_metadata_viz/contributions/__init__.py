@@ -22,7 +22,10 @@ from .models import (
 )
 from .serializers import from_json, from_yaml, load, to_json, to_yaml
 from .store import get_contributions, list_project_commits, store_contributions
-from .defaults import IBL_PROJECT_NAME, ibl_default_contributions
+from .examples.defaults import IBL_PROJECT_NAME, ibl_default_contributions
+from .examples.authorship_extractor import AUTHORSHIP_PROJECT_NAME, authorship_extractor_contributions
+from .examples.authorship_extractor_real import AUTHORSHIP_REAL_PROJECT_NAME, authorship_extractor_real_contributions
+from .examples.authorship_extractor_large import AUTHORSHIP_LARGE_PROJECT_NAME, authorship_extractor_large_contributions
 
 __all__ = [
     # models
@@ -41,7 +44,13 @@ __all__ = [
     "store_contributions",
     "get_contributions",
     "list_project_commits",
-    # defaults
+    # defaults / examples
     "IBL_PROJECT_NAME",
     "ibl_default_contributions",
+    "AUTHORSHIP_PROJECT_NAME",
+    "authorship_extractor_contributions",
+    "AUTHORSHIP_REAL_PROJECT_NAME",
+    "authorship_extractor_real_contributions",
+    "AUTHORSHIP_LARGE_PROJECT_NAME",
+    "authorship_extractor_large_contributions",
 ]

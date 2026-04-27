@@ -1,6 +1,6 @@
 """Default example: IBL 2025 paper contributor data."""
 
-from .models import (
+from ..models import (
     Author,
     AuthorContribution,
     ContributionLevel,
@@ -23,8 +23,12 @@ _WOD = CreditRole.WRITING_ORIGINAL_DRAFT
 _WRE = CreditRole.WRITING_REVIEW_EDITING
 
 
-def _rc(role: CreditRole, level: ContributionLevel) -> RoleContribution:
-    return RoleContribution(role=role, level=level)
+def _rc(
+    role: CreditRole,
+    level: ContributionLevel,
+    sections: list = None,
+) -> RoleContribution:
+    return RoleContribution(role=role, level=level, linked_sections=sections)
 
 
 def ibl_default_contributions() -> ProjectContributions:
@@ -37,54 +41,50 @@ def ibl_default_contributions() -> ProjectContributions:
     ]
     return ProjectContributions(
         project_name=IBL_PROJECT_NAME,
-        headers=_headers,
+        sections=_headers,
         contributors=[
             AuthorContribution(
-                author=Author(name="Hannah M Bayer", affiliation="Columbia University, USA"),
+                author=Author(name="Hannah M Bayer", affiliation=["Columbia University, USA"]),
                 credit_levels=[
-                    _rc(_C, _eq),
-                    _rc(_PA, _sp),
-                    _rc(_SUP, _sp),
-                    _rc(_WOD, _eq),
-                    _rc(_WRE, _eq),
+                    _rc(_C, _eq, _headers),
+                    _rc(_PA, _sp, _headers),
+                    _rc(_SUP, _sp, _headers),
+                    _rc(_WOD, _eq, _headers),
+                    _rc(_WRE, _eq, _headers),
                 ],
-                header_contributions=_headers,
             ),
             AuthorContribution(
                 author=Author(
                     name="Daniel Birman",
-                    affiliation="Allen Institute, USA",
+                    affiliation=["Allen Institute, USA"],
                     email="daniel.birman@alleninstitute.org",
                     registry_identifier="0000-0003-3748-6289",
                 ),
-                contribution_description="Contributed to conceptualization and manuscript writing.",
                 credit_levels=[
-                    _rc(_C, _sp),
-                    _rc(_WOD, _eq),
-                    _rc(_WRE, _eq),
+                    _rc(_C, _sp, _headers),
+                    _rc(_WOD, _eq, _headers),
+                    _rc(_WRE, _eq, _headers),
                 ],
-                header_contributions=_headers,
             ),
             AuthorContribution(
-                author=Author(name="Gaelle Chapuis", affiliation="University of Geneva, Switzerland"),
+                author=Author(name="Gaelle Chapuis", affiliation=["University of Geneva, Switzerland"]),
                 credit_levels=[
-                    _rc(_C, _eq),
-                    _rc(_FA, _sp),
-                    _rc(_PA, _eq),
-                    _rc(_SUP, _sp),
-                    _rc(_WOD, _eq),
-                    _rc(_WRE, _eq),
+                    _rc(_C, _eq, _headers),
+                    _rc(_FA, _sp, _headers),
+                    _rc(_PA, _eq, _headers),
+                    _rc(_SUP, _sp, _headers),
+                    _rc(_WOD, _eq, _headers),
+                    _rc(_WRE, _eq, _headers),
                 ],
-                header_contributions=_headers,
             ),
             AuthorContribution(
-                author=Author(name="Eric E J DeWitt", affiliation="Champalimaud Foundation, Portugal"),
+                author=Author(name="Eric E J DeWitt", affiliation=["Champalimaud Foundation, Portugal"]),
                 credit_levels=[
                     _rc(_WRE, _sp),
                 ],
             ),
             AuthorContribution(
-                author=Author(name="Laura Freitas-Silva", affiliation="Champalimaud Foundation, Portugal"),
+                author=Author(name="Laura Freitas-Silva", affiliation=["Champalimaud Foundation, Portugal"]),
                 credit_levels=[
                     _rc(_C, _sp),
                     _rc(_FA, _sp),
@@ -92,13 +92,13 @@ def ibl_default_contributions() -> ProjectContributions:
                 ],
             ),
             AuthorContribution(
-                author=Author(name="Christopher Langdon", affiliation="Princeton University, USA"),
+                author=Author(name="Christopher Langdon", affiliation=["Princeton University, USA"]),
                 credit_levels=[
                     _rc(_WRE, _sp),
                 ],
             ),
             AuthorContribution(
-                author=Author(name="Ines Laranjeira", affiliation="Champalimaud Foundation, Portugal"),
+                author=Author(name="Ines Laranjeira", affiliation=["Champalimaud Foundation, Portugal"]),
                 credit_levels=[
                     _rc(_C, _sp),
                     _rc(_VIZ, _eq),
@@ -106,30 +106,29 @@ def ibl_default_contributions() -> ProjectContributions:
                 ],
             ),
             AuthorContribution(
-                author=Author(name="Petrina Lau", affiliation="Chinese University of Hong Kong"),
+                author=Author(name="Petrina Lau", affiliation=["Chinese University of Hong Kong"]),
                 credit_levels=[
                     _rc(_WRE, _eq),
                 ],
             ),
             AuthorContribution(
-                author=Author(name="Liam Paninski", affiliation="Columbia University, USA"),
+                author=Author(name="Liam Paninski", affiliation=["Columbia University, USA"]),
                 credit_levels=[
-                    _rc(_PA, _eq),
-                    _rc(_SUP, _sp),
-                    _rc(_WOD, _sp),
-                    _rc(_WRE, _eq),
+                    _rc(_PA, _eq, _headers),
+                    _rc(_SUP, _sp, _headers),
+                    _rc(_WOD, _sp, _headers),
+                    _rc(_WRE, _eq, _headers),
                 ],
-                header_contributions=_headers,
             ),
             AuthorContribution(
-                author=Author(name="Samuel Picard", affiliation="University College London, UK"),
+                author=Author(name="Samuel Picard", affiliation=["University College London, UK"]),
                 credit_levels=[
                     _rc(_VIZ, _sp),
                     _rc(_WRE, _sp),
                 ],
             ),
             AuthorContribution(
-                author=Author(name="Charline Tessereau", affiliation="Champalimaud Foundation, Portugal"),
+                author=Author(name="Charline Tessereau", affiliation=["Champalimaud Foundation, Portugal"]),
                 credit_levels=[
                     _rc(_C, _sp),
                     _rc(_VIZ, _eq),
@@ -137,20 +136,20 @@ def ibl_default_contributions() -> ProjectContributions:
                 ],
             ),
             AuthorContribution(
-                author=Author(name="Anne Urai", affiliation="Leiden University, The Netherlands"),
+                author=Author(name="Anne Urai", affiliation=["Leiden University, The Netherlands"]),
                 credit_levels=[
                     _rc(_WRE, _sp),
                 ],
             ),
             AuthorContribution(
-                author=Author(name="Matthew R Whiteway", affiliation="Columbia University, USA"),
+                author=Author(name="Matthew R Whiteway", affiliation=["Columbia University, USA"]),
                 credit_levels=[
                     _rc(_VIZ, _sp),
                     _rc(_WRE, _sp),
                 ],
             ),
             AuthorContribution(
-                author=Author(name="Olivier Winter", affiliation="Champalimaud Foundation, Portugal"),
+                author=Author(name="Olivier Winter", affiliation=["Champalimaud Foundation, Portugal"]),
                 credit_levels=[
                     _rc(_VIZ, _sp),
                     _rc(_WRE, _sp),
