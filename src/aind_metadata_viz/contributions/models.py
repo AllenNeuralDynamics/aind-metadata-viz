@@ -57,14 +57,14 @@ class RoleContribution(BaseModel):
     )
 
     @model_validator(mode="after")
-    def check_dates(cls, values):
-        start_date = values.get("start_date")
-        end_date = values.get("end_date")
+    def check_dates(self):
+        start_date = self.start_date
+        end_date = self.end_date
         if end_date and not start_date:
             raise ValueError("start_date is required if end_date is provided")
         if start_date and end_date and end_date < start_date:
             raise ValueError("end_date cannot be before start_date")
-        return values
+        return self
 
 
 class Author(Person):
