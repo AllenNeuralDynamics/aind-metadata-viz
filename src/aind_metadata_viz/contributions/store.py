@@ -80,12 +80,23 @@ def _json_to_contributions(project_name: str, json_text: str) -> ProjectContribu
 
 
 def _seed_defaults(store_dir: Path) -> None:
-    """Seed the store with the IBL default example if not already present."""
+    """Seed the store with all built-in examples if not already present."""
     from .examples.defaults import IBL_PROJECT_NAME, ibl_default_contributions
+    from .examples.authorship_extractor import AUTHORSHIP_PROJECT_NAME, authorship_extractor_contributions
+    from .examples.authorship_extractor_real import AUTHORSHIP_REAL_PROJECT_NAME, authorship_extractor_real_contributions
+    from .examples.authorship_extractor_large import AUTHORSHIP_LARGE_PROJECT_NAME, authorship_extractor_large_contributions
+    from .examples.ibl_decision import IBL_DECISION_PROJECT_NAME, ibl_decision_contributions
 
-    filename = _safe_filename(IBL_PROJECT_NAME)
-    if not (store_dir / filename).exists():
-        store_contributions(IBL_PROJECT_NAME, ibl_default_contributions(), store_dir=store_dir)
+    examples = [
+        (IBL_PROJECT_NAME, ibl_default_contributions),
+        (AUTHORSHIP_PROJECT_NAME, authorship_extractor_contributions),
+        (AUTHORSHIP_REAL_PROJECT_NAME, authorship_extractor_real_contributions),
+        (AUTHORSHIP_LARGE_PROJECT_NAME, authorship_extractor_large_contributions),
+        (IBL_DECISION_PROJECT_NAME, ibl_decision_contributions),
+    ]
+    for project_name, factory in examples:
+        if not (store_dir / _safe_filename(project_name)).exists():
+            store_contributions(project_name, factory(), store_dir=store_dir)
 
 
 # ---------------------------------------------------------------------------
