@@ -44,9 +44,9 @@ def _run(args: list, cwd: Path) -> subprocess.CompletedProcess:
 
 
 def _ensure_repo(store_dir: Path) -> bool:
-    """Initialise a bare git repo at *store_dir* if one does not exist.
+    """Initialise a git repo at *store_dir* if one does not exist.
 
-    Returns True if the repo was newly created.
+    Returns True if the repo has no commits yet (needs seeding).
     """
     store_dir.mkdir(parents=True, exist_ok=True)
     git_dir = store_dir / ".git"
@@ -55,7 +55,14 @@ def _ensure_repo(store_dir: Path) -> bool:
         _run(["git", "config", "user.name", "aind-contributions"], store_dir)
         _run(["git", "config", "user.email", "aind-contributions@local"], store_dir)
         return True
-    return False
+    # Repo exists but may have no commits (HEAD invalid)
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=str(store_dir),
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode != 0
 
 
 # ---------------------------------------------------------------------------
