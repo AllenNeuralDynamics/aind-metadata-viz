@@ -52,8 +52,6 @@ __all__ = [
     "authorship_extractor_contributions",
     "AUTHORSHIP_REAL_PROJECT_NAME",
     "authorship_extractor_real_contributions",
-    "AUTHORSHIP_LARGE_PROJECT_NAME",
-    "authorship_extractor_large_contributions",
     "IBL_DECISION_PROJECT_NAME",
     "ibl_decision_contributions",
 ]
