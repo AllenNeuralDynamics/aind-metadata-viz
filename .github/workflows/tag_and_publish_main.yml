@@ -7,32 +7,6 @@ on:
 # Change line 71 from "if: false" to "if: true" to enable PyPI publishing. 
 # Requires that svc-aindscicomp be added as an admin to repo.
 jobs:
-  tag:
-    if: ${{github.event.repository.name == 'aind-metadata-viz'}}
-    uses: AllenNeuralDynamics/.github/.github/workflows/release-bump-version.yml@main
-    secrets:
-      repo-token: ${{ secrets.SERVICE_TOKEN }}
-  publish_pypi:
-    needs: tag
-    if: false
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Pull latest changes
-        run: git pull origin main
-      - name: Set up Python 3.10
-        uses: actions/setup-python@v2
-        with:
-          python-version: '3.10'
-      - name: Install dependencies
-        run: |
-          pip install --upgrade setuptools wheel twine build
-          python -m build
-          twine check dist/*
-      - name: Publish on PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          password: ${{ secrets.AIND_PYPI_TOKEN }}
   publish_image:
     runs-on: ubuntu-latest
     steps:
