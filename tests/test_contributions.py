@@ -355,7 +355,7 @@ class TestStore(unittest.TestCase):
     def test_store_returns_commit_hash(self):
         commit = store_contributions("store-test", self.pc, store_dir=self.store_dir)
         self.assertIsInstance(commit, str)
-        self.assertEqual(len(commit), 40)
+        self.assertEqual(len(commit), 32)
 
     def test_store_and_retrieve(self):
         store_contributions("store-test", self.pc, store_dir=self.store_dir)
@@ -616,7 +616,7 @@ class TestContributionsPostHandler(ContributionsHandlerTestCase):
             )
             self.assertEqual(resp.code, 200)
 
-    def test_post_commit_hash_is_40_chars(self):
+    def test_post_commit_hash_is_32_chars(self):
         body = _make_project_json("handler-project")
         with self._patch_store():
             resp = self.fetch(
@@ -626,7 +626,7 @@ class TestContributionsPostHandler(ContributionsHandlerTestCase):
                 headers={"Content-Type": "application/json"},
             )
             data = json.loads(resp.body)
-            self.assertEqual(len(data["commit"]), 40)
+            self.assertEqual(len(data["commit"]), 32)
 
     def test_post_options_returns_204(self):
         resp = self.fetch("/contributions/post", method="OPTIONS")

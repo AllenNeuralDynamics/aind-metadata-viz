@@ -9,7 +9,7 @@ Models:
 Serialization:
     to_json, from_json, to_yaml, from_yaml, load
 
-Storage (git-backed):
+Storage (SQLite-backed):
     store_contributions, get_contributions
 """
 
@@ -25,7 +25,6 @@ from .store import get_contributions, list_project_commits, store_contributions
 from .examples.defaults import IBL_PROJECT_NAME, ibl_default_contributions
 from .examples.authorship_extractor import AUTHORSHIP_PROJECT_NAME, authorship_extractor_contributions
 from .examples.authorship_extractor_real import AUTHORSHIP_REAL_PROJECT_NAME, authorship_extractor_real_contributions
-from .examples.authorship_extractor_large import AUTHORSHIP_LARGE_PROJECT_NAME, authorship_extractor_large_contributions
 from .examples.ibl_decision import IBL_DECISION_PROJECT_NAME, ibl_decision_contributions
 
 __all__ = [
