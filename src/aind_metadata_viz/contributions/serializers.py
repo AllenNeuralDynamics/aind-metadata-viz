@@ -85,7 +85,7 @@ def from_yaml(data: str) -> ProjectContributions:
     for raw in raw_contributors:
         author_kwargs = {
             "name": raw["name"],
-            "affiliation": raw.get("affiliation", ""),
+            "affiliation": raw.get("affiliation") or [],
             "registry_identifier": raw.get("orcid"),
         }
         author_kwargs["registry"] = Registry.ORCID

@@ -86,6 +86,24 @@ def _json_to_contributions(project_name: str, json_text: str) -> ProjectContribu
 # ---------------------------------------------------------------------------
 
 
+def _write_and_commit(
+    project_name: str,
+    contributions: "ProjectContributions",
+    message: Optional[str],
+    store_dir: Path,
+) -> str:
+    """Write JSON and create a git commit. Does not trigger seeding."""
+    json_text = _contributions_to_json(contributions)
+    filename = _safe_filename(project_name)
+    file_path = store_dir / filename
+    file_path.write_text(json_text, encoding="utf-8")
+    _run(["git", "add", filename], store_dir)
+    commit_message = message or f"Update contributions for {project_name}"
+    _run(["git", "commit", "--allow-empty", "-m", commit_message], store_dir)
+    result = _run(["git", "rev-parse", "HEAD"], store_dir)
+    return result.stdout.strip()
+
+
 def _seed_defaults(store_dir: Path) -> None:
     """Seed the store with all built-in examples if not already present."""
     from .examples.defaults import IBL_PROJECT_NAME, ibl_default_contributions
@@ -103,7 +121,7 @@ def _seed_defaults(store_dir: Path) -> None:
     ]
     for project_name, factory in examples:
         if not (store_dir / _safe_filename(project_name)).exists():
-            store_contributions(project_name, factory(), store_dir=store_dir)
+            _write_and_commit(project_name, factory(), None, store_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -153,18 +171,7 @@ def store_contributions(
     else:
         contributions = _load(data)
 
-    json_text = _contributions_to_json(contributions)
-    filename = _safe_filename(project_name)
-    file_path = store_dir / filename
-    file_path.write_text(json_text, encoding="utf-8")
-
-    _run(["git", "add", filename], store_dir)
-
-    commit_message = message or f"Update contributions for {project_name}"
-    _run(["git", "commit", "--allow-empty", "-m", commit_message], store_dir)
-
-    result = _run(["git", "rev-parse", "HEAD"], store_dir)
-    return result.stdout.strip()
+    return _write_and_commit(project_name, contributions, message, store_dir)
 
 
 def list_project_commits(
@@ -190,10 +197,15 @@ def list_project_commits(
     _ensure_repo(store_dir)
 
     filename = _safe_filename(project_name)
-    result = _run(
-        ["git", "log", "--format=%H|||%aI|||%s", "--", filename],
-        store_dir,
-    )
+    try:
+        result = _run(
+            ["git", "log", "--format=%H|||%aI|||%s", "--", filename],
+            store_dir,
+        )
+    except RuntimeError as exc:
+        raise FileNotFoundError(
+            f"No commits found for project '{project_name}'"
+        ) from exc
     commits = []
     for line in result.stdout.splitlines():
         line = line.strip()
@@ -239,5 +251,10 @@ def get_contributions(
     filename = _safe_filename(project_name)
     ref = commit_hash or "HEAD"
 
-    result = _run(["git", "show", f"{ref}:{filename}"], store_dir)
+    try:
+        result = _run(["git", "show", f"{ref}:{filename}"], store_dir)
+    except RuntimeError as exc:
+        raise FileNotFoundError(
+            f"Project '{project_name}' not found at ref '{ref}'"
+        ) from exc
     return _json_to_contributions(project_name, result.stdout)
