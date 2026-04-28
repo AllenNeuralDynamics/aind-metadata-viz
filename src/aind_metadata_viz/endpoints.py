@@ -492,14 +492,16 @@ class GetQueryHandler(RequestHandler):
     def options(self):
         self.set_status(204)
 
-    def get(self):
+    async def get(self):
         event = {
             "queryStringParameters": {
                 k: self.get_argument(k)
                 for k in self.request.arguments
             }
         }
-        response = handle_get_query(event)
+        response = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: handle_get_query(event)
+        )
         self.set_status(response["statusCode"])
         self.set_header("Content-Type", "application/json")
         self.write(response["body"])
