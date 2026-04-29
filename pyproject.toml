@@ -27,7 +27,7 @@ dependencies = [
     'flask',
     'langchain',
     'langchain_aws',
-    'aind-metadata-upgrader>=0.13.4,<1',
+    'aind-metadata-upgrader>=0.13.6,<1',
     'numpy<2.0',
     'vl-convert-python',
     'biodata-query[panel] @ git+https://github.com/AllenNeuralDynamics/biodata-query.git@v0.4.2',
