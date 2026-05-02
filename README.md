@@ -101,17 +101,18 @@ print(response.json())
 
 ### Contributions endpoints
 
-Stores and retrieves [CRediT](https://credit.niso.org/) authorship contributions for a project, versioned via git.
+Stores and retrieves [CRediT](https://credit.niso.org/) authorship contributions for a project, versioned via SQLite.
 
 | Endpoint | Description |
 |---|---|
 | `GET /contributions/get?project=<name>` | Latest contribution data (JSON by default) |
 | `GET /contributions/get?project=<name>&format=yaml` | Latest contribution data as YAML |
 | `GET /contributions/get?project=<name>&commit=<hash>` | Contribution data at a specific commit |
-| `GET /contributions/get?project=<name>&history=true` | List of all commits for the project |
+| `GET /contributions/get?project=<name>&history=true` | List of all commits, newest first |
+| `GET /contributions/get?doi=<doi>` | Look up a project by DOI |
 | `POST /contributions/post?project=<name>[&message=<msg>]` | Store a new version; body is JSON or YAML |
 
-The `?history=true` response is a list of commits, newest first, each with `commit` (SHA), `timestamp` (ISO-8601), and `message`. Use the returned hashes with `?commit=<hash>` to retrieve any historical version.
+Add `?password=<hash>` to any GET request for password-protected projects; omitting or supplying the wrong value returns `401`.
 
 Pull the seeded IBL example to see a complete payload with all fields:
 
@@ -125,7 +126,7 @@ r = requests.get(
 print(json.dumps(r.json(), indent=2))
 ```
 
-Fetch the full history for a project and then retrieve a specific past version:
+Fetch the full history for a project and retrieve a specific past version:
 
 ```python
 import requests, json

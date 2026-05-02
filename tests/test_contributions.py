@@ -29,8 +29,11 @@ from aind_metadata_viz.contributions.serializers import (
 from aind_metadata_viz.contributions.store import (
     _safe_filename,
     get_contributions,
+    get_contributions_by_doi,
     list_project_commits,
+    set_project_password,
     store_contributions,
+    verify_project_password,
 )
 from aind_metadata_viz.contributions.handlers import CONTRIBUTION_ROUTES
 
@@ -653,6 +656,156 @@ class TestContributionsPostHandler(ContributionsHandlerTestCase):
                 headers={"Content-Type": "application/json"},
             )
             self.assertEqual(resp.code, 200)
+
+
+class TestPasswordStore(unittest.TestCase):
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.store_dir = Path(self._tmpdir.name)
+        self.pc = _make_project("pw-project")
+        store_contributions("pw-project", self.pc, store_dir=self.store_dir)
+
+    def tearDown(self):
+        self._tmpdir.cleanup()
+
+    def test_no_password_set_returns_true(self):
+        self.assertTrue(verify_project_password("pw-project", "anything", store_dir=self.store_dir))
+
+    def test_no_password_set_empty_string_returns_true(self):
+        self.assertTrue(verify_project_password("pw-project", "", store_dir=self.store_dir))
+
+    def test_correct_password_returns_true(self):
+        set_project_password("pw-project", "abc123hash", store_dir=self.store_dir)
+        self.assertTrue(verify_project_password("pw-project", "abc123hash", store_dir=self.store_dir))
+
+    def test_wrong_password_returns_false(self):
+        set_project_password("pw-project", "abc123hash", store_dir=self.store_dir)
+        self.assertFalse(verify_project_password("pw-project", "wronghash", store_dir=self.store_dir))
+
+    def test_empty_password_wrong_returns_false(self):
+        set_project_password("pw-project", "abc123hash", store_dir=self.store_dir)
+        self.assertFalse(verify_project_password("pw-project", "", store_dir=self.store_dir))
+
+    def test_replace_password_old_fails(self):
+        set_project_password("pw-project", "first", store_dir=self.store_dir)
+        set_project_password("pw-project", "second", store_dir=self.store_dir)
+        self.assertFalse(verify_project_password("pw-project", "first", store_dir=self.store_dir))
+        self.assertTrue(verify_project_password("pw-project", "second", store_dir=self.store_dir))
+
+    def test_password_on_unknown_project_returns_true(self):
+        self.assertTrue(verify_project_password("no-such-project", "pw", store_dir=self.store_dir))
+
+
+class TestGetContributionsByDoi(unittest.TestCase):
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.store_dir = Path(self._tmpdir.name)
+
+    def tearDown(self):
+        self._tmpdir.cleanup()
+
+    def test_find_project_by_doi(self):
+        pc = ProjectContributions(project_name="doi-project", doi="10.1234/test")
+        store_contributions("doi-project", pc, store_dir=self.store_dir)
+        result = get_contributions_by_doi("10.1234/test", store_dir=self.store_dir)
+        self.assertEqual(result.project_name, "doi-project")
+        self.assertEqual(result.doi, "10.1234/test")
+
+    def test_missing_doi_raises(self):
+        pc = ProjectContributions(project_name="no-doi-project")
+        store_contributions("no-doi-project", pc, store_dir=self.store_dir)
+        with self.assertRaises(FileNotFoundError):
+            get_contributions_by_doi("10.9999/missing", store_dir=self.store_dir)
+
+    def test_returns_latest_version_for_doi(self):
+        pc1 = ProjectContributions(project_name="doi-project", doi="10.1/v", assets=["v1"])
+        pc2 = ProjectContributions(project_name="doi-project", doi="10.1/v", assets=["v2"])
+        store_contributions("doi-project", pc1, store_dir=self.store_dir)
+        store_contributions("doi-project", pc2, store_dir=self.store_dir)
+        result = get_contributions_by_doi("10.1/v", store_dir=self.store_dir)
+        self.assertEqual(result.assets, ["v2"])
+
+    def test_multiple_projects_correct_one_returned(self):
+        pc_a = ProjectContributions(project_name="proj-a", doi="10.0/a")
+        pc_b = ProjectContributions(project_name="proj-b", doi="10.0/b")
+        store_contributions("proj-a", pc_a, store_dir=self.store_dir)
+        store_contributions("proj-b", pc_b, store_dir=self.store_dir)
+        result = get_contributions_by_doi("10.0/b", store_dir=self.store_dir)
+        self.assertEqual(result.project_name, "proj-b")
+
+
+class TestGetHandlerWithPassword(ContributionsHandlerTestCase):
+    def _patch_verify(self, return_value):
+        return patch(
+            "aind_metadata_viz.contributions.handlers.verify_project_password",
+            return_value=return_value,
+        )
+
+    def _patch_doi(self, contributions):
+        return patch(
+            "aind_metadata_viz.contributions.handlers.get_contributions_by_doi",
+            return_value=contributions,
+        )
+
+    def _seed_project(self, name="pw-handler-project"):
+        pc = _make_project(name)
+        store_contributions(name, pc, store_dir=self._store_dir)
+        return pc
+
+    def test_no_password_set_project_returns_200(self):
+        self._seed_project()
+        with self._patch_get(), self._patch_verify(True):
+            resp = self.fetch("/contributions/get?project=pw-handler-project")
+            self.assertEqual(resp.code, 200)
+
+    def test_correct_password_returns_200(self):
+        self._seed_project()
+        with self._patch_get(), self._patch_verify(True):
+            resp = self.fetch("/contributions/get?project=pw-handler-project&password=abc123")
+            self.assertEqual(resp.code, 200)
+
+    def test_wrong_password_returns_401(self):
+        self._seed_project()
+        with self._patch_get(), self._patch_verify(False):
+            resp = self.fetch("/contributions/get?project=pw-handler-project&password=wrong")
+            self.assertEqual(resp.code, 401)
+            body = json.loads(resp.body)
+            self.assertIn("error", body)
+
+    def test_missing_password_returns_401_when_required(self):
+        self._seed_project()
+        with self._patch_get(), self._patch_verify(False):
+            resp = self.fetch("/contributions/get?project=pw-handler-project")
+            self.assertEqual(resp.code, 401)
+
+    def test_doi_lookup_returns_200(self):
+        pc = _make_project("doi-handler-project")
+        with self._patch_doi(pc), self._patch_verify(True):
+            resp = self.fetch("/contributions/get?doi=10.1234/test")
+            self.assertEqual(resp.code, 200)
+            body = json.loads(resp.body)
+            self.assertEqual(body["project_name"], "doi-handler-project")
+
+    def test_doi_not_found_returns_404(self):
+        from unittest.mock import patch as _patch
+        with _patch(
+            "aind_metadata_viz.contributions.handlers.get_contributions_by_doi",
+            side_effect=FileNotFoundError("not found"),
+        ):
+            resp = self.fetch("/contributions/get?doi=10.9999/nope")
+            self.assertEqual(resp.code, 404)
+
+    def test_doi_wrong_password_returns_401(self):
+        pc = _make_project("doi-handler-project")
+        with self._patch_doi(pc), self._patch_verify(False):
+            resp = self.fetch("/contributions/get?doi=10.1234/test&password=wrong")
+            self.assertEqual(resp.code, 401)
+
+    def test_missing_both_project_and_doi_returns_400(self):
+        resp = self.fetch("/contributions/get")
+        self.assertEqual(resp.code, 400)
+        body = json.loads(resp.body)
+        self.assertIn("error", body)
 
 
 if __name__ == "__main__":

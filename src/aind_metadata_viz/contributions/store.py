@@ -6,11 +6,18 @@ Each project's versions are stored as rows in a SQLite database
 * ``store_contributions`` inserts a new version row and returns its UUID.
 * ``get_contributions`` returns the latest version or a specific one by UUID.
 * ``list_project_commits`` returns the version history newest-first.
+* ``set_project_password`` protects a project with a PBKDF2-hashed password.
+* ``verify_project_password`` checks a supplied password against the stored hash.
+* ``get_contributions_by_doi`` finds the latest version of any project by DOI.
 
 Built-in examples are re-seeded on every fresh process startup so that
 deploying updated code always serves current built-in data.
 """
 
+import base64
+import hashlib
+import hmac
+import os
 import sqlite3
 import uuid
 from contextlib import contextmanager
@@ -61,6 +68,15 @@ def _ensure_db(store_dir: Path) -> None:
             """
             CREATE INDEX IF NOT EXISTS idx_versions_project_ts
                 ON versions (project_id, timestamp DESC)
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS project_passwords (
+                project_id TEXT PRIMARY KEY,
+                salt       TEXT NOT NULL,
+                pw_hash    TEXT NOT NULL
+            )
             """
         )
     _seed_defaults(store_dir)
@@ -166,3 +182,96 @@ def get_contributions(
                 raise FileNotFoundError(f"Project '{project_name}' not found")
 
     return _from_json(row[0])
+
+
+_PBKDF2_ITERATIONS = 200_000
+
+
+def set_project_password(
+    project_name: str,
+    password: str,
+    store_dir: Optional[Path] = None,
+) -> None:
+    """Protect a project with a password.
+
+    ``password`` should be a pre-hashed string supplied by the client (e.g.
+    a SHA-256 hex digest of the raw password).  It is stretched with
+    PBKDF2-HMAC-SHA-256 before being written to the database so the stored
+    value cannot be used directly to authenticate.
+    """
+    store_dir = Path(store_dir) if store_dir else DEFAULT_STORE_DIR
+    _ensure_db(store_dir)
+
+    salt = os.urandom(32)
+    pw_hash = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, _PBKDF2_ITERATIONS)
+
+    with _connect(store_dir) as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO project_passwords (project_id, salt, pw_hash) VALUES (?, ?, ?)",
+            (
+                project_name,
+                base64.b64encode(salt).decode(),
+                base64.b64encode(pw_hash).decode(),
+            ),
+        )
+
+
+def verify_project_password(
+    project_name: str,
+    password: str,
+    store_dir: Optional[Path] = None,
+) -> bool:
+    """Return True if *password* matches the stored hash for *project_name*.
+
+    Returns True unconditionally when no password has been set for the
+    project (i.e. the project is publicly accessible).
+    """
+    store_dir = Path(store_dir) if store_dir else DEFAULT_STORE_DIR
+    _ensure_db(store_dir)
+
+    with _connect(store_dir) as conn:
+        row = conn.execute(
+            "SELECT salt, pw_hash FROM project_passwords WHERE project_id = ?",
+            (project_name,),
+        ).fetchone()
+
+    if row is None:
+        return True
+
+    salt = base64.b64decode(row[0])
+    stored_hash = base64.b64decode(row[1])
+    check_hash = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, _PBKDF2_ITERATIONS)
+    return hmac.compare_digest(check_hash, stored_hash)
+
+
+def get_contributions_by_doi(
+    doi: str,
+    store_dir: Optional[Path] = None,
+) -> ProjectContributions:
+    """Return the latest version of any project whose DOI matches *doi*.
+
+    Raises ``FileNotFoundError`` when no matching project is found.
+    """
+    store_dir = Path(store_dir) if store_dir else DEFAULT_STORE_DIR
+    _ensure_db(store_dir)
+
+    with _connect(store_dir) as conn:
+        rows = conn.execute(
+            """
+            SELECT v.project_id, v.data
+            FROM versions v
+            INNER JOIN (
+                SELECT project_id, MAX(timestamp) AS max_ts
+                FROM versions
+                GROUP BY project_id
+            ) latest ON v.project_id = latest.project_id
+                     AND v.timestamp = latest.max_ts
+            """
+        ).fetchall()
+
+    for project_id, data in rows:
+        contrib = _from_json(data)
+        if contrib.doi == doi:
+            return contrib
+
+    raise FileNotFoundError(f"No project found with DOI '{doi}'")

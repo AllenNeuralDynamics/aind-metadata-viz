@@ -10,7 +10,8 @@ Serialization:
     to_json, from_json, to_yaml, from_yaml, load
 
 Storage (SQLite-backed):
-    store_contributions, get_contributions
+    store_contributions, get_contributions, set_project_password,
+    verify_project_password, get_contributions_by_doi
 """
 
 from .models import (
@@ -21,7 +22,14 @@ from .models import (
     RoleContribution,
 )
 from .serializers import from_json, from_yaml, load, to_json, to_yaml
-from .store import get_contributions, list_project_commits, store_contributions
+from .store import (
+    get_contributions,
+    get_contributions_by_doi,
+    list_project_commits,
+    set_project_password,
+    store_contributions,
+    verify_project_password,
+)
 from .examples.defaults import IBL_PROJECT_NAME, ibl_default_contributions
 from .examples.authorship_extractor import AUTHORSHIP_PROJECT_NAME, authorship_extractor_contributions
 from .examples.authorship_extractor_real import AUTHORSHIP_REAL_PROJECT_NAME, authorship_extractor_real_contributions
@@ -44,6 +52,9 @@ __all__ = [
     "store_contributions",
     "get_contributions",
     "list_project_commits",
+    "set_project_password",
+    "verify_project_password",
+    "get_contributions_by_doi",
     # defaults / examples
     "IBL_PROJECT_NAME",
     "ibl_default_contributions",

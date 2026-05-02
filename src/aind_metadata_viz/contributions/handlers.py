@@ -2,8 +2,13 @@
 
 Routes
 ------
-GET  /contributions/get?project=<name>[&commit=<hash>]
+GET  /contributions/get?project=<name>[&commit=<hash>][&password=<hash>]
     Returns the latest (or specified) contribution data as JSON.
+    If the project is password-protected, *password* (a pre-hashed string)
+    must be supplied; omitting or providing the wrong value returns 401.
+
+GET  /contributions/get?doi=<doi>[&password=<hash>]
+    Looks up the latest version of any project whose DOI matches *doi*.
 
 GET  /contributions/get?project=<name>&history=true
     Returns a list of commits for the project, newest first.
@@ -20,6 +25,7 @@ from tornado.web import RequestHandler
 
 from . import from_json, from_yaml, get_contributions, list_project_commits, store_contributions, to_json, to_yaml
 from .models import ProjectContributions
+from .store import get_contributions_by_doi, verify_project_password
 
 
 class ContributionsGetHandler(RequestHandler):
@@ -36,9 +42,39 @@ class ContributionsGetHandler(RequestHandler):
     def get(self):
         self.set_header("Content-Type", "application/json")
         project = self.get_argument("project", None)
-        if not project:
+        doi = self.get_argument("doi", None)
+
+        if not project and not doi:
             self.set_status(400)
-            self.write(json.dumps({"error": "project query parameter is required"}))
+            self.write(json.dumps({"error": "project or doi query parameter is required"}))
+            return
+
+        if doi:
+            try:
+                contributions = get_contributions_by_doi(doi)
+            except FileNotFoundError as e:
+                self.set_status(404)
+                self.write(json.dumps({"error": str(e)}))
+                return
+            except Exception as e:
+                self.set_status(500)
+                self.write(json.dumps({"error": str(e)}))
+                return
+
+            password = self.get_argument("password", None)
+            if not verify_project_password(contributions.project_name, password or ""):
+                self.set_status(401)
+                self.write(json.dumps({"error": "Unauthorized"}))
+                return
+
+            fmt = self.get_argument("format", "json").lower()
+            self.set_status(200)
+            if fmt == "yaml":
+                self.set_header("Content-Type", "text/plain; charset=utf-8")
+                self.write(to_yaml(contributions))
+            else:
+                self.set_header("Content-Type", "application/json")
+                self.write(to_json(contributions))
             return
 
         if self.get_argument("history", None) == "true":
@@ -54,6 +90,12 @@ class ContributionsGetHandler(RequestHandler):
                 return
             self.set_status(200)
             self.write(json.dumps(commits))
+            return
+
+        password = self.get_argument("password", None)
+        if not verify_project_password(project, password or ""):
+            self.set_status(401)
+            self.write(json.dumps({"error": "Unauthorized"}))
             return
 
         commit = self.get_argument("commit", None)
