@@ -35,6 +35,13 @@ class ContributionLevel(str, Enum):
     EQUAL = "equal"
 
 
+class AuthorLevel(str, Enum):
+    """Publication authorship position"""
+
+    FIRST = "first"
+    SENIOR = "senior"
+
+
 class RoleContribution(BaseModel):
     """A single CRediT role paired with a contribution level."""
 
@@ -78,6 +85,10 @@ class AuthorContribution(BaseModel):
     """One contributor with their CRediT roles."""
 
     author: Author
+    author_level: Optional[AuthorLevel] = Field(
+        default=None,
+        description="Optional publication authorship position, used for display purposes (e.g. first, middle, senior)",
+    )
     credit_levels: List[RoleContribution] = Field(default_factory=list)
 
 

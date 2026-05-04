@@ -10,6 +10,7 @@ All contributions represented as EQUAL (★) — no H/M/L differentiation in sou
 from ..models import (
     Author,
     AuthorContribution,
+    AuthorLevel,
     ContributionLevel,
     CreditRole,
     ProjectContributions,
@@ -19,6 +20,8 @@ from ..models import (
 NP_OPTO_PROJECT_NAME = "np-opto"
 
 _eq = ContributionLevel.EQUAL
+_first  = AuthorLevel.FIRST
+_senior = AuthorLevel.SENIOR
 
 _C  = CreditRole.CONCEPTUALIZATION
 _DC = CreditRole.DATA_CURATION
@@ -112,275 +115,128 @@ def np_opto_contributions() -> ProjectContributions:
         doi="https://doi.org/10.1101/2025.02.04.636286",
         assets=NP_OPTO_ASSETS,
         contributors=[
-            # Anna Lakunina — equal first author (*)
             AuthorContribution(
-                author=Author(
-                    name="Anna Lakunina",
-                    affiliation=[_AFF[1]],
-                ),
-                credit_levels=[
-                    _rc(_DC), _rc(_FA), _rc(_IN), _rc(_VI), _rc(_WR),
-                ],
+                author=Author(name="Anna Lakunina", affiliation=[_AFF[1]]),
+                author_level=_first,
+                credit_levels=[_rc(_DC), _rc(_FA), _rc(_IN), _rc(_VI), _rc(_WR)],
             ),
-            # Karolina Z Socha — equal first author (*)
             AuthorContribution(
-                author=Author(
-                    name="Karolina Z Socha",
-                    affiliation=[_AFF[2]],
-                ),
+                author=Author(name="Karolina Z Socha", affiliation=[_AFF[2]]),
+                author_level=_first,
                 credit_levels=[
                     _rc(_DC), _rc(_FA), _rc(_IN), _rc(_VA), _rc(_VI),
                     _rc(_WO), _rc(_WR),
                 ],
             ),
-            # Alexander Ladd — equal first author (*)
             AuthorContribution(
-                author=Author(
-                    name="Alexander Ladd",
-                    affiliation=[_AFF[3]],
-                ),
-                credit_levels=[
-                    _rc(_DC), _rc(_FA), _rc(_IN), _rc(_VI), _rc(_WO), _rc(_WR),
-                ],
+                author=Author(name="Alexander Ladd", affiliation=[_AFF[3]]),
+                author_level=_first,
+                credit_levels=[_rc(_DC), _rc(_FA), _rc(_IN), _rc(_VI), _rc(_WO), _rc(_WR)],
             ),
-            # Anna J Bowen
             AuthorContribution(
-                author=Author(
-                    name="Anna J Bowen",
-                    affiliation=[_AFF[3]],
-                ),
-                credit_levels=[
-                    _rc(_IN),
-                ],
+                author=Author(name="Anna J Bowen", affiliation=[_AFF[3]]),
+                credit_levels=[_rc(_IN)],
             ),
-            # Susu Chen
             AuthorContribution(
-                author=Author(
-                    name="Susu Chen",
-                    affiliation=[_AFF[4]],
-                ),
-                credit_levels=[
-                    _rc(_IN), _rc(_VA),
-                ],
+                author=Author(name="Susu Chen", affiliation=[_AFF[4]]),
+                credit_levels=[_rc(_IN), _rc(_VA)],
             ),
-            # Jennifer Colonell
             AuthorContribution(
-                author=Author(
-                    name="Jennifer Colonell",
-                    affiliation=[_AFF[4], _AFF[5]],
-                ),
-                credit_levels=[
-                    _rc(_SW),
-                ],
+                author=Author(name="Jennifer Colonell", affiliation=[_AFF[4], _AFF[5]]),
+                credit_levels=[_rc(_SW)],
             ),
-            # Anjal Doshi
             AuthorContribution(
-                author=Author(
-                    name="Anjal Doshi",
-                    affiliation=[_AFF[1]],
-                ),
-                credit_levels=[
-                    _rc(_C), _rc(_ME), _rc(_PA),
-                ],
+                author=Author(name="Anjal Doshi", affiliation=[_AFF[1]]),
+                credit_levels=[_rc(_C), _rc(_ME), _rc(_PA)],
             ),
-            # Bill Karsh
             AuthorContribution(
-                author=Author(
-                    name="Bill Karsh",
-                    affiliation=[_AFF[4], _AFF[5]],
-                ),
-                credit_levels=[
-                    _rc(_SW), _rc(_VA),
-                ],
+                author=Author(name="Bill Karsh", affiliation=[_AFF[4], _AFF[5]]),
+                credit_levels=[_rc(_SW), _rc(_VA)],
             ),
-            # Michael Krumin
             AuthorContribution(
-                author=Author(
-                    name="Michael Krumin",
-                    affiliation=[_AFF[2]],
-                ),
-                credit_levels=[
-                    _rc(_SW),
-                ],
+                author=Author(name="Michael Krumin", affiliation=[_AFF[2]]),
+                credit_levels=[_rc(_SW)],
             ),
-            # Pavel Kulik
             AuthorContribution(
-                author=Author(
-                    name="Pavel Kulik",
-                    affiliation=[_AFF[1]],
-                ),
-                credit_levels=[
-                    _rc(_SW),
-                ],
+                author=Author(name="Pavel Kulik", affiliation=[_AFF[1]]),
+                credit_levels=[_rc(_SW)],
             ),
-            # Anna Li
             AuthorContribution(
-                author=Author(
-                    name="Anna Li",
-                    affiliation=[_AFF[3]],
-                ),
-                credit_levels=[
-                    _rc(_IN), _rc(_WR),
-                ],
+                author=Author(name="Anna Li", affiliation=[_AFF[3]]),
+                credit_levels=[_rc(_IN), _rc(_WR)],
             ),
-            # Pieter Neutens
             AuthorContribution(
-                author=Author(
-                    name="Pieter Neutens",
-                    affiliation=[_AFF[6]],
-                ),
-                credit_levels=[
-                    _rc(_IN), _rc(_ME),
-                ],
+                author=Author(name="Pieter Neutens", affiliation=[_AFF[6]]),
+                credit_levels=[_rc(_IN), _rc(_ME)],
             ),
-            # John O'Callaghan
             AuthorContribution(
-                author=Author(
-                    name="John O'Callaghan",
-                    affiliation=[_AFF[6]],
-                ),
-                credit_levels=[
-                    _rc(_ME),
-                ],
+                author=Author(name="John O'Callaghan", affiliation=[_AFF[6]]),
+                credit_levels=[_rc(_ME)],
             ),
-            # Meghan Olsen
             AuthorContribution(
-                author=Author(
-                    name="Meghan Olsen",
-                    affiliation=[_AFF[1]],
-                ),
-                credit_levels=[
-                    _rc(_IN),
-                ],
+                author=Author(name="Meghan Olsen", affiliation=[_AFF[1]]),
+                credit_levels=[_rc(_IN)],
             ),
-            # Jan Putzeys
             AuthorContribution(
-                author=Author(
-                    name="Jan Putzeys",
-                    affiliation=[_AFF[6]],
-                ),
-                credit_levels=[
-                    _rc(_ME),
-                ],
+                author=Author(name="Jan Putzeys", affiliation=[_AFF[6]]),
+                credit_levels=[_rc(_ME)],
             ),
-            # Harrie AC Tilmans
             AuthorContribution(
-                author=Author(
-                    name="Harrie AC Tilmans",
-                    affiliation=[_AFF[6]],
-                ),
-                credit_levels=[
-                    _rc(_RE),
-                ],
+                author=Author(name="Harrie AC Tilmans", affiliation=[_AFF[6]]),
+                credit_levels=[_rc(_RE)],
             ),
-            # Zhiwen Ye
             AuthorContribution(
-                author=Author(
-                    name="Zhiwen Ye",
-                    affiliation=[_AFF[3]],
-                ),
-                credit_levels=[
-                    _rc(_IN),
-                ],
+                author=Author(name="Zhiwen Ye", affiliation=[_AFF[3]]),
+                credit_levels=[_rc(_IN)],
             ),
-            # Marleen Welkenhuysen
             AuthorContribution(
-                author=Author(
-                    name="Marleen Welkenhuysen",
-                    affiliation=[_AFF[6]],
-                ),
-                credit_levels=[
-                    _rc(_ME),
-                ],
+                author=Author(name="Marleen Welkenhuysen", affiliation=[_AFF[6]]),
+                credit_levels=[_rc(_ME)],
             ),
-            # Michael Häusser
             AuthorContribution(
-                author=Author(
-                    name="Michael Häusser",
-                    affiliation=[_AFF[7]],
-                ),
-                credit_levels=[
-                    _rc(_FN), _rc(_SU),
-                ],
+                author=Author(name="Michael Häusser", affiliation=[_AFF[7]]),
+                credit_levels=[_rc(_FN), _rc(_SU)],
             ),
-            # Christof Koch
             AuthorContribution(
-                author=Author(
-                    name="Christof Koch",
-                    affiliation=[_AFF[8]],
-                ),
-                credit_levels=[
-                    _rc(_FA), _rc(_FN), _rc(_ME), _rc(_SU),
-                ],
+                author=Author(name="Christof Koch", affiliation=[_AFF[8]]),
+                credit_levels=[_rc(_FA), _rc(_FN), _rc(_ME), _rc(_SU)],
             ),
-            # Jonathan T. Ting
             AuthorContribution(
-                author=Author(
-                    name="Jonathan T. Ting",
-                    affiliation=[_AFF[3], _AFF[9]],
-                ),
-                credit_levels=[
-                    _rc(_IN),
-                ],
+                author=Author(name="Jonathan T. Ting", affiliation=[_AFF[3], _AFF[9]]),
+                credit_levels=[_rc(_IN)],
             ),
-            # Barun Dutta
             AuthorContribution(
-                author=Author(
-                    name="Barun Dutta",
-                    affiliation=[_AFF[6]],
-                ),
-                credit_levels=[
-                    _rc(_RE), _rc(_SU),
-                ],
+                author=Author(name="Barun Dutta", affiliation=[_AFF[6]]),
+                credit_levels=[_rc(_RE), _rc(_SU)],
             ),
-            # Timothy D Harris
             AuthorContribution(
-                author=Author(
-                    name="Timothy D Harris",
-                    affiliation=[_AFF[4], _AFF[5]],
-                ),
-                credit_levels=[
-                    _rc(_C), _rc(_FN), _rc(_RE), _rc(_SU),
-                ],
+                author=Author(name="Timothy D Harris", affiliation=[_AFF[4], _AFF[5]]),
+                credit_levels=[_rc(_C), _rc(_FN), _rc(_RE), _rc(_SU)],
             ),
-            # Nicholas A Steinmetz
             AuthorContribution(
-                author=Author(
-                    name="Nicholas A Steinmetz",
-                    affiliation=[_AFF[3]],
-                ),
+                author=Author(name="Nicholas A Steinmetz", affiliation=[_AFF[3]]),
+                author_level=_senior,
                 credit_levels=[
                     _rc(_C), _rc(_FN), _rc(_ME), _rc(_RE), _rc(_SU),
                     _rc(_WO), _rc(_WR),
                 ],
             ),
-            # Karel Svoboda — co-senior author (†)
             AuthorContribution(
-                author=Author(
-                    name="Karel Svoboda",
-                    affiliation=[_AFF[1], _AFF[4]],
-                ),
-                credit_levels=[
-                    _rc(_C), _rc(_FN), _rc(_ME), _rc(_RE), _rc(_SU), _rc(_WR),
-                ],
+                author=Author(name="Karel Svoboda", affiliation=[_AFF[1], _AFF[4]]),
+                author_level=_senior,
+                credit_levels=[_rc(_C), _rc(_FN), _rc(_ME), _rc(_RE), _rc(_SU), _rc(_WR)],
             ),
-            # Joshua H Siegle — co-senior author (†)
             AuthorContribution(
-                author=Author(
-                    name="Joshua H Siegle",
-                    affiliation=[_AFF[1]],
-                ),
+                author=Author(name="Joshua H Siegle", affiliation=[_AFF[1]]),
+                author_level=_senior,
                 credit_levels=[
                     _rc(_C), _rc(_FA), _rc(_FN), _rc(_ME), _rc(_PA), _rc(_RE), _rc(_SW),
                     _rc(_SU), _rc(_VI), _rc(_WO), _rc(_WR),
                 ],
             ),
-            # Matteo Carandini — co-senior author (†)
             AuthorContribution(
-                author=Author(
-                    name="Matteo Carandini",
-                    affiliation=[_AFF[2]],
-                ),
+                author=Author(name="Matteo Carandini", affiliation=[_AFF[2]]),
+                author_level=_senior,
                 credit_levels=[
                     _rc(_C), _rc(_FN), _rc(_PA), _rc(_RE), _rc(_SU), _rc(_VI),
                     _rc(_WO), _rc(_WR),
