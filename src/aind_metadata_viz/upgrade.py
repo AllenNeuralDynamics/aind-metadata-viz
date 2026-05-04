@@ -112,7 +112,9 @@ def run_upgrade(record_id_or_name: str):
         "procedures",
         "subject",
         "session",
+        "acquisition",
         "rig",
+        "instrument",
         "processing",
         "quality_control",
     ]
