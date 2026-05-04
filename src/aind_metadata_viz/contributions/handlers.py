@@ -25,7 +25,7 @@ from tornado.web import RequestHandler
 
 from . import from_json, from_yaml, get_contributions, list_project_commits, store_contributions, to_json, to_yaml
 from .models import ProjectContributions
-from .store import get_contributions_by_doi, verify_project_password
+from .store import get_contributions_by_doi, is_project_locked, verify_project_password
 
 
 class ContributionsGetHandler(RequestHandler):
@@ -67,6 +67,7 @@ class ContributionsGetHandler(RequestHandler):
                 self.write(json.dumps({"error": "Unauthorized"}))
                 return
 
+            contributions.locked = is_project_locked(contributions.project_name)
             fmt = self.get_argument("format", "json").lower()
             self.set_status(200)
             if fmt == "yaml":
@@ -112,6 +113,7 @@ class ContributionsGetHandler(RequestHandler):
             self.write(json.dumps({"error": str(e)}))
             return
 
+        contributions.locked = is_project_locked(project)
         self.set_status(200)
         if fmt == "yaml":
             self.set_header("Content-Type", "text/plain; charset=utf-8")

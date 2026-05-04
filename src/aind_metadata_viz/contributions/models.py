@@ -92,3 +92,4 @@ class ProjectContributions(BaseModel):
     )
     doi: Optional[str] = Field(default=None, description="Optional DOI associated with this set of contributions")
     assets: List[str] = Field(default_factory=list, description="List of asset names associated with the project")
+    locked: bool = Field(default=False, description="Whether this project is password-protected")

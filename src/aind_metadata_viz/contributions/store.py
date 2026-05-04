@@ -242,6 +242,22 @@ def verify_project_password(
     return hmac.compare_digest(check_hash, stored_hash)
 
 
+def is_project_locked(
+    project_name: str,
+    store_dir: Optional[Path] = None,
+) -> bool:
+    """Return True if *project_name* has a password set, False otherwise."""
+    store_dir = Path(store_dir) if store_dir else DEFAULT_STORE_DIR
+    _ensure_db(store_dir)
+
+    with _connect(store_dir) as conn:
+        row = conn.execute(
+            "SELECT 1 FROM project_passwords WHERE project_id = ?",
+            (project_name,),
+        ).fetchone()
+    return row is not None
+
+
 def get_contributions_by_doi(
     doi: str,
     store_dir: Optional[Path] = None,
