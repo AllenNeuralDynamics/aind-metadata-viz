@@ -285,7 +285,7 @@ def get_contributions_by_doi(
 
     for project_id, data in rows:
         contrib = _from_json(data)
-        if contrib.doi == doi:
+        if contrib.doi and doi in contrib.doi:
             return contrib
 
     raise FileNotFoundError(f"No project found with DOI '{doi}'")
