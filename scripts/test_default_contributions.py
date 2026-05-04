@@ -1,4 +1,4 @@
-"""Integration script: verify the IBL default contributions are seeded and retrievable.
+"""Integration script: verify the np-opto default contributions are seeded and retrievable.
 
 Usage
 -----
@@ -9,7 +9,7 @@ Usage
     python scripts/test_default_contributions.py --env prod
 
 The script:
-  1. GETs the ibl-2025 project — confirms it was seeded on server startup
+  1. GETs the np-opto project — confirms it was seeded on server startup
   2. Prints each contributor name, affiliation, and roles
   3. Asserts key facts about the data
 """
@@ -28,7 +28,7 @@ BASE_URL = (
     else "http://localhost:5006"
 )
 
-PROJECT = "ibl-2025"
+PROJECT = "np-opto"
 
 print(f"Testing against: {BASE_URL}")
 print("=" * 60)
@@ -65,38 +65,27 @@ for c in contributors:
         print(f"    {role}")
 
 sep("Assertions")
-headers = data.get("headers", [])
-expected_headers = [
-    "Introduction",
-    "Working together",
-    "Standardization and building for scale",
-    "Lessons learned: The future of the IBL",
-]
-assert headers == expected_headers, f"Unexpected headers: {headers}"
-print(f"  headers match expected {len(expected_headers)} entries ✓")
-
 names = [c["author"]["name"] for c in contributors]
-assert len(contributors) == 14, f"Expected 14 contributors, got {len(contributors)}"
-print("  contributor count: 14 ✓")
+assert len(contributors) == 27, f"Expected 27 contributors, got {len(contributors)}"
+print("  contributor count: 27 ✓")
 
-assert "Hannah M Bayer" in names
-print("  Hannah M Bayer present ✓")
+assert "Anna Lakunina" in names
+print("  Anna Lakunina present ✓")
 
-assert "Olivier Winter" in names
-print("  Olivier Winter present ✓")
+assert "Matteo Carandini" in names
+print("  Matteo Carandini present ✓")
 
-hb = next(c for c in contributors if c["author"]["name"] == "Hannah M Bayer")
-assert hb["author"]["affiliation"] == "Columbia University, USA"
-print("  Hannah M Bayer affiliation correct ✓")
+al = next(c for c in contributors if c["author"]["name"] == "Anna Lakunina")
+assert "Allen Institute for Neural Dynamics, Seattle, WA, USA" in al["author"]["affiliation"]
+print("  Anna Lakunina affiliation correct ✓")
 
-hb_roles = {r["role"] for r in hb["credit_levels"]}
-assert "writing-original-draft" in hb_roles
-assert "conceptualization" in hb_roles
-print("  Hannah M Bayer roles correct ✓")
+doi = data.get("doi")
+assert doi == "https://doi.org/10.1101/2025.02.04.636286", f"Unexpected DOI: {doi}"
+print("  DOI correct ✓")
 
-all_levels = {r["level"] for c in contributors for r in c.get("credit_levels", [])}
-assert all_levels <= {"equal", "supporting"}, f"Unexpected levels: {all_levels - {'equal', 'supporting'}}"
-print("  only equal/supporting levels used ✓")
+assets = data.get("assets", [])
+assert len(assets) == 50, f"Expected 50 assets, got {len(assets)}"
+print("  asset count: 50 ✓")
 
 print("\n" + "=" * 60)
 print("  ALL STEPS PASSED")

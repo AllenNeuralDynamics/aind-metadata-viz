@@ -86,14 +86,12 @@ def _ensure_db(store_dir: Path) -> None:
 def _seed_defaults(store_dir: Path) -> None:
     from .examples.authorship_extractor import AUTHORSHIP_PROJECT_NAME, authorship_extractor_contributions
     from .examples.authorship_extractor_real import AUTHORSHIP_REAL_PROJECT_NAME, authorship_extractor_real_contributions
-    from .examples.defaults import IBL_PROJECT_NAME, ibl_default_contributions
-    from .examples.ibl_decision import IBL_DECISION_PROJECT_NAME, ibl_decision_contributions
+    from .examples.np_opto import NP_OPTO_PROJECT_NAME, np_opto_contributions
 
     examples = [
-        (IBL_PROJECT_NAME, ibl_default_contributions),
         (AUTHORSHIP_PROJECT_NAME, authorship_extractor_contributions),
         (AUTHORSHIP_REAL_PROJECT_NAME, authorship_extractor_real_contributions),
-        (IBL_DECISION_PROJECT_NAME, ibl_decision_contributions),
+        (NP_OPTO_PROJECT_NAME, np_opto_contributions),
     ]
     ts = datetime.now(timezone.utc).isoformat()
     with _connect(store_dir) as conn:
