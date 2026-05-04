@@ -53,9 +53,11 @@ def _ensure_db(store_dir: Path) -> None:
         return
     store_dir.mkdir(parents=True, exist_ok=True)
     with _connect(store_dir) as conn:
+        conn.execute("DROP TABLE IF EXISTS versions")
+        conn.execute("DROP TABLE IF EXISTS project_passwords")
         conn.execute(
             """
-            CREATE TABLE IF NOT EXISTS versions (
+            CREATE TABLE versions (
                 id         TEXT PRIMARY KEY,
                 project_id TEXT NOT NULL,
                 timestamp  TEXT NOT NULL,
@@ -66,13 +68,13 @@ def _ensure_db(store_dir: Path) -> None:
         )
         conn.execute(
             """
-            CREATE INDEX IF NOT EXISTS idx_versions_project_ts
+            CREATE INDEX idx_versions_project_ts
                 ON versions (project_id, timestamp DESC)
             """
         )
         conn.execute(
             """
-            CREATE TABLE IF NOT EXISTS project_passwords (
+            CREATE TABLE project_passwords (
                 project_id TEXT PRIMARY KEY,
                 salt       TEXT NOT NULL,
                 pw_hash    TEXT NOT NULL
@@ -98,7 +100,7 @@ def _seed_defaults(store_dir: Path) -> None:
         for project_name, factory in examples:
             seed_id = f"seed:{project_name}"
             conn.execute(
-                "INSERT OR REPLACE INTO versions (id, project_id, timestamp, message, data) "
+                "INSERT INTO versions (id, project_id, timestamp, message, data) "
                 "VALUES (?, ?, ?, ?, ?)",
                 (seed_id, project_name, ts, f"Built-in seed for {project_name}", _to_json(factory())),
             )
