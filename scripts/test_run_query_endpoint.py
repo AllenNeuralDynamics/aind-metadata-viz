@@ -12,8 +12,8 @@ Tests:
 7. Non-object body (array)                 -> returns 400
 
 Usage:
-    python test_run_query_endpoint.py --env local    # Test against localhost:5006
-    python test_run_query_endpoint.py --env prod     # Test against production deployment
+    python test_retrieve_records_endpoint.py --env local    # Test against localhost:5006
+    python test_retrieve_records_endpoint.py --env prod     # Test against production deployment
 """
 
 import json

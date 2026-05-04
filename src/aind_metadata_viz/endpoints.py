@@ -19,7 +19,7 @@ import requests
 import logging
 
 from biodata_query.llm.endpoint import handle_get_query
-from biodata_query.query import run_query
+from biodata_query.query import retrieve_records
 
 
 CLASS_MAPPING = {
@@ -554,7 +554,7 @@ class RunQueryHandler(RequestHandler):
 
         try:
             result = await asyncio.get_event_loop().run_in_executor(
-                None, lambda: run_query(data, names_only=names_only, limit=limit, projection=projection)
+                None, lambda: retrieve_records(data, names_only=names_only, limit=limit, projection=projection)
             )
             response_body = {
                 "backend": result.backend,
