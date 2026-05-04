@@ -119,7 +119,7 @@ def np_opto_contributions() -> ProjectContributions:
                     affiliation=[_AFF[1]],
                 ),
                 credit_levels=[
-                    _rc(_DC), _rc(_IN),
+                    _rc(_DC), _rc(_FA), _rc(_IN), _rc(_VI), _rc(_WR),
                 ],
             ),
             # Karolina Z Socha — equal first author (*)
@@ -210,7 +210,7 @@ def np_opto_contributions() -> ProjectContributions:
                     affiliation=[_AFF[1]],
                 ),
                 credit_levels=[
-                    _rc(_DC), _rc(_FA), _rc(_SW), _rc(_VI), _rc(_WR),
+                    _rc(_SW),
                 ],
             ),
             # Anna Li
@@ -240,7 +240,7 @@ def np_opto_contributions() -> ProjectContributions:
                     affiliation=[_AFF[6]],
                 ),
                 credit_levels=[
-                    _rc(_IN), _rc(_ME),
+                    _rc(_ME),
                 ],
             ),
             # Meghan Olsen
@@ -310,7 +310,7 @@ def np_opto_contributions() -> ProjectContributions:
                     affiliation=[_AFF[8]],
                 ),
                 credit_levels=[
-                    _rc(_FA), _rc(_FN), _rc(_SU),
+                    _rc(_FA), _rc(_FN), _rc(_ME), _rc(_SU),
                 ],
             ),
             # Jonathan T. Ting
@@ -340,7 +340,7 @@ def np_opto_contributions() -> ProjectContributions:
                     affiliation=[_AFF[4], _AFF[5]],
                 ),
                 credit_levels=[
-                    _rc(_FN), _rc(_RE), _rc(_SU),
+                    _rc(_C), _rc(_FN), _rc(_RE), _rc(_SU),
                 ],
             ),
             # Nicholas A Steinmetz
@@ -371,7 +371,7 @@ def np_opto_contributions() -> ProjectContributions:
                     affiliation=[_AFF[1]],
                 ),
                 credit_levels=[
-                    _rc(_C), _rc(_FA), _rc(_FN), _rc(_PA), _rc(_RE), _rc(_SW),
+                    _rc(_C), _rc(_FA), _rc(_FN), _rc(_ME), _rc(_PA), _rc(_RE), _rc(_SW),
                     _rc(_SU), _rc(_VI), _rc(_WO), _rc(_WR),
                 ],
             ),
