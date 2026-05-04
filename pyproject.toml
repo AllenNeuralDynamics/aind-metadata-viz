@@ -30,7 +30,7 @@ dependencies = [
     'aind-metadata-upgrader>=0.13.6,<1',
     'numpy<2.0',
     'vl-convert-python',
-    'biodata-query[panel] @ git+https://github.com/AllenNeuralDynamics/biodata-query.git@v0.4.2',
+    'biodata-query[panel] @ git+https://github.com/AllenNeuralDynamics/biodata-query.git@v0.5.0',
 ]
 
 [project.optional-dependencies]

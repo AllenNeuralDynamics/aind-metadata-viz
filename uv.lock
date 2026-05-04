@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = ">=3.10"
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'win32'",
@@ -77,16 +77,16 @@ wheels = [
 
 [[package]]
 name = "aind-metadata-upgrader"
-version = "0.13.2"
+version = "0.13.10"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aind-data-access-api", extra = ["docdb"] },
     { name = "aind-data-schema" },
     { name = "packaging" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/26/39/aecedd68f6a7f44dbd3c398bc71a68348719e4464531c5d8dd42f2723e8a/aind_metadata_upgrader-0.13.2.tar.gz", hash = "sha256:b0f2d7d7373a004b662c8bc0960d965b97edb50ba96c89ca1a65245a6fd30c91", size = 1153119, upload-time = "2026-04-20T17:57:53.177Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/c2/1f/d16590da9a0d6897e0742477e3ec39abdce79ea534efe22f9f08550d4f98/aind_metadata_upgrader-0.13.10.tar.gz", hash = "sha256:10b3178744f0df5fcc6d0eaa8825ba3e79610d4ad4c947c1f08ccfde1c81323d", size = 1224750, upload-time = "2026-05-01T02:48:05.315Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/29/79/bbf2b00f682003bf897e684d1bf31a8a4550f4e680e26e97841b6fc6feb9/aind_metadata_upgrader-0.13.2-py3-none-any.whl", hash = "sha256:4f0a2327d0abcfee5d53370a62216b348275f64d3548895ea185a1c60ed02fb5", size = 85494, upload-time = "2026-04-20T17:57:52.003Z" },
+    { url = "https://files.pythonhosted.org/packages/96/f2/6c1f811c5f3f4cb84d93de64a381ec6d889d2a67aa7c6180898cfd7e9dc8/aind_metadata_upgrader-0.13.10-py3-none-any.whl", hash = "sha256:0bb15363b2ae09905a54da4bb7a734b12d4f94269e7dbf0a0ab83ba948984c8f", size = 89166, upload-time = "2026-05-01T02:48:03.471Z" },
 ]
 
 [[package]]
@@ -145,10 +145,10 @@ dev = [
 requires-dist = [
     { name = "aind-data-access-api", extras = ["docdb"] },
     { name = "aind-data-schema", specifier = ">=2.6.0,<3" },
-    { name = "aind-metadata-upgrader", specifier = ">=0.11.3,<1" },
+    { name = "aind-metadata-upgrader", specifier = ">=0.13.6,<1" },
     { name = "aind-metadata-validator", specifier = ">=0.11.6,<2" },
     { name = "altair" },
-    { name = "biodata-query", extras = ["panel"], git = "https://github.com/AllenNeuralDynamics/biodata-query.git?rev=v0.3.1" },
+    { name = "biodata-query", extras = ["panel"], git = "https://github.com/AllenNeuralDynamics/biodata-query.git?rev=v0.5.0" },
     { name = "black", marker = "extra == 'dev'" },
     { name = "coverage", marker = "extra == 'dev'" },
     { name = "flake8", marker = "extra == 'dev'" },
@@ -319,8 +319,8 @@ wheels = [
 
 [[package]]
 name = "biodata-query"
-version = "0.3.1"
-source = { git = "https://github.com/AllenNeuralDynamics/biodata-query.git?rev=v0.3.1#9179601a2a1d99c988a57e37302ac6e95531f2f5" }
+version = "0.5.0"
+source = { git = "https://github.com/AllenNeuralDynamics/biodata-query.git?rev=v0.5.0#04c9528787160979571557b9aeeb186995b5f4c0" }
 dependencies = [
     { name = "aind-data-access-api", extra = ["docdb"] },
     { name = "aind-data-schema" },
