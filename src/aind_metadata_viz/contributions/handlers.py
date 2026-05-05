@@ -16,8 +16,10 @@ GET  /contributions/get?project=<name>&history=true
 POST /contributions/post?project=<name>[&password=<hash>]
     Body: JSON or YAML string of contribution data.
     Stores a new versioned commit and returns the commit hash.
-    If the project is password-protected, *password* (a pre-hashed string)
-    must be supplied; omitting or providing the wrong value returns 401.
+    If *password* is supplied and the project has no password yet, the project
+    is locked with that password going forward.
+    If the project is already locked, *password* must match the stored hash;
+    omitting or supplying the wrong value returns 401.
 """
 
 import json
@@ -26,7 +28,7 @@ from tornado.web import RequestHandler
 
 from . import from_json, from_yaml, get_contributions, list_project_commits, store_contributions, to_json, to_yaml
 from .models import ProjectContributions
-from .store import get_contributions_by_doi, is_project_locked, verify_project_password
+from .store import get_contributions_by_doi, is_project_locked, set_project_password, verify_project_password
 
 
 class ContributionsGetHandler(RequestHandler):
@@ -142,6 +144,9 @@ class ContributionsPostHandler(RequestHandler):
             self.set_status(401)
             self.write(json.dumps({"error": "Unauthorized"}))
             return
+
+        if password and not is_project_locked(project):
+            set_project_password(project, password)
 
         body = self.request.body
         if not body:

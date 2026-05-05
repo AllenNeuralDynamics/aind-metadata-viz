@@ -112,7 +112,7 @@ Stores and retrieves [CRediT](https://credit.niso.org/) authorship contributions
 | `GET /contributions/get?doi=<doi>` | Look up a project by DOI |
 | `POST /contributions/post?project=<name>[&message=<msg>][&password=<hash>]` | Store a new version; body is JSON or YAML |
 
-All models are publicly readable — GET requests never require a password. To **save** to a password-protected project, supply `?password=<hash>` on the POST request; omitting or supplying the wrong value returns `401`.
+All models are publicly readable — GET requests never require a password. To **lock** a project, supply `?password=<hash>` on a POST to an unlocked project; that hash becomes the required password for all future saves. To **re-save** a locked project, supply the same `?password=<hash>`; omitting or supplying the wrong value returns `401`.
 
 Pull the seeded IBL example to see a complete payload with all fields:
 
