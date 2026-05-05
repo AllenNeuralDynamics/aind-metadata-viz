@@ -110,9 +110,9 @@ Stores and retrieves [CRediT](https://credit.niso.org/) authorship contributions
 | `GET /contributions/get?project=<name>&commit=<hash>` | Contribution data at a specific commit |
 | `GET /contributions/get?project=<name>&history=true` | List of all commits, newest first |
 | `GET /contributions/get?doi=<doi>` | Look up a project by DOI |
-| `POST /contributions/post?project=<name>[&message=<msg>]` | Store a new version; body is JSON or YAML |
+| `POST /contributions/post?project=<name>[&message=<msg>][&password=<hash>]` | Store a new version; body is JSON or YAML |
 
-Add `?password=<hash>` to any GET request for password-protected projects; omitting or supplying the wrong value returns `401`.
+All models are publicly readable — GET requests never require a password. To **save** to a password-protected project, supply `?password=<hash>` on the POST request; omitting or supplying the wrong value returns `401`.
 
 Pull the seeded IBL example to see a complete payload with all fields:
 

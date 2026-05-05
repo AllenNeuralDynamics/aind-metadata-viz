@@ -735,12 +735,6 @@ class TestGetContributionsByDoi(unittest.TestCase):
 
 
 class TestGetHandlerWithPassword(ContributionsHandlerTestCase):
-    def _patch_verify(self, return_value):
-        return patch(
-            "aind_metadata_viz.contributions.handlers.verify_project_password",
-            return_value=return_value,
-        )
-
     def _patch_doi(self, contributions):
         return patch(
             "aind_metadata_viz.contributions.handlers.get_contributions_by_doi",
@@ -752,35 +746,21 @@ class TestGetHandlerWithPassword(ContributionsHandlerTestCase):
         store_contributions(name, pc, store_dir=self._store_dir)
         return pc
 
-    def test_no_password_set_project_returns_200(self):
+    def test_get_always_public_no_password(self):
         self._seed_project()
-        with self._patch_get(), self._patch_verify(True):
+        with self._patch_get():
             resp = self.fetch("/contributions/get?project=pw-handler-project")
             self.assertEqual(resp.code, 200)
 
-    def test_correct_password_returns_200(self):
+    def test_get_always_public_with_password_param(self):
         self._seed_project()
-        with self._patch_get(), self._patch_verify(True):
-            resp = self.fetch("/contributions/get?project=pw-handler-project&password=abc123")
+        with self._patch_get():
+            resp = self.fetch("/contributions/get?project=pw-handler-project&password=anything")
             self.assertEqual(resp.code, 200)
-
-    def test_wrong_password_returns_401(self):
-        self._seed_project()
-        with self._patch_get(), self._patch_verify(False):
-            resp = self.fetch("/contributions/get?project=pw-handler-project&password=wrong")
-            self.assertEqual(resp.code, 401)
-            body = json.loads(resp.body)
-            self.assertIn("error", body)
-
-    def test_missing_password_returns_401_when_required(self):
-        self._seed_project()
-        with self._patch_get(), self._patch_verify(False):
-            resp = self.fetch("/contributions/get?project=pw-handler-project")
-            self.assertEqual(resp.code, 401)
 
     def test_doi_lookup_returns_200(self):
         pc = _make_project("doi-handler-project")
-        with self._patch_doi(pc), self._patch_verify(True):
+        with self._patch_doi(pc):
             resp = self.fetch("/contributions/get?doi=10.1234/test")
             self.assertEqual(resp.code, 200)
             body = json.loads(resp.body)
@@ -795,17 +775,65 @@ class TestGetHandlerWithPassword(ContributionsHandlerTestCase):
             resp = self.fetch("/contributions/get?doi=10.9999/nope")
             self.assertEqual(resp.code, 404)
 
-    def test_doi_wrong_password_returns_401(self):
-        pc = _make_project("doi-handler-project")
-        with self._patch_doi(pc), self._patch_verify(False):
-            resp = self.fetch("/contributions/get?doi=10.1234/test&password=wrong")
-            self.assertEqual(resp.code, 401)
-
     def test_missing_both_project_and_doi_returns_400(self):
         resp = self.fetch("/contributions/get")
         self.assertEqual(resp.code, 400)
         body = json.loads(resp.body)
         self.assertIn("error", body)
+
+
+class TestPostHandlerWithPassword(ContributionsHandlerTestCase):
+    def _patch_verify(self, return_value):
+        return patch(
+            "aind_metadata_viz.contributions.handlers.verify_project_password",
+            return_value=return_value,
+        )
+
+    def test_post_no_password_set_returns_200(self):
+        body = _make_project_json("handler-project")
+        with self._patch_store(), self._patch_verify(True):
+            resp = self.fetch(
+                "/contributions/post?project=handler-project",
+                method="POST",
+                body=body,
+                headers={"Content-Type": "application/json"},
+            )
+            self.assertEqual(resp.code, 200)
+
+    def test_post_correct_password_returns_200(self):
+        body = _make_project_json("handler-project")
+        with self._patch_store(), self._patch_verify(True):
+            resp = self.fetch(
+                "/contributions/post?project=handler-project&password=correct",
+                method="POST",
+                body=body,
+                headers={"Content-Type": "application/json"},
+            )
+            self.assertEqual(resp.code, 200)
+
+    def test_post_wrong_password_returns_401(self):
+        body = _make_project_json("handler-project")
+        with self._patch_verify(False):
+            resp = self.fetch(
+                "/contributions/post?project=handler-project&password=wrong",
+                method="POST",
+                body=body,
+                headers={"Content-Type": "application/json"},
+            )
+            self.assertEqual(resp.code, 401)
+            data = json.loads(resp.body)
+            self.assertIn("error", data)
+
+    def test_post_missing_password_returns_401_when_required(self):
+        body = _make_project_json("handler-project")
+        with self._patch_verify(False):
+            resp = self.fetch(
+                "/contributions/post?project=handler-project",
+                method="POST",
+                body=body,
+                headers={"Content-Type": "application/json"},
+            )
+            self.assertEqual(resp.code, 401)
 
 
 if __name__ == "__main__":

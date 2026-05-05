@@ -78,6 +78,7 @@ class Author(Person):
     """A person with an affiliation, used for display purposes."""
 
     affiliation: List[str] = Field(default_factory=list, description="List of affiliations for the contributor")
+    other_names: List[str] = Field(default_factory=list)
     email: Optional[str] = Field(default=None, description="Optional email address for the contributor")
 
 

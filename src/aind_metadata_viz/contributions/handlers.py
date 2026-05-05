@@ -2,21 +2,22 @@
 
 Routes
 ------
-GET  /contributions/get?project=<name>[&commit=<hash>][&password=<hash>]
+GET  /contributions/get?project=<name>[&commit=<hash>]
     Returns the latest (or specified) contribution data as JSON.
-    If the project is password-protected, *password* (a pre-hashed string)
-    must be supplied; omitting or providing the wrong value returns 401.
+    All models are publicly readable without a password.
 
-GET  /contributions/get?doi=<doi>[&password=<hash>]
+GET  /contributions/get?doi=<doi>
     Looks up the latest version of any project whose DOI matches *doi*.
 
 GET  /contributions/get?project=<name>&history=true
     Returns a list of commits for the project, newest first.
     Each entry: {"commit": "<sha>", "timestamp": "<iso8601>", "message": "<str>"}
 
-POST /contributions/post?project=<name>
+POST /contributions/post?project=<name>[&password=<hash>]
     Body: JSON or YAML string of contribution data.
     Stores a new versioned commit and returns the commit hash.
+    If the project is password-protected, *password* (a pre-hashed string)
+    must be supplied; omitting or providing the wrong value returns 401.
 """
 
 import json
@@ -93,12 +94,6 @@ class ContributionsGetHandler(RequestHandler):
             self.write(json.dumps(commits))
             return
 
-        password = self.get_argument("password", None)
-        if not verify_project_password(project, password or ""):
-            self.set_status(401)
-            self.write(json.dumps({"error": "Unauthorized"}))
-            return
-
         commit = self.get_argument("commit", None)
         fmt = self.get_argument("format", "json").lower()
 
@@ -140,6 +135,12 @@ class ContributionsPostHandler(RequestHandler):
         if not project:
             self.set_status(400)
             self.write(json.dumps({"error": "project query parameter is required"}))
+            return
+
+        password = self.get_argument("password", None)
+        if not verify_project_password(project, password or ""):
+            self.set_status(401)
+            self.write(json.dumps({"error": "Unauthorized"}))
             return
 
         body = self.request.body
