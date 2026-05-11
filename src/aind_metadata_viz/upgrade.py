@@ -1,93 +1,31 @@
 from aind_data_access_api.document_db import MetadataDbClient
-from zombie_squirrel import custom
+from zombie_squirrel import metadata_upgrade
 import altair as alt
-import pandas as pd
 import panel as pn
 from aind_metadata_upgrader.upgrade import Upgrade
 from aind_metadata_viz.utils import AIND_COLORS, outer_style
 from aind_data_schema import __version__ as schema_version
 import copy
 import json
+import re
 import traceback
 
-# Redshift settings
-RDS_TABLE_NAME = "metadata_upgrade_status_prod"
+pn.extension("tabulator", "vega")
 
-pn.extension("tabulator")
-
-
-extra_columns = {
-    "_id": 1,
-    "data_description.data_level": 1,
-    "data_description.project_name": 1,
-    "name": 1,
-}
 
 client = MetadataDbClient(
     host="api.allenneuraldynamics.org",
     version="v1",
 )
 
-TTL_DAY = 24 * 60 * 60
 TTL_HOUR = 60 * 60
 
 
-@pn.cache(ttl=TTL_DAY)
-def get_extra_col_df():
-    print("Retrieving extra columns from DocDB...")
-
-    all_records = client.retrieve_docdb_records(
-        filter_query={},
-        projection={"_id": 1},
-        limit=0,
-    )
-    all_ids = [record["_id"] for record in all_records]
-
-    # Batch by 100 to avoid excessively large queries
-    batch_size = 100
-
-    records = []
-    for start_idx in range(0, len(all_ids), batch_size):
-        print(f"Retrieving records {start_idx} to {start_idx + batch_size}...")
-        end_idx = start_idx + batch_size
-        batch_ids = all_ids[start_idx:end_idx]
-        filter_query = {"_id": {"$in": batch_ids}}
-        batch_records = client.retrieve_docdb_records(
-            filter_query=filter_query,
-            projection=extra_columns,
-            limit=0,
-        )
-        records.extend(batch_records)
-
-    for i, record in enumerate(records):
-        data_description = record.get("data_description", {})
-        if data_description:
-            record["data_level"] = data_description.get("data_level", None)
-            record["project_name"] = data_description.get("project_name", None)
-            record.pop("data_description")
-
-        records[i] = record
-    print(f"Retrieved {len(records)} records from DocDB.")
-    return pd.DataFrame(records)
-
-
 @pn.cache(ttl=TTL_HOUR)
-def get_redshift_table():
-    print("Connecting to Redshift RDS...")
-    df = custom(RDS_TABLE_NAME)
-    print(f"Retrieved {len(df)} records from Redshift table.")
-    return df
-
-
 def get_data():
-    print("Loading extra columns from DocDB...")
-    extra_col_df = get_extra_col_df()
-    print("Loading Redshift table...")
-    df = get_redshift_table()
+    df = metadata_upgrade()
     if df is None or len(df) == 0:
-        return pn.pane.Markdown("**Table is empty or could not be read**")
-    print("Merging extra columns...")
-    df = df.merge(extra_col_df, how="left", left_on="v1_id", right_on="_id")
+        return None
     return df
 
 
@@ -474,10 +412,141 @@ def display_upgrade_results(results):
 
 
 def build_panel_app():
-    table_col = pn.Column()
-    button = pn.widgets.Button(name="Load Table", button_type="primary")
+    df = get_data()
 
-    summary_box = pn.pane.Markdown("", sizing_mode="stretch_width")
+    if df is None or len(df) == 0:
+        table_col = pn.pane.Markdown("**Table is empty or could not be read**")
+        summary_box = pn.pane.Markdown("")
+        top_row = summary_box
+    else:
+        n_success = len(df[df["status"] == "success"])
+        n_total = len(df)
+        summary_box = pn.pane.Markdown(
+            f"**Records upgraded:** {n_success}/{n_total}",
+            sizing_mode="stretch_width",
+        )
+
+        version_cols = [c for c in df.columns if re.fullmatch(r"\d+\.\d+\.\d+", c)]
+        version_cols_sorted = sorted(
+            version_cols,
+            key=lambda v: tuple(int(x) for x in v.split(".")),
+        )
+        if version_cols_sorted:
+            version_pct = [
+                {
+                    "version": v,
+                    "pct_success": (df[v] == "success").sum() / len(df) * 100,
+                }
+                for v in version_cols_sorted
+            ]
+            import pandas as pd
+            version_df = pd.DataFrame(version_pct)
+            version_chart = (
+                alt.Chart(version_df)
+                .mark_line(point=True)
+                .encode(
+                    x=alt.X(
+                        "version:O",
+                        sort=version_cols_sorted,
+                        title="Upgrader Version",
+                    ),
+                    y=alt.Y(
+                        "pct_success:Q",
+                        title="% Success",
+                        scale=alt.Scale(domain=[0, 100], clamp=True),
+                    ),
+                    tooltip=[
+                        alt.Tooltip("version:O", title="Version"),
+                        alt.Tooltip("pct_success:Q", title="% Success", format=".1f"),
+                    ],
+                )
+                .properties(
+                    width="container",
+                    height=150,
+                    title="% Upgrade Success Across Versions",
+                )
+            )
+            top_row = pn.Row(
+                summary_box,
+                pn.pane.Vega(version_chart, sizing_mode="stretch_width"),
+                sizing_mode="stretch_width",
+                align="center",
+            )
+        else:
+            top_row = summary_box
+
+        tab = pn.widgets.Tabulator(
+            df,
+            sizing_mode="stretch_width",
+            height=800,
+            header_filters=True,
+            disabled=True,
+            page_size=500,
+            show_index=False,
+        )
+        success_detail = (
+            df.groupby(["project_name", "status"])
+            .size()
+            .reset_index(name="count")
+        )
+
+        pct_detail = success_detail.copy()
+        totals = pct_detail.groupby("project_name")["count"].transform("sum")
+        pct_detail["pct"] = pct_detail["count"] / totals * 100
+        pct_success = pct_detail[pct_detail["status"] == "success"].copy()
+        project_order = (
+            success_detail.groupby("project_name")["count"]
+            .sum()
+            .sort_values(ascending=False)
+            .index.tolist()
+        )
+
+        chart = (
+            alt.Chart(success_detail)
+            .mark_bar()
+            .encode(
+                x=alt.X("project_name:N", sort=project_order, title="Project Name"),
+                y=alt.Y("count:Q", title="Count"),
+                color=alt.Color("status:N", legend=None),
+                tooltip=["project_name:N", "status:N", "count:Q"],
+            )
+            .properties(
+                width="container",
+                height=500,
+                title="Upgrade Status Breakdown by Project",
+            )
+            .interactive()
+        )
+
+        pct_chart = (
+            alt.Chart(pct_success)
+            .mark_bar()
+            .encode(
+                x=alt.X("project_name:N", sort=project_order, title="Project Name"),
+                y=alt.Y(
+                    "pct:Q",
+                    title="% Success",
+                    scale=alt.Scale(domain=[0, 100], clamp=True),
+                ),
+                tooltip=[
+                    alt.Tooltip("project_name:N", title="Project"),
+                    alt.Tooltip("pct:Q", title="% Success", format=".1f"),
+                ],
+            )
+            .properties(
+                width="container",
+                height=400,
+                title="% Upgrade Success by Project",
+            )
+            .interactive()
+        )
+
+        table_col = pn.Column(
+            tab,
+            pn.pane.Vega(chart, sizing_mode="stretch_width"),
+            pn.pane.Vega(pct_chart, sizing_mode="stretch_width"),
+            sizing_mode="stretch_width",
+        )
 
     text_input = pn.widgets.TextInput(
         name="",
@@ -513,51 +582,6 @@ def build_panel_app():
         output_box[:] = [display_upgrade_results(results)]
         copy_url_button.disabled = False
 
-    def load_table(event):
-        table_col.loading = True
-        df = get_data()
-
-        summary_box.object = f"""
-            **Records upgraded:** {len(df[df['status'] == "success"])}/{len(df)}
-        """
-
-        tab = pn.widgets.Tabulator(
-            df,
-            sizing_mode="stretch_width",
-            height=800,
-            header_filters=True,
-            disabled=True,
-            page_size=500,
-            show_index=False,
-        )
-        success_detail = (
-            df.groupby(["project_name", "status"])
-            .size()
-            .reset_index(name="count")
-        )
-        chart = (
-            alt.Chart(success_detail)
-            .mark_bar()
-            .encode(
-                x=alt.X("project_name:N", sort="-y", title="Project Name"),
-                y=alt.Y("count:Q", title="Count"),
-                color=alt.Color("status:N", title="Status"),
-                tooltip=["project_name:N", "status:N", "count:Q"],
-            )
-            .properties(
-                width="container",
-                height=500,
-                title="Upgrade Status Breakdown by Project",
-            )
-            .interactive()
-        )
-        table_col[:] = [
-            "# Metadata Upgrade Status Table",
-            tab,
-            pn.pane.Vega(chart, sizing_mode="stretch_width"),
-        ]
-        table_col.loading = False
-
     def run_upgrade_callback(event):
         record_id_or_name = text_input.value
         if not record_id_or_name:
@@ -568,27 +592,19 @@ def build_panel_app():
             ]
             return
 
-        # Show loading state
         output_box.loading = True
         upgrade_button.disabled = True
         copy_url_button.disabled = True
 
         try:
-            # Use detailed upgrade function
             results = run_upgrade(record_id_or_name)
-
-            # Display results with side-by-side comparison
             output_box[:] = [display_upgrade_results(results)]
-
-            # Enable copy URL button after successful upgrade
             copy_url_button.disabled = False
         finally:
-            # Clear loading state
             output_box.loading = False
             upgrade_button.disabled = False
 
     def copy_url_callback(event):
-        # Generate JavaScript to copy current URL to clipboard
         js_code = """
             var url = window.location.href;
             navigator.clipboard.writeText(url).then(function() {
@@ -600,10 +616,8 @@ def build_panel_app():
         js_pane.object = ""
         js_pane.object = f"<script>{js_code}</script>"
 
-    button.on_click(load_table)
     upgrade_button.on_click(run_upgrade_callback)
     copy_url_button.on_click(copy_url_callback)
-    table_col.append(button)
     input_label = pn.pane.Markdown("**Enter _id or name:**")
 
     input_row = pn.Row(
@@ -618,7 +632,7 @@ def build_panel_app():
 
     main_col = pn.Column(
         "# Metadata Upgrade Status Table",
-        summary_box,
+        top_row,
         table_col,
         input_label,
         input_row,
