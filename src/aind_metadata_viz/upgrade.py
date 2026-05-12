@@ -18,10 +18,6 @@ client = MetadataDbClient(
     version="v1",
 )
 
-TTL_HOUR = 60 * 60
-
-
-@pn.cache(ttl=TTL_HOUR)
 def get_data():
     df = metadata_upgrade()
     if df is None or len(df) == 0:
