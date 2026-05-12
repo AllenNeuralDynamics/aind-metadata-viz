@@ -431,7 +431,7 @@ def build_panel_app():
             version_pct = [
                 {
                     "version": v,
-                    "pct_success": (df[v] == "success").sum() / len(df) * 100,
+                    "pct_success": (df[v] == "success").sum() / df[v].isin(["success", "failed"]).sum() * 100,
                 }
                 for v in version_cols_sorted
             ]
@@ -511,7 +511,6 @@ def build_panel_app():
                 height=500,
                 title="Upgrade Status Breakdown by Project",
             )
-            .interactive()
         )
 
         pct_chart = (
@@ -534,7 +533,6 @@ def build_panel_app():
                 height=400,
                 title="% Upgrade Success by Project",
             )
-            .interactive()
         )
 
         table_col = pn.Column(
