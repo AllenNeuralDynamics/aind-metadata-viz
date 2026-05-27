@@ -1,6 +1,6 @@
 """AuthorshipExtractor example: converted from AllenNeuralDynamics/AuthorshipExtractor authors.yml."""
 
-from ..models import (
+from aind_metadata_viz.contributions.models import (
     Author,
     AuthorContribution,
     ContributionLevel,

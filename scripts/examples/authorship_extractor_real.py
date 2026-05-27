@@ -2,7 +2,7 @@
 
 from datetime import date
 
-from ..models import (
+from aind_metadata_viz.contributions.models import (
     Author,
     AuthorContribution,
     ContributionLevel,

@@ -7,7 +7,7 @@ Contribution matrix read from paper Fig. (CRediT table).
 All contributions represented as EQUAL (★) — no H/M/L differentiation in source.
 """
 
-from ..models import (
+from aind_metadata_viz.contributions.models import (
     Author,
     AuthorContribution,
     AuthorLevel,

@@ -30,9 +30,6 @@ from .store import (
     store_contributions,
     verify_project_password,
 )
-from .examples.authorship_extractor import AUTHORSHIP_PROJECT_NAME, authorship_extractor_contributions
-from .examples.authorship_extractor_real import AUTHORSHIP_REAL_PROJECT_NAME, authorship_extractor_real_contributions
-from .examples.np_opto import NP_OPTO_PROJECT_NAME, np_opto_contributions
 
 __all__ = [
     # models
@@ -54,11 +51,4 @@ __all__ = [
     "set_project_password",
     "verify_project_password",
     "get_contributions_by_doi",
-    # defaults / examples
-    "AUTHORSHIP_PROJECT_NAME",
-    "authorship_extractor_contributions",
-    "AUTHORSHIP_REAL_PROJECT_NAME",
-    "authorship_extractor_real_contributions",
-    "NP_OPTO_PROJECT_NAME",
-    "np_opto_contributions",
 ]
