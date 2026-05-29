@@ -62,6 +62,9 @@ class RoleContribution(BaseModel):
         default=None,
         description="Optional list of paper headers/subheaders that the contribution is linked to (e.g. Introduction, Methods)",
     )
+    linked_assets: Optional[List[str]] = Field(
+        default=None,
+    )
 
     @model_validator(mode="after")
     def check_dates(self):
@@ -91,6 +94,18 @@ class AuthorContribution(BaseModel):
         description="Optional publication authorship position, used for display purposes (e.g. first, middle, senior)",
     )
     credit_levels: List[RoleContribution] = Field(default_factory=list)
+    from_asset: bool = Field(
+        default=False,
+        description="True when an author is listed in the metadata of a data asset",
+    )
+    
+    
+    @model_validator(mode="after")
+    def check_from_asset(self):
+        if not self.from_asset:
+            if any(role.linked_assets for role in self.credit_levels):
+                self.from_asset = True
+        return self
 
 
 class ProjectContributions(BaseModel):
