@@ -111,6 +111,7 @@ Stores and retrieves [CRediT](https://credit.niso.org/) authorship contributions
 | `GET /contributions/get?project=<name>&history=true` | List of all commits, newest first |
 | `GET /contributions/get?doi=<doi>` | Look up a project by DOI |
 | `POST /contributions/post?project=<name>[&message=<msg>][&password=<hash>]` | Store a new version; body is JSON or YAML |
+| `GET /contributions/token?doi=<doi>&type=add_author\|edit_author[&author=<name>][&days=<n>][&password=<hash>]` | Create a scoped one-time (`add_author`) or reusable (`edit_author`) token for a project |
 
 All models are publicly readable — GET requests never require a password. To **lock** a project, supply `?password=<hash>` on a POST to an unlocked project; that hash becomes the required password for all future saves. To **re-save** a locked project, supply the same `?password=<hash>`; omitting or supplying the wrong value returns `401`.
 
