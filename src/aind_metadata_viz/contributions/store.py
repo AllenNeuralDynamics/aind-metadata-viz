@@ -24,7 +24,7 @@ import hmac
 import json
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Union
 
 import boto3
@@ -223,11 +223,12 @@ def get_contributions_by_doi(
     # Collect the latest key per project by listing with delimiter
     # Skip _passwords/ which is not a project prefix
     passwords_prefix = f"{_S3_PREFIX}/_passwords/"
+    tokens_prefix = f"{_S3_PREFIX}/_tokens/"
     latest_keys = []
     for page in paginator.paginate(Bucket=_S3_BUCKET, Prefix=versions_prefix, Delimiter="/"):
         for cp in page.get("CommonPrefixes", []):
             proj_prefix = cp["Prefix"]
-            if proj_prefix == passwords_prefix:
+            if proj_prefix in (passwords_prefix, tokens_prefix):
                 continue
             proj_keys = []
             for inner_page in paginator.paginate(Bucket=_S3_BUCKET, Prefix=proj_prefix):
@@ -244,3 +245,108 @@ def get_contributions_by_doi(
                 return contrib
 
     raise FileNotFoundError(f"No project found with DOI '{doi}'")
+
+
+_MAX_TOKEN_DAYS = 365
+
+
+def _token_key(project_name: str) -> str:
+    return f"{_S3_PREFIX}/_tokens/{_safe_key(project_name)}.json"
+
+
+def create_token(
+    doi: str,
+    token_type: str,
+    author_name: Optional[str] = None,
+    expires_days: int = 365,
+    store_dir=None,  # retained for API compatibility; ignored
+) -> str:
+    """Create a scoped token for the project identified by *doi*.
+
+    Parameters
+    ----------
+    doi:
+        DOI of the target project.
+    token_type:
+        ``"add_author"`` (one-time use) or ``"edit_author"`` (scoped to
+        *author_name*, reusable until expiry).
+    author_name:
+        Required for ``"edit_author"`` tokens.
+    expires_days:
+        Days until expiry from now; capped at ``_MAX_TOKEN_DAYS`` (365).
+
+    Returns
+    -------
+    str
+        The UUID token the recipient presents in place of a password.
+    """
+    if token_type not in ("add_author", "edit_author"):
+        raise ValueError(
+            f"token_type must be 'add_author' or 'edit_author', got {token_type!r}"
+        )
+    if token_type == "edit_author" and not author_name:
+        raise ValueError("author_name is required for edit_author tokens")
+
+    contrib = get_contributions_by_doi(doi)
+    project_name = contrib.project_name
+
+    days = min(max(1, expires_days), _MAX_TOKEN_DAYS)
+    expires_at = (datetime.now(timezone.utc) + timedelta(days=days)).isoformat()
+
+    token_id = uuid.uuid4().hex
+    key = _token_key(project_name)
+    existing = _get_json(key) or {"tokens": []}
+    existing["tokens"].append({
+        "token_id": token_id,
+        "token_type": token_type,
+        "author_name": author_name,
+        "expires_at": expires_at,
+        "used": False,
+    })
+    _put_json(key, existing)
+    return token_id
+
+
+def lookup_token(
+    project_name: str,
+    token_id: str,
+    store_dir=None,  # retained for API compatibility; ignored
+) -> Optional[dict]:
+    """Return the token record if it is valid (exists, unexpired, unused).
+
+    Returns ``None`` when the token is absent, expired, or already consumed.
+    The returned dict contains ``token_id``, ``token_type``, ``author_name``,
+    ``expires_at``, and ``used``.
+    """
+    key = _token_key(project_name)
+    data = _get_json(key)
+    if data is None:
+        return None
+
+    now = datetime.now(timezone.utc)
+    for token in data.get("tokens", []):
+        if token["token_id"] != token_id:
+            continue
+        if token.get("used"):
+            return None
+        if now > datetime.fromisoformat(token["expires_at"]):
+            return None
+        return token
+    return None
+
+
+def consume_token(
+    project_name: str,
+    token_id: str,
+    store_dir=None,  # retained for API compatibility; ignored
+) -> None:
+    """Mark *token_id* as used so it cannot be reused (for add_author tokens)."""
+    key = _token_key(project_name)
+    data = _get_json(key)
+    if data is None:
+        return
+    for token in data.get("tokens", []):
+        if token["token_id"] == token_id:
+            token["used"] = True
+            break
+    _put_json(key, data)

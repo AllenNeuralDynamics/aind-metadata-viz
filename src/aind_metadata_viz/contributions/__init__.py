@@ -28,6 +28,9 @@ from .store import (
     list_project_commits,
     set_project_password,
     store_contributions,
+    create_token,
+    lookup_token,
+    consume_token,
     verify_project_password,
 )
 
@@ -51,4 +54,7 @@ __all__ = [
     "set_project_password",
     "verify_project_password",
     "get_contributions_by_doi",
+    "create_token",
+    "lookup_token",
+    "consume_token",
 ]

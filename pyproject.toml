@@ -41,9 +41,8 @@ dev = [
     'flake8',
     'interrogate',
     'isort',
-    'Sphinx',
     'furo',
-    'watchfiles',
+    'pytest',
 ]
 
 [tool.setuptools.packages.find]
