@@ -26,6 +26,7 @@ PROJECT = f"integration-test-lifecycle-{int(time.time())}"
 PASSWORD = "sha256-integration-test-hash"
 GET_URL = f"{BASE_URL}/contributions/get"
 POST_URL = f"{BASE_URL}/contributions/post"
+TOKEN_URL = f"{BASE_URL}/contributions/token"
 
 print(f"Testing against: {BASE_URL}")
 print("=" * 60)
@@ -234,6 +235,292 @@ assert data.get("locked") is True
 print(f"  contributors: {names}")
 print(f"  sections: {data.get('sections')}")
 print(f"  locked: {data.get('locked')}")
+
+# ---------------------------------------------------------------------------
+# Step 8: Create add_author token without password on locked project → 401
+# ---------------------------------------------------------------------------
+
+sep("Step 8: GET token without password on locked project (expect 401)")
+r = requests.get(
+    TOKEN_URL,
+    params={"doi": "10.1234/integration-test", "type": "add_author"},
+)
+check(r, 401)
+
+# ---------------------------------------------------------------------------
+# Step 9: Create add_author token with correct password → 200
+# ---------------------------------------------------------------------------
+
+sep("Step 9: GET add_author token with correct password (expect 200)")
+r = requests.get(
+    TOKEN_URL,
+    params={
+        "doi": "10.1234/integration-test",
+        "type": "add_author",
+        "password": PASSWORD,
+    },
+)
+token_data = check(r, 200)
+assert token_data["type"] == "add_author"
+assert "token" in token_data
+assert token_data["expires_days"] == 365
+add_author_token = token_data["token"]
+print(f"  token: {add_author_token[:12]}...")
+print(f"  type: {token_data['type']}")
+print(f"  expires_days: {token_data['expires_days']}")
+
+# ---------------------------------------------------------------------------
+# Step 10: Use add_author token to add a 4th contributor (Diana)
+# ---------------------------------------------------------------------------
+
+V4 = {
+    "project_name": PROJECT,
+    "doi": "10.1234/integration-test",
+    "contributors": [
+        {
+            "author": {
+                "name": "Alice Nguyen",
+                "registry": "Open Researcher and Contributor ID (ORCID)",
+                "registry_identifier": "0000-0001-2345-6789",
+                "affiliation": ["Allen Institute for Neural Dynamics"],
+            },
+            "credit_levels": [
+                {"role": "conceptualization", "level": "lead"},
+                {"role": "writing-original-draft", "level": "lead"},
+            ],
+        },
+        {
+            "author": {
+                "name": "Bob Okafor",
+                "registry": "Open Researcher and Contributor ID (ORCID)",
+                "registry_identifier": "0000-0002-3456-7890",
+                "affiliation": ["Allen Institute for Neural Dynamics"],
+            },
+            "credit_levels": [
+                {"role": "data-curation", "level": "equal"},
+            ],
+        },
+        {
+            "author": {
+                "name": "Carmen Silva",
+                "registry": "Open Researcher and Contributor ID (ORCID)",
+                "registry_identifier": "0000-0003-4567-8901",
+                "affiliation": ["Allen Institute for Neural Dynamics"],
+            },
+            "credit_levels": [
+                {"role": "visualization", "level": "lead"},
+                {"role": "writing-review-editing", "level": "supporting"},
+            ],
+        },
+        {
+            "author": {
+                "name": "Diana Park",
+                "registry": "Open Researcher and Contributor ID (ORCID)",
+                "registry_identifier": "0000-0004-5678-9012",
+                "affiliation": ["Allen Institute for Neural Dynamics"],
+            },
+            "credit_levels": [
+                {"role": "software", "level": "lead"},
+            ],
+        },
+    ],
+    "sections": ["Introduction", "Methods", "Results"],
+}
+
+sep("Step 10: POST v4 using add_author token (add Diana)")
+r = requests.post(
+    f"{POST_URL}?project={PROJECT}&message=add+diana&password={add_author_token}",
+    data=json.dumps(V4).encode("utf-8"),
+    headers={"Content-Type": "application/json"},
+)
+v4 = check(r, 200)
+print(f"  commit v4: {v4['commit'][:12]}")
+
+# ---------------------------------------------------------------------------
+# Step 11: GET — verify all four contributors present
+# ---------------------------------------------------------------------------
+
+sep("Step 11: GET (verify 4 contributors after add_author token use)")
+r = requests.get(GET_URL, params={"project": PROJECT})
+data = check(r, 200)
+names = [c["author"]["name"] for c in data["contributors"]]
+assert len(names) == 4, f"expected 4 contributors, got {names}"
+assert "Diana Park" in names
+print(f"  contributors: {names}")
+
+# ---------------------------------------------------------------------------
+# Step 12: Try to reuse the consumed add_author token → 401
+# ---------------------------------------------------------------------------
+
+sep("Step 12: POST with consumed add_author token (expect 401)")
+r = requests.post(
+    f"{POST_URL}?project={PROJECT}&message=reuse+token&password={add_author_token}",
+    data=json.dumps(V4).encode("utf-8"),
+    headers={"Content-Type": "application/json"},
+)
+check(r, 401)
+
+# ---------------------------------------------------------------------------
+# Step 13: Create edit_author token without author param → 400
+# ---------------------------------------------------------------------------
+
+sep("Step 13: GET edit_author token without author param (expect 400)")
+r = requests.get(
+    TOKEN_URL,
+    params={
+        "doi": "10.1234/integration-test",
+        "type": "edit_author",
+        "password": PASSWORD,
+    },
+)
+check(r, 400)
+
+# ---------------------------------------------------------------------------
+# Step 14: Create edit_author token for Carmen Silva → 200
+# ---------------------------------------------------------------------------
+
+sep("Step 14: GET edit_author token for Carmen Silva (expect 200)")
+r = requests.get(
+    TOKEN_URL,
+    params={
+        "doi": "10.1234/integration-test",
+        "type": "edit_author",
+        "author": "Carmen Silva",
+        "days": "30",
+        "password": PASSWORD,
+    },
+)
+ea_data = check(r, 200)
+assert ea_data["type"] == "edit_author"
+assert "token" in ea_data
+assert ea_data["expires_days"] == 30
+edit_author_token = ea_data["token"]
+print(f"  token: {edit_author_token[:12]}...")
+print(f"  type: {ea_data['type']}")
+print(f"  expires_days: {ea_data['expires_days']}")
+
+# ---------------------------------------------------------------------------
+# Step 15: Use edit_author token to modify Carmen's credits
+# ---------------------------------------------------------------------------
+
+V5 = {
+    "project_name": PROJECT,
+    "doi": "10.1234/integration-test",
+    "contributors": [
+        {
+            "author": {
+                "name": "Alice Nguyen",
+                "registry": "Open Researcher and Contributor ID (ORCID)",
+                "registry_identifier": "0000-0001-2345-6789",
+                "affiliation": ["Allen Institute for Neural Dynamics"],
+            },
+            "credit_levels": [
+                {"role": "conceptualization", "level": "lead"},
+                {"role": "writing-original-draft", "level": "lead"},
+            ],
+        },
+        {
+            "author": {
+                "name": "Bob Okafor",
+                "registry": "Open Researcher and Contributor ID (ORCID)",
+                "registry_identifier": "0000-0002-3456-7890",
+                "affiliation": ["Allen Institute for Neural Dynamics"],
+            },
+            "credit_levels": [
+                {"role": "data-curation", "level": "equal"},
+            ],
+        },
+        {
+            "author": {
+                "name": "Carmen Silva",
+                "registry": "Open Researcher and Contributor ID (ORCID)",
+                "registry_identifier": "0000-0003-4567-8901",
+                "affiliation": ["Allen Institute for Neural Dynamics"],
+            },
+            "credit_levels": [
+                {"role": "visualization", "level": "lead"},
+                {"role": "writing-review-editing", "level": "lead"},
+                {"role": "software", "level": "supporting"},
+            ],
+        },
+        {
+            "author": {
+                "name": "Diana Park",
+                "registry": "Open Researcher and Contributor ID (ORCID)",
+                "registry_identifier": "0000-0004-5678-9012",
+                "affiliation": ["Allen Institute for Neural Dynamics"],
+            },
+            "credit_levels": [
+                {"role": "software", "level": "lead"},
+            ],
+        },
+    ],
+    "sections": ["Introduction", "Methods", "Results"],
+}
+
+sep("Step 15: POST v5 using edit_author token (modify Carmen's credits)")
+r = requests.post(
+    f"{POST_URL}?project={PROJECT}&message=edit+carmen&password={edit_author_token}",
+    data=json.dumps(V5).encode("utf-8"),
+    headers={"Content-Type": "application/json"},
+)
+v5 = check(r, 200)
+print(f"  commit v5: {v5['commit'][:12]}")
+
+# ---------------------------------------------------------------------------
+# Step 16: GET — verify Carmen changed; all four contributors still present
+# ---------------------------------------------------------------------------
+
+sep("Step 16: GET (verify Carmen updated, 4 contributors still present)")
+r = requests.get(GET_URL, params={"project": PROJECT})
+data = check(r, 200)
+names = [c["author"]["name"] for c in data["contributors"]]
+assert len(names) == 4, f"expected 4 contributors, got {names}"
+carmen = next(c for c in data["contributors"] if c["author"]["name"] == "Carmen Silva")
+carmen_roles = [cr["role"] for cr in carmen["credit_levels"]]
+assert "software" in carmen_roles, f"expected software role for Carmen, got {carmen_roles}"
+print(f"  contributors: {names}")
+print(f"  Carmen roles: {carmen_roles}")
+
+# ---------------------------------------------------------------------------
+# Step 17: Try to use edit_author token to add a new contributor → 403
+# ---------------------------------------------------------------------------
+
+V5_add = {
+    **V5,
+    "contributors": V5["contributors"] + [
+        {
+            "author": {
+                "name": "Evan Torres",
+                "registry": "Open Researcher and Contributor ID (ORCID)",
+                "registry_identifier": "0000-0005-6789-0123",
+                "affiliation": ["Allen Institute for Neural Dynamics"],
+            },
+            "credit_levels": [{"role": "investigation", "level": "equal"}],
+        }
+    ],
+}
+
+sep("Step 17: POST with edit_author token adding a new author (expect 403)")
+r = requests.post(
+    f"{POST_URL}?project={PROJECT}&message=add+evan+via+edit+token&password={edit_author_token}",
+    data=json.dumps(V5_add).encode("utf-8"),
+    headers={"Content-Type": "application/json"},
+)
+check(r, 403)
+
+# ---------------------------------------------------------------------------
+# Step 18: edit_author token is still reusable — can edit Carmen again
+# ---------------------------------------------------------------------------
+
+sep("Step 18: POST with edit_author token again (reusable, expect 200)")
+r = requests.post(
+    f"{POST_URL}?project={PROJECT}&message=carmen+second+edit&password={edit_author_token}",
+    data=json.dumps(V5).encode("utf-8"),
+    headers={"Content-Type": "application/json"},
+)
+v6 = check(r, 200)
+print(f"  commit v6: {v6['commit'][:12]}")
 
 print("\n" + "=" * 60)
 print("  ALL STEPS PASSED")
