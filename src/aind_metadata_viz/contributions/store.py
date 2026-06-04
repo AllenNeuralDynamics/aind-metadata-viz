@@ -248,6 +248,7 @@ def get_contributions_by_doi(
 
 
 _MAX_TOKEN_DAYS = 365
+_MAX_MULTI_AUTHOR_DAYS = 7
 
 
 def _token_key(project_name: str) -> str:
@@ -268,26 +269,30 @@ def create_token(
     project_name:
         Name of the target project.
     token_type:
-        ``"add_author"`` (one-time use) or ``"edit_author"`` (scoped to
-        *author_name*, reusable until expiry).
+        ``"add_author"`` (one-time use), ``"edit_author"`` (scoped to
+        *author_name*, reusable until expiry), or ``"multi_author"``
+        (reusable, lets multiple people each add themselves, capped at 7 days).
     author_name:
         Required for ``"edit_author"`` tokens.
     expires_days:
-        Days until expiry from now; capped at ``_MAX_TOKEN_DAYS`` (365).
+        Days until expiry from now; capped at ``_MAX_TOKEN_DAYS`` (365) for
+        ``add_author``/``edit_author``, or ``_MAX_MULTI_AUTHOR_DAYS`` (7) for
+        ``multi_author``.
 
     Returns
     -------
     str
         The UUID token the recipient presents in place of a password.
     """
-    if token_type not in ("add_author", "edit_author"):
+    if token_type not in ("add_author", "edit_author", "multi_author"):
         raise ValueError(
-            f"token_type must be 'add_author' or 'edit_author', got {token_type!r}"
+            f"token_type must be 'add_author', 'edit_author', or 'multi_author', got {token_type!r}"
         )
     if token_type == "edit_author" and not author_name:
         raise ValueError("author_name is required for edit_author tokens")
 
-    days = min(max(1, expires_days), _MAX_TOKEN_DAYS)
+    max_days = _MAX_MULTI_AUTHOR_DAYS if token_type == "multi_author" else _MAX_TOKEN_DAYS
+    days = min(max(1, expires_days), max_days)
     expires_at = (datetime.now(timezone.utc) + timedelta(days=days)).isoformat()
 
     token_id = uuid.uuid4().hex

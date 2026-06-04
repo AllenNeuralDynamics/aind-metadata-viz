@@ -523,6 +523,114 @@ r = requests.post(
 v6 = check(r, 200)
 print(f"  commit v6: {v6['commit'][:12]}")
 
+# ---------------------------------------------------------------------------
+# Step 19: Create multi_author token capped at 7 days → 200
+# ---------------------------------------------------------------------------
+
+sep("Step 19: GET multi_author token (expect 200, expires_days <= 7)")
+r = requests.get(
+    TOKEN_URL,
+    params={
+        "doi": DOI,
+        "type": "multi_author",
+        "days": "9999",
+        "password": PASSWORD,
+    },
+)
+ma_data = check(r, 200)
+assert ma_data["type"] == "multi_author"
+assert "token" in ma_data
+assert ma_data["expires_days"] <= 7, f"expected expires_days <= 7, got {ma_data['expires_days']}"
+multi_author_token = ma_data["token"]
+print(f"  token: {multi_author_token[:12]}...")
+print(f"  expires_days: {ma_data['expires_days']}")
+
+# ---------------------------------------------------------------------------
+# Step 20: First person uses multi_author token to add Evan Torres
+# ---------------------------------------------------------------------------
+
+V7 = {
+    "project_name": PROJECT,
+    "doi": DOI,
+    "contributors": V5["contributors"] + [
+        {
+            "author": {
+                "name": "Evan Torres",
+                "registry": "Open Researcher and Contributor ID (ORCID)",
+                "registry_identifier": "0000-0005-6789-0123",
+                "affiliation": ["Allen Institute for Neural Dynamics"],
+            },
+            "credit_levels": [{"role": "investigation", "level": "equal"}],
+        }
+    ],
+    "sections": ["Introduction", "Methods", "Results"],
+}
+
+sep("Step 20: POST using multi_author token (first use — add Evan, expect 200)")
+r = requests.post(
+    f"{POST_URL}?project={PROJECT}&message=add+evan+via+multi+token&password={multi_author_token}",
+    data=json.dumps(V7).encode("utf-8"),
+    headers={"Content-Type": "application/json"},
+)
+v7 = check(r, 200)
+print(f"  commit v7: {v7['commit'][:12]}")
+
+# ---------------------------------------------------------------------------
+# Step 21: Second person uses the same token to add Fatima (reusable)
+# ---------------------------------------------------------------------------
+
+V8 = {
+    "project_name": PROJECT,
+    "doi": DOI,
+    "contributors": V7["contributors"] + [
+        {
+            "author": {
+                "name": "Fatima Hassan",
+                "registry": "Open Researcher and Contributor ID (ORCID)",
+                "registry_identifier": "0000-0006-7890-1234",
+                "affiliation": ["Allen Institute for Neural Dynamics"],
+            },
+            "credit_levels": [{"role": "validation", "level": "equal"}],
+        }
+    ],
+    "sections": ["Introduction", "Methods", "Results"],
+}
+
+sep("Step 21: POST using same multi_author token (second use — add Fatima, expect 200)")
+r = requests.post(
+    f"{POST_URL}?project={PROJECT}&message=add+fatima+via+multi+token&password={multi_author_token}",
+    data=json.dumps(V8).encode("utf-8"),
+    headers={"Content-Type": "application/json"},
+)
+v8 = check(r, 200)
+print(f"  commit v8: {v8['commit'][:12]}")
+
+# ---------------------------------------------------------------------------
+# Step 22: GET — verify Evan and Fatima both added
+# ---------------------------------------------------------------------------
+
+sep("Step 22: GET (verify Evan and Fatima present)")
+r = requests.get(GET_URL, params={"project": PROJECT})
+data = check(r, 200)
+names = [c["author"]["name"] for c in data["contributors"]]
+assert "Evan Torres" in names, f"Evan Torres not found in {names}"
+assert "Fatima Hassan" in names, f"Fatima Hassan not found in {names}"
+print(f"  contributors: {names}")
+
+# ---------------------------------------------------------------------------
+# Step 23: multi_author token cannot remove an existing author → 403
+# ---------------------------------------------------------------------------
+
+V8_remove = {**V8, "contributors": [c for c in V8["contributors"] if c["author"]["name"] != "Alice Nguyen"]}
+
+sep("Step 23: POST with multi_author token removing an author (expect 403)")
+r = requests.post(
+    f"{POST_URL}?project={PROJECT}&message=remove+alice+via+multi+token&password={multi_author_token}",
+    data=json.dumps(V8_remove).encode("utf-8"),
+    headers={"Content-Type": "application/json"},
+)
+check(r, 403)
+
 print("\n" + "=" * 60)
 print("  ALL STEPS PASSED")
 print("=" * 60)

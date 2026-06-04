@@ -36,6 +36,7 @@ from .store import (
     lookup_token,
     set_project_password,
     verify_project_password,
+    _MAX_MULTI_AUTHOR_DAYS,
 )
 
 
@@ -47,6 +48,8 @@ def _validate_token_scope(project_name, token_type, author_name, new_contributio
 
     * ``"add_author"`` — all existing authors must remain unchanged; exactly
       one new author may be added.
+    * ``"multi_author"`` — same add-one-author rule as ``add_author``, but the
+      token is reusable so multiple people may each add themselves.
     * ``"edit_author"`` — only the author identified by *author_name* may
       be modified; no authors may be added or removed.
     """
@@ -58,23 +61,23 @@ def _validate_token_scope(project_name, token_type, author_name, new_contributio
     existing_names = {c.author.name for c in existing.contributors} if existing else set()
     new_names = {c.author.name for c in new_contributions.contributors}
 
-    if token_type == "add_author":
+    if token_type in ("add_author", "multi_author"):
         removed = existing_names - new_names
         if removed:
             return False, (
-                "add_author token cannot remove existing authors: "
+                f"{token_type} token cannot remove existing authors: "
                 + ", ".join(sorted(removed))
             )
         added = new_names - existing_names
         if len(added) != 1:
-            return False, "add_author token allows adding exactly one new author"
+            return False, f"{token_type} token allows adding exactly one new author"
         if existing:
             existing_by_name = {c.author.name: c for c in existing.contributors}
             for c in new_contributions.contributors:
                 if c.author.name in existing_by_name:
                     if c.model_dump_json() != existing_by_name[c.author.name].model_dump_json():
                         return False, (
-                            f"add_author token cannot modify existing author '{c.author.name}'"
+                            f"{token_type} token cannot modify existing author '{c.author.name}'"
                         )
         return True, None
 
@@ -319,9 +322,9 @@ class ContributionsTokenHandler(RequestHandler):
             return
 
         token_type = self.get_argument("type", None)
-        if token_type not in ("add_author", "edit_author"):
+        if token_type not in ("add_author", "edit_author", "multi_author"):
             self.set_status(400)
-            self.write(json.dumps({"error": "type must be 'add_author' or 'edit_author'"}))
+            self.write(json.dumps({"error": "type must be 'add_author', 'edit_author', or 'multi_author'"}))
             return
 
         author = self.get_argument("author", None)
@@ -362,7 +365,7 @@ class ContributionsTokenHandler(RequestHandler):
             self.write(json.dumps({"error": str(e)}))
             return
 
-        capped_days = min(days, 365)
+        capped_days = min(days, _MAX_MULTI_AUTHOR_DAYS if token_type == "multi_author" else 365)
         self.set_status(200)
         self.write(json.dumps({"token": token_id, "type": token_type, "expires_days": capped_days}))
 

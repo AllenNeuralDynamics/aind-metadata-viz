@@ -932,6 +932,30 @@ class TestTokenStore(unittest.TestCase):
         with self.assertRaises(ValueError):
             create_token("tok-project", "edit_author")
 
+    def test_create_multi_author_token(self):
+        token = create_token("tok-project", "multi_author")
+        record = lookup_token("tok-project", token)
+        self.assertIsNotNone(record)
+        self.assertEqual(record["token_type"], "multi_author")
+        self.assertIsNone(record["author_name"])
+
+    def test_multi_author_expires_capped_at_7_days(self):
+        from datetime import datetime, timezone
+        token = create_token("tok-project", "multi_author", expires_days=9999)
+        record = lookup_token("tok-project", token)
+        expires = datetime.fromisoformat(record["expires_at"])
+        delta = expires - datetime.now(timezone.utc)
+        self.assertLessEqual(delta.days, 7)
+
+    def test_multi_author_expires_custom_within_7_days(self):
+        from datetime import datetime, timezone
+        token = create_token("tok-project", "multi_author", expires_days=3)
+        record = lookup_token("tok-project", token)
+        expires = datetime.fromisoformat(record["expires_at"])
+        delta = expires - datetime.now(timezone.utc)
+        self.assertLessEqual(delta.days, 3)
+        self.assertGreater(delta.days, 1)
+
     def test_lookup_unknown_token_returns_none(self):
         self.assertIsNone(lookup_token("tok-project", "notavalidtoken"))
 
@@ -1155,6 +1179,34 @@ class TestTokenHandler(ContributionsHandlerTestCase):
         resp = self.fetch("/contributions/token?doi=10.1/x&type=bad_type")
         self.assertEqual(resp.code, 400)
 
+    def test_multi_author_token_created(self):
+        pc = _make_project("tok-project")
+        with self._patch_contributions_by_doi(pc), self._patch_verify(True), \
+                self._patch_create_token("ccddee11" * 4):
+            resp = self.fetch("/contributions/token?doi=10.1/x&type=multi_author")
+            self.assertEqual(resp.code, 200)
+            body = json.loads(resp.body)
+            self.assertEqual(body["type"], "multi_author")
+            self.assertEqual(body["token"], "ccddee11" * 4)
+
+    def test_multi_author_expires_days_capped_at_7(self):
+        pc = _make_project("tok-project")
+        with self._patch_contributions_by_doi(pc), self._patch_verify(True), \
+                self._patch_create_token():
+            resp = self.fetch("/contributions/token?doi=10.1/x&type=multi_author&days=9999")
+            self.assertEqual(resp.code, 200)
+            body = json.loads(resp.body)
+            self.assertEqual(body["expires_days"], 7)
+
+    def test_multi_author_custom_days_within_cap(self):
+        pc = _make_project("tok-project")
+        with self._patch_contributions_by_doi(pc), self._patch_verify(True), \
+                self._patch_create_token():
+            resp = self.fetch("/contributions/token?doi=10.1/x&type=multi_author&days=3")
+            self.assertEqual(resp.code, 200)
+            body = json.loads(resp.body)
+            self.assertEqual(body["expires_days"], 3)
+
     def test_edit_author_without_author_param_returns_400(self):
         resp = self.fetch("/contributions/token?doi=10.1/x&type=edit_author")
         self.assertEqual(resp.code, 400)
@@ -1332,6 +1384,22 @@ class TestPostHandlerWithToken(ContributionsHandlerTestCase):
                 patch("aind_metadata_viz.contributions.handlers.consume_token", mock_consume):
             resp = self.fetch(
                 "/contributions/post?project=tok-post-project&password=tok2",
+                method="POST",
+                body=body,
+                headers={"Content-Type": "application/json"},
+            )
+            self.assertEqual(resp.code, 200)
+            mock_consume.assert_not_called()
+
+    def test_valid_multi_author_token_not_consumed(self):
+        record = {"token_id": "tok4", "token_type": "multi_author", "author_name": None}
+        body = to_json(self._make_project_with_two_authors())
+        mock_consume = MagicMock()
+        with self._patch_store(), self._patch_lookup_token(record), \
+                self._patch_validate_scope((True, None)), \
+                patch("aind_metadata_viz.contributions.handlers.consume_token", mock_consume):
+            resp = self.fetch(
+                "/contributions/post?project=tok-post-project&password=tok4",
                 method="POST",
                 body=body,
                 headers={"Content-Type": "application/json"},
