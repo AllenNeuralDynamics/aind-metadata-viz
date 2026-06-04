@@ -6,8 +6,8 @@ GET  /contributions/get?project=<name>[&commit=<hash>]
     Returns the latest (or specified) contribution data as JSON.
     All models are publicly readable without a password.
 
-GET  /contributions/get?doi=<doi>
-    Looks up the latest version of any project whose DOI matches *doi*.
+GET  /contributions/get?doi=<doi-or-project-name>
+    Looks up by DOI first; falls back to treating the value as a project name.
 
 GET  /contributions/get?project=<name>&history=true
     Returns a list of commits for the project, newest first.
@@ -98,6 +98,22 @@ def _validate_token_scope(project_name, token_type, author_name, new_contributio
     return False, "Unknown token type"
 
 
+def _resolve_project(identifier):
+    """Return ``(contributions, project_name)`` for a DOI or project name.
+
+    Tries DOI lookup first; if no project has that DOI, falls back to treating
+    *identifier* as a project name.
+    Raises ``FileNotFoundError`` when neither lookup finds anything.
+    """
+    try:
+        contributions = get_contributions_by_doi(identifier)
+        return contributions, contributions.project_name
+    except FileNotFoundError:
+        pass
+    contributions = get_contributions(identifier)
+    return contributions, identifier
+
+
 class ContributionsGetHandler(RequestHandler):
     """Return contribution data for a project (HEAD or a specific commit)."""
 
@@ -121,7 +137,7 @@ class ContributionsGetHandler(RequestHandler):
 
         if doi:
             try:
-                contributions = get_contributions_by_doi(doi)
+                contributions, project_name = _resolve_project(doi)
             except FileNotFoundError as e:
                 self.set_status(404)
                 self.write(json.dumps({"error": str(e)}))
@@ -132,12 +148,12 @@ class ContributionsGetHandler(RequestHandler):
                 return
 
             password = self.get_argument("password", None)
-            if not verify_project_password(contributions.project_name, password or ""):
+            if not verify_project_password(project_name, password or ""):
                 self.set_status(401)
                 self.write(json.dumps({"error": "Unauthorized"}))
                 return
 
-            contributions.locked = is_project_locked(contributions.project_name)
+            contributions.locked = is_project_locked(project_name)
             fmt = self.get_argument("format", "json").lower()
             self.set_status(200)
             if fmt == "yaml":
@@ -270,14 +286,17 @@ class ContributionsPostHandler(RequestHandler):
 
 
 class ContributionsTokenHandler(RequestHandler):
-    """Create a scoped one-time or reusable token for a project DOI.
+    """Create a scoped one-time or reusable token for a project.
 
     GET /contributions/token
-        ?doi=<doi>
+        ?doi=<doi-or-project-name>
         &type=add_author|edit_author
         [&author=<name>]          required for edit_author
         [&days=<n>]               default 365, capped at 365
         [&password=<hash>]        required when the project is password-protected
+
+    *doi* may be either a real DOI or a project name; the server tries DOI
+    lookup first and falls back to project-name lookup automatically.
 
     Returns ``{"token": "<uuid>", "type": "<type>", "expires_days": <n>}``.
     Requires the admin password when the project is locked.
@@ -320,7 +339,7 @@ class ContributionsTokenHandler(RequestHandler):
             return
 
         try:
-            contrib = get_contributions_by_doi(doi)
+            _, project_name = _resolve_project(doi)
         except FileNotFoundError as e:
             self.set_status(404)
             self.write(json.dumps({"error": str(e)}))
@@ -331,13 +350,13 @@ class ContributionsTokenHandler(RequestHandler):
             return
 
         password = self.get_argument("password", None)
-        if not verify_project_password(contrib.project_name, password or ""):
+        if not verify_project_password(project_name, password or ""):
             self.set_status(401)
             self.write(json.dumps({"error": "Unauthorized"}))
             return
 
         try:
-            token_id = create_token(doi, token_type, author_name=author, expires_days=days)
+            token_id = create_token(project_name, token_type, author_name=author, expires_days=days)
         except Exception as e:
             self.set_status(500)
             self.write(json.dumps({"error": str(e)}))

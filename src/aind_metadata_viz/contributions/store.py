@@ -255,18 +255,18 @@ def _token_key(project_name: str) -> str:
 
 
 def create_token(
-    doi: str,
+    project_name: str,
     token_type: str,
     author_name: Optional[str] = None,
     expires_days: int = 365,
     store_dir=None,  # retained for API compatibility; ignored
 ) -> str:
-    """Create a scoped token for the project identified by *doi*.
+    """Create a scoped token for *project_name*.
 
     Parameters
     ----------
-    doi:
-        DOI of the target project.
+    project_name:
+        Name of the target project.
     token_type:
         ``"add_author"`` (one-time use) or ``"edit_author"`` (scoped to
         *author_name*, reusable until expiry).
@@ -286,9 +286,6 @@ def create_token(
         )
     if token_type == "edit_author" and not author_name:
         raise ValueError("author_name is required for edit_author tokens")
-
-    contrib = get_contributions_by_doi(doi)
-    project_name = contrib.project_name
 
     days = min(max(1, expires_days), _MAX_TOKEN_DAYS)
     expires_at = (datetime.now(timezone.utc) + timedelta(days=days)).isoformat()

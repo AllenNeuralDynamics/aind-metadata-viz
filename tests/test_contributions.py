@@ -817,6 +817,9 @@ class TestGetHandlerWithPassword(ContributionsHandlerTestCase):
         with _patch(
             "aind_metadata_viz.contributions.handlers.get_contributions_by_doi",
             side_effect=FileNotFoundError("not found"),
+        ), _patch(
+            "aind_metadata_viz.contributions.handlers.get_contributions",
+            side_effect=FileNotFoundError("not found"),
         ):
             resp = self.fetch("/contributions/get?doi=10.9999/nope")
             self.assertEqual(resp.code, 404)
@@ -903,19 +906,19 @@ class TestTokenStore(unittest.TestCase):
         self._patch.stop()
 
     def test_create_token_returns_hex_string(self):
-        token = create_token("10.99/tok", "add_author")
+        token = create_token("tok-project", "add_author")
         self.assertIsInstance(token, str)
         self.assertEqual(len(token), 32)
 
     def test_create_add_author_token(self):
-        token = create_token("10.99/tok", "add_author")
+        token = create_token("tok-project", "add_author")
         record = lookup_token("tok-project", token)
         self.assertIsNotNone(record)
         self.assertEqual(record["token_type"], "add_author")
         self.assertIsNone(record["author_name"])
 
     def test_create_edit_author_token(self):
-        token = create_token("10.99/tok", "edit_author", author_name="Alice")
+        token = create_token("tok-project", "edit_author", author_name="Alice")
         record = lookup_token("tok-project", token)
         self.assertIsNotNone(record)
         self.assertEqual(record["token_type"], "edit_author")
@@ -923,11 +926,11 @@ class TestTokenStore(unittest.TestCase):
 
     def test_invalid_token_type_raises(self):
         with self.assertRaises(ValueError):
-            create_token("10.99/tok", "bad_type")
+            create_token("tok-project", "bad_type")
 
     def test_edit_author_without_name_raises(self):
         with self.assertRaises(ValueError):
-            create_token("10.99/tok", "edit_author")
+            create_token("tok-project", "edit_author")
 
     def test_lookup_unknown_token_returns_none(self):
         self.assertIsNone(lookup_token("tok-project", "notavalidtoken"))
@@ -937,7 +940,7 @@ class TestTokenStore(unittest.TestCase):
 
     def test_expires_days_capped_at_365(self):
         from datetime import datetime, timezone
-        token = create_token("10.99/tok", "add_author", expires_days=9999)
+        token = create_token("tok-project", "add_author", expires_days=9999)
         record = lookup_token("tok-project", token)
         expires = datetime.fromisoformat(record["expires_at"])
         delta = expires - datetime.now(timezone.utc)
@@ -945,7 +948,7 @@ class TestTokenStore(unittest.TestCase):
 
     def test_expires_days_custom(self):
         from datetime import datetime, timezone
-        token = create_token("10.99/tok", "add_author", expires_days=30)
+        token = create_token("tok-project", "add_author", expires_days=30)
         record = lookup_token("tok-project", token)
         expires = datetime.fromisoformat(record["expires_at"])
         delta = expires - datetime.now(timezone.utc)
@@ -953,7 +956,7 @@ class TestTokenStore(unittest.TestCase):
         self.assertGreater(delta.days, 27)
 
     def test_consume_token_marks_used(self):
-        token = create_token("10.99/tok", "add_author")
+        token = create_token("tok-project", "add_author")
         consume_token("tok-project", token)
         self.assertIsNone(lookup_token("tok-project", token))
 
@@ -961,15 +964,15 @@ class TestTokenStore(unittest.TestCase):
         consume_token("tok-project", "doesnotexist")
 
     def test_multiple_tokens_stored_independently(self):
-        t1 = create_token("10.99/tok", "add_author")
-        t2 = create_token("10.99/tok", "edit_author", author_name="Bob")
+        t1 = create_token("tok-project", "add_author")
+        t2 = create_token("tok-project", "edit_author", author_name="Bob")
         consume_token("tok-project", t1)
         self.assertIsNone(lookup_token("tok-project", t1))
         self.assertIsNotNone(lookup_token("tok-project", t2))
 
     def test_expired_token_returns_none(self):
         from datetime import datetime, timezone, timedelta
-        token = create_token("10.99/tok", "add_author")
+        token = create_token("tok-project", "add_author")
         token_key = "contributions-app/_tokens/tok-project.json"
         import json as _json
         raw = self._fake._store[token_key]
@@ -1158,7 +1161,11 @@ class TestTokenHandler(ContributionsHandlerTestCase):
         self.assertIn("author", json.loads(resp.body)["error"])
 
     def test_doi_not_found_returns_404(self):
-        with self._patch_contributions_by_doi(side_effect=FileNotFoundError("nope")):
+        with self._patch_contributions_by_doi(side_effect=FileNotFoundError("nope")), \
+                patch(
+                    "aind_metadata_viz.contributions.handlers.get_contributions",
+                    side_effect=FileNotFoundError("nope"),
+                ):
             resp = self.fetch("/contributions/token?doi=10.1/x&type=add_author")
             self.assertEqual(resp.code, 404)
 
@@ -1223,6 +1230,41 @@ class TestTokenHandler(ContributionsHandlerTestCase):
                 self._patch_create_token():
             resp = self.fetch("/contributions/token?doi=10.1/x&type=add_author")
             self.assertEqual(resp.headers.get("Access-Control-Allow-Origin"), "*")
+
+    def test_project_name_lookup_creates_token(self):
+        pc = _make_project("tok-project")
+        with self._patch_contributions_by_doi(side_effect=FileNotFoundError("no doi")), \
+                patch(
+                    "aind_metadata_viz.contributions.handlers.get_contributions",
+                    return_value=pc,
+                ), \
+                self._patch_verify(True), \
+                self._patch_create_token("aabbccdd" * 4):
+            resp = self.fetch("/contributions/token?doi=tok-project&type=add_author")
+            self.assertEqual(resp.code, 200)
+            body = json.loads(resp.body)
+            self.assertEqual(body["type"], "add_author")
+            self.assertEqual(body["token"], "aabbccdd" * 4)
+
+    def test_project_name_not_found_returns_404(self):
+        with self._patch_contributions_by_doi(side_effect=FileNotFoundError("no doi")), \
+                patch(
+                    "aind_metadata_viz.contributions.handlers.get_contributions",
+                    side_effect=FileNotFoundError("no project"),
+                ):
+            resp = self.fetch("/contributions/token?doi=missing&type=add_author")
+            self.assertEqual(resp.code, 404)
+
+    def test_project_name_wrong_password_returns_401(self):
+        pc = _make_project("tok-project")
+        with self._patch_contributions_by_doi(side_effect=FileNotFoundError("no doi")), \
+                patch(
+                    "aind_metadata_viz.contributions.handlers.get_contributions",
+                    return_value=pc,
+                ), \
+                self._patch_verify(False):
+            resp = self.fetch("/contributions/token?doi=tok-project&type=add_author&password=bad")
+            self.assertEqual(resp.code, 401)
 
 
 class TestPostHandlerWithToken(ContributionsHandlerTestCase):
