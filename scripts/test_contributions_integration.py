@@ -23,6 +23,7 @@ import requests
 
 BASE_URL = "https://metadata-portal.allenneuraldynamics.org"
 PROJECT = f"integration-test-lifecycle-{int(time.time())}"
+DOI = f"10.1234/integration-test-{int(time.time())}"
 PASSWORD = "sha256-integration-test-hash"
 GET_URL = f"{BASE_URL}/contributions/get"
 POST_URL = f"{BASE_URL}/contributions/post"
@@ -99,7 +100,7 @@ print(f"  locked: {data.get('locked')}")
 
 V2 = {
     "project_name": PROJECT,
-    "doi": "10.1234/integration-test",
+    "doi": DOI,
     "contributors": [
         {
             "author": {
@@ -146,7 +147,7 @@ r = requests.get(GET_URL, params={"project": PROJECT})
 data = check(r, 200)
 names = [c["author"]["name"] for c in data["contributors"]]
 assert len(names) == 2, f"expected 2 contributors, got {names}"
-assert data.get("doi") == "10.1234/integration-test"
+assert data.get("doi") == DOI
 assert data.get("locked") is True, f"expected locked=True, got {data.get('locked')}"
 print(f"  contributors: {names}")
 print(f"  doi: {data.get('doi')}")
@@ -170,7 +171,7 @@ check(r, 401)
 
 V3 = {
     "project_name": PROJECT,
-    "doi": "10.1234/integration-test",
+    "doi": DOI,
     "contributors": [
         {
             "author": {
@@ -243,7 +244,7 @@ print(f"  locked: {data.get('locked')}")
 sep("Step 8: GET token without password on locked project (expect 401)")
 r = requests.get(
     TOKEN_URL,
-    params={"doi": "10.1234/integration-test", "type": "add_author"},
+    params={"doi": DOI, "type": "add_author"},
 )
 check(r, 401)
 
@@ -255,7 +256,7 @@ sep("Step 9: GET add_author token with correct password (expect 200)")
 r = requests.get(
     TOKEN_URL,
     params={
-        "doi": "10.1234/integration-test",
+        "doi": DOI,
         "type": "add_author",
         "password": PASSWORD,
     },
@@ -275,7 +276,7 @@ print(f"  expires_days: {token_data['expires_days']}")
 
 V4 = {
     "project_name": PROJECT,
-    "doi": "10.1234/integration-test",
+    "doi": DOI,
     "contributors": [
         {
             "author": {
@@ -368,7 +369,7 @@ sep("Step 13: GET edit_author token without author param (expect 400)")
 r = requests.get(
     TOKEN_URL,
     params={
-        "doi": "10.1234/integration-test",
+        "doi": DOI,
         "type": "edit_author",
         "password": PASSWORD,
     },
@@ -383,7 +384,7 @@ sep("Step 14: GET edit_author token for Carmen Silva (expect 200)")
 r = requests.get(
     TOKEN_URL,
     params={
-        "doi": "10.1234/integration-test",
+        "doi": DOI,
         "type": "edit_author",
         "author": "Carmen Silva",
         "days": "30",
@@ -405,7 +406,7 @@ print(f"  expires_days: {ea_data['expires_days']}")
 
 V5 = {
     "project_name": PROJECT,
-    "doi": "10.1234/integration-test",
+    "doi": DOI,
     "contributors": [
         {
             "author": {
