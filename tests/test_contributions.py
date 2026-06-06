@@ -29,6 +29,7 @@ from aind_metadata_viz.contributions.serializers import (
 )
 from aind_metadata_viz.contributions.store import (
     _safe_filename,
+    get_author_image_key,
     get_contributions,
     get_contributions_by_doi,
     list_project_commits,
@@ -1448,6 +1449,92 @@ class TestPostHandlerWithToken(ContributionsHandlerTestCase):
             )
             self.assertEqual(resp.code, 200)
             mock_verify.assert_not_called()
+
+
+class TestGetAuthorImageKey(unittest.TestCase):
+    def setUp(self):
+        self._fake = _FakeS3()
+        self._patch = _s3_patch(self._fake)
+        self._patch.start()
+
+    def tearDown(self):
+        self._patch.stop()
+
+    def _put_image(self, author_name, ext=".jpeg"):
+        from aind_metadata_viz.contributions.store import _S3_PREFIX
+        key = f"{_S3_PREFIX}/images/{author_name}{ext}"
+        self._fake._store[key] = b"fake-image-bytes"
+        return key
+
+    def test_returns_key_when_image_exists(self):
+        key = self._put_image("Jane Smith")
+        result = get_author_image_key("Jane Smith")
+        self.assertEqual(result, key)
+
+    def test_returns_none_when_no_image(self):
+        result = get_author_image_key("Unknown Person")
+        self.assertIsNone(result)
+
+    def test_works_with_webp_extension(self):
+        key = self._put_image("Dan Birman", ext=".webp")
+        result = get_author_image_key("Dan Birman")
+        self.assertEqual(result, key)
+
+    def test_works_with_png_extension(self):
+        key = self._put_image("Anna L", ext=".png")
+        result = get_author_image_key("Anna L")
+        self.assertEqual(result, key)
+
+    def test_prefix_match_only_returns_exact_author(self):
+        self._put_image("Jane Smith Extra")
+        result = get_author_image_key("Jane")
+        self.assertIsNone(result)
+
+
+class TestContributionsAuthorImageHandler(ContributionsHandlerTestCase):
+    def _put_image(self, author_name, ext=".jpeg"):
+        from aind_metadata_viz.contributions.store import _S3_PREFIX
+        key = f"{_S3_PREFIX}/images/{author_name}{ext}"
+        self._fake._store[key] = b"fake-image-bytes"
+        return key
+
+    def _patch_image(self):
+        return patch(
+            "aind_metadata_viz.contributions.handlers.get_author_image_key",
+            side_effect=get_author_image_key,
+        )
+
+    def test_missing_author_param_returns_400(self):
+        resp = self.fetch("/contributions/author-image")
+        self.assertEqual(resp.code, 400)
+        body = json.loads(resp.body)
+        self.assertIn("error", body)
+
+    def test_unknown_author_returns_404(self):
+        with self._patch_image():
+            resp = self.fetch("/contributions/author-image?author=Nobody")
+            self.assertEqual(resp.code, 404)
+            body = json.loads(resp.body)
+            self.assertIn("error", body)
+
+    def test_known_author_returns_200_with_key(self):
+        key = self._put_image("Jane Smith")
+        with self._patch_image():
+            resp = self.fetch("/contributions/author-image?author=Jane+Smith")
+            self.assertEqual(resp.code, 200)
+            body = json.loads(resp.body)
+            self.assertEqual(body["author"], "Jane Smith")
+            self.assertEqual(body["image_key"], key)
+
+    def test_response_is_json_content_type(self):
+        self._put_image("Jane Smith")
+        with self._patch_image():
+            resp = self.fetch("/contributions/author-image?author=Jane+Smith")
+            self.assertIn("application/json", resp.headers.get("Content-Type", ""))
+
+    def test_options_returns_204(self):
+        resp = self.fetch("/contributions/author-image", method="OPTIONS")
+        self.assertEqual(resp.code, 204)
 
 
 if __name__ == "__main__":

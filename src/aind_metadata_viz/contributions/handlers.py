@@ -31,6 +31,7 @@ from .models import ProjectContributions
 from .store import (
     consume_token,
     create_token,
+    get_author_image_key,
     get_contributions_by_doi,
     is_project_locked,
     lookup_token,
@@ -370,8 +371,42 @@ class ContributionsTokenHandler(RequestHandler):
         self.write(json.dumps({"token": token_id, "type": token_type, "expires_days": capped_days}))
 
 
+class ContributionsAuthorImageHandler(RequestHandler):
+    """Return the S3 image key for an author's headshot.
+
+    GET /contributions/author-image?author=<name>
+        Returns ``{"author": "<name>", "image_key": "<s3-key>"}`` when found.
+        Returns 404 when no image exists for the author.
+        Returns 400 when the *author* parameter is missing.
+    """
+
+    def set_default_headers(self):
+        self.set_header("Access-Control-Allow-Origin", "*")
+        self.set_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+        self.set_header("Access-Control-Allow-Headers", "Content-Type")
+
+    def options(self):
+        self.set_status(204)
+
+    def get(self):
+        self.set_header("Content-Type", "application/json")
+        author = self.get_argument("author", None)
+        if not author:
+            self.set_status(400)
+            self.write(json.dumps({"error": "author query parameter is required"}))
+            return
+        key = get_author_image_key(author)
+        if key is None:
+            self.set_status(404)
+            self.write(json.dumps({"error": f"No image found for author '{author}'"}))
+            return
+        self.set_status(200)
+        self.write(json.dumps({"author": author, "image_key": key}))
+
+
 CONTRIBUTION_ROUTES = [
     (r"/contributions/get", ContributionsGetHandler),
     (r"/contributions/post", ContributionsPostHandler),
     (r"/contributions/token", ContributionsTokenHandler),
+    (r"/contributions/author-image", ContributionsAuthorImageHandler),
 ]

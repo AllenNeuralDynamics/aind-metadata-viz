@@ -180,6 +180,26 @@ def set_project_password(
     })
 
 
+def get_author_image_key(author_name: str) -> Optional[str]:
+    """Return the S3 key of the author's headshot image, or None if not found.
+
+    Images are stored under ``contributions-app/images/<author_name>.<ext>``
+    with any file extension.  The first key whose stem matches *author_name*
+    exactly is returned.
+    """
+    prefix = f"{_S3_PREFIX}/images/{author_name}"
+    paginator = _s3().get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=_S3_BUCKET, Prefix=prefix):
+        for obj in page.get("Contents", []):
+            key: str = obj["Key"]
+            filename = key[len(f"{_S3_PREFIX}/images/"):]
+            dot = filename.find(".")
+            stem = filename[:dot] if dot != -1 else filename
+            if stem == author_name:
+                return key
+    return None
+
+
 def verify_project_password(
     project_name: str,
     password: str,

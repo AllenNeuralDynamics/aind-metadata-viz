@@ -28,6 +28,7 @@ PASSWORD = "sha256-integration-test-hash"
 GET_URL = f"{BASE_URL}/contributions/get"
 POST_URL = f"{BASE_URL}/contributions/post"
 TOKEN_URL = f"{BASE_URL}/contributions/token"
+AUTHOR_IMAGE_URL = f"{BASE_URL}/contributions/author-image"
 
 print(f"Testing against: {BASE_URL}")
 print("=" * 60)
@@ -630,6 +631,35 @@ r = requests.post(
     headers={"Content-Type": "application/json"},
 )
 check(r, 403)
+
+# ---------------------------------------------------------------------------
+# Step 24: author-image — missing param → 400
+# ---------------------------------------------------------------------------
+
+sep("Step 24: GET author-image without author param (expect 400)")
+r = requests.get(AUTHOR_IMAGE_URL)
+check(r, 400)
+
+# ---------------------------------------------------------------------------
+# Step 25: author-image — unknown author → 404
+# ---------------------------------------------------------------------------
+
+sep("Step 25: GET author-image for unknown author (expect 404)")
+r = requests.get(AUTHOR_IMAGE_URL, params={"author": "Totally Made Up Person XYZ"})
+check(r, 404)
+
+# ---------------------------------------------------------------------------
+# Step 26: author-image — known author with image → 200
+# ---------------------------------------------------------------------------
+
+sep("Step 26: GET author-image for known author with image (expect 200)")
+r = requests.get(AUTHOR_IMAGE_URL, params={"author": "Daniel Birman"})
+data = check(r, 200)
+assert data.get("author") == "Daniel Birman", f"unexpected author: {data}"
+assert "image_key" in data, f"missing image_key in response: {data}"
+assert data["image_key"].startswith("contributions-app/images/"), f"unexpected key: {data}"
+print(f"  author: {data['author']}")
+print(f"  image_key: {data['image_key']}")
 
 print("\n" + "=" * 60)
 print("  ALL STEPS PASSED")
