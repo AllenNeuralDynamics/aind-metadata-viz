@@ -244,11 +244,12 @@ def get_contributions_by_doi(
     # Skip _passwords/ which is not a project prefix
     passwords_prefix = f"{_S3_PREFIX}/_passwords/"
     tokens_prefix = f"{_S3_PREFIX}/_tokens/"
+    images_prefix = f"{_S3_PREFIX}/images/"
     latest_keys = []
     for page in paginator.paginate(Bucket=_S3_BUCKET, Prefix=versions_prefix, Delimiter="/"):
         for cp in page.get("CommonPrefixes", []):
             proj_prefix = cp["Prefix"]
-            if proj_prefix in (passwords_prefix, tokens_prefix):
+            if proj_prefix in (passwords_prefix, tokens_prefix, images_prefix):
                 continue
             proj_keys = []
             for inner_page in paginator.paginate(Bucket=_S3_BUCKET, Prefix=proj_prefix):
