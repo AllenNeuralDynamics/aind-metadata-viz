@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from aind_data_schema.core.subject import Subject
 from aind_data_schema.core.data_description import DataDescription
 from aind_data_schema.core.procedures import Procedures
@@ -21,6 +21,26 @@ from biodata_query.query import retrieve_records
 
 
 router = APIRouter()
+
+
+@router.get("/view")
+async def redirect_view(name: str = ""):
+    return RedirectResponse(url=f"https://data.allenneuraldynamics.org/record?name={name}", status_code=301)
+
+
+@router.get("/fiber_viewer")
+async def redirect_fiber_viewer(subject_id: str = ""):
+    return RedirectResponse(url=f"https://data.allenneuraldynamics.org/subject?subject_id={subject_id}", status_code=301)
+
+
+@router.get("/query")
+async def redirect_query():
+    return RedirectResponse(url="https://data.allenneuraldynamics.org/assets", status_code=301)
+
+
+@router.get("/upgrade")
+async def redirect_upgrade():
+    return RedirectResponse(url="https://data.allenneuraldynamics.org/upgrade", status_code=301)
 
 
 def _get_subject(subject_id: str, metadata_service_url: str) -> Optional[dict]:
