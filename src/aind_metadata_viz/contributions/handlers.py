@@ -23,8 +23,11 @@ POST /contributions/post?project=<name>[&password=<hash>]
 """
 
 import json
+import logging
 
 from tornado.web import RequestHandler
+
+_logger = logging.getLogger(__name__)
 
 from . import from_json, from_yaml, get_contributions, list_project_commits, store_contributions, to_json, to_yaml
 from .models import ProjectContributions
@@ -147,6 +150,7 @@ class ContributionsGetHandler(RequestHandler):
                 self.write(json.dumps({"error": str(e)}))
                 return
             except Exception as e:
+                _logger.exception("GET /contributions/get doi=%s", doi)
                 self.set_status(500)
                 self.write(json.dumps({"error": str(e)}))
                 return
@@ -176,6 +180,7 @@ class ContributionsGetHandler(RequestHandler):
                 self.write(json.dumps({"error": str(e)}))
                 return
             except Exception as e:
+                _logger.exception("GET /contributions/get history project=%s", project)
                 self.set_status(500)
                 self.write(json.dumps({"error": str(e)}))
                 return
@@ -193,6 +198,7 @@ class ContributionsGetHandler(RequestHandler):
             self.write(json.dumps({"error": str(e)}))
             return
         except Exception as e:
+            _logger.exception("GET /contributions/get project=%s commit=%s", project, commit)
             self.set_status(500)
             self.write(json.dumps({"error": str(e)}))
             return
@@ -278,6 +284,7 @@ class ContributionsPostHandler(RequestHandler):
         try:
             commit_hash = store_contributions(project, new_contributions, message=message)
         except Exception as e:
+            _logger.exception("POST /contributions/post project=%s", project)
             self.set_status(500)
             self.write(json.dumps({"error": str(e)}))
             return
@@ -349,6 +356,7 @@ class ContributionsTokenHandler(RequestHandler):
             self.write(json.dumps({"error": str(e)}))
             return
         except Exception as e:
+            _logger.exception("GET /contributions/token doi=%s", doi)
             self.set_status(500)
             self.write(json.dumps({"error": str(e)}))
             return
@@ -362,6 +370,7 @@ class ContributionsTokenHandler(RequestHandler):
         try:
             token_id = create_token(project_name, token_type, author_name=author, expires_days=days)
         except Exception as e:
+            _logger.exception("GET /contributions/token create_token project=%s type=%s", project_name, token_type)
             self.set_status(500)
             self.write(json.dumps({"error": str(e)}))
             return
