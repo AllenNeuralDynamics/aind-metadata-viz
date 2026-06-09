@@ -1,4 +1,4 @@
-"""Tornado request handlers for the contributions REST endpoints.
+"""FastAPI router for the contributions REST endpoints.
 
 Routes
 ------
@@ -25,7 +25,8 @@ POST /contributions/post?project=<name>[&password=<hash>]
 import json
 import logging
 
-from tornado.web import RequestHandler
+from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse, Response
 
 _logger = logging.getLogger(__name__)
 
@@ -44,19 +45,11 @@ from .store import (
 )
 
 
+contributions_router = APIRouter()
+
+
 def _validate_token_scope(project_name, token_type, author_name, new_contributions):
-    """Return ``(ok, error_message)`` for token-scoped change validation.
-
-    Compares *new_contributions* against the currently stored version to
-    enforce the restrictions of *token_type*:
-
-    * ``"add_author"`` — all existing authors must remain unchanged; exactly
-      one new author may be added.
-    * ``"multi_author"`` — same add-one-author rule as ``add_author``, but the
-      token is reusable so multiple people may each add themselves.
-    * ``"edit_author"`` — only the author identified by *author_name* may
-      be modified; no authors may be added or removed.
-    """
+    """Return ``(ok, error_message)`` for token-scoped change validation."""
     try:
         existing = get_contributions(project_name)
     except FileNotFoundError:
@@ -106,12 +99,7 @@ def _validate_token_scope(project_name, token_type, author_name, new_contributio
 
 
 def _resolve_project(identifier):
-    """Return ``(contributions, project_name)`` for a DOI or project name.
-
-    Tries DOI lookup first; if no project has that DOI, falls back to treating
-    *identifier* as a project name.
-    Raises ``FileNotFoundError`` when neither lookup finds anything.
-    """
+    """Return ``(contributions, project_name)`` for a DOI or project name."""
     try:
         contributions = get_contributions_by_doi(identifier)
         return contributions, contributions.project_name
@@ -121,301 +109,180 @@ def _resolve_project(identifier):
     return contributions, identifier
 
 
-class ContributionsGetHandler(RequestHandler):
-    """Return contribution data for a project (HEAD or a specific commit)."""
+@contributions_router.get("/contributions/get")
+async def contributions_get(request: Request):
+    project = request.query_params.get("project", None)
+    doi = request.query_params.get("doi", None)
 
-    def set_default_headers(self):
-        self.set_header("Access-Control-Allow-Origin", "*")
-        self.set_header("Access-Control-Allow-Methods", "GET, OPTIONS")
-        self.set_header("Access-Control-Allow-Headers", "Content-Type")
+    if not project and not doi:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "project or doi query parameter is required"},
+        )
 
-    def options(self):
-        self.set_status(204)
-
-    def get(self):
-        self.set_header("Content-Type", "application/json")
-        project = self.get_argument("project", None)
-        doi = self.get_argument("doi", None)
-
-        if not project and not doi:
-            self.set_status(400)
-            self.write(json.dumps({"error": "project or doi query parameter is required"}))
-            return
-
-        if doi:
-            try:
-                contributions, project_name = _resolve_project(doi)
-            except FileNotFoundError as e:
-                self.set_status(404)
-                self.write(json.dumps({"error": str(e)}))
-                return
-            except Exception as e:
-                _logger.exception("GET /contributions/get doi=%s", doi)
-                self.set_status(500)
-                self.write(json.dumps({"error": str(e)}))
-                return
-
-            password = self.get_argument("password", None)
-            if not verify_project_password(project_name, password or ""):
-                self.set_status(401)
-                self.write(json.dumps({"error": "Unauthorized"}))
-                return
-
-            contributions.locked = is_project_locked(project_name)
-            fmt = self.get_argument("format", "json").lower()
-            self.set_status(200)
-            if fmt == "yaml":
-                self.set_header("Content-Type", "text/plain; charset=utf-8")
-                self.write(to_yaml(contributions))
-            else:
-                self.set_header("Content-Type", "application/json")
-                self.write(to_json(contributions))
-            return
-
-        if self.get_argument("history", None) == "true":
-            try:
-                commits = list_project_commits(project)
-            except FileNotFoundError as e:
-                self.set_status(404)
-                self.write(json.dumps({"error": str(e)}))
-                return
-            except Exception as e:
-                _logger.exception("GET /contributions/get history project=%s", project)
-                self.set_status(500)
-                self.write(json.dumps({"error": str(e)}))
-                return
-            self.set_status(200)
-            self.write(json.dumps(commits))
-            return
-
-        commit = self.get_argument("commit", None)
-        fmt = self.get_argument("format", "json").lower()
-
+    if doi:
         try:
-            contributions = get_contributions(project, commit_hash=commit)
+            contributions, project_name = _resolve_project(doi)
         except FileNotFoundError as e:
-            self.set_status(404)
-            self.write(json.dumps({"error": str(e)}))
-            return
+            return JSONResponse(status_code=404, content={"error": str(e)})
         except Exception as e:
-            _logger.exception("GET /contributions/get project=%s commit=%s", project, commit)
-            self.set_status(500)
-            self.write(json.dumps({"error": str(e)}))
-            return
+            _logger.exception("GET /contributions/get doi=%s", doi)
+            return JSONResponse(status_code=500, content={"error": str(e)})
 
-        contributions.locked = is_project_locked(project)
-        self.set_status(200)
-        if fmt == "yaml":
-            self.set_header("Content-Type", "text/plain; charset=utf-8")
-            self.write(to_yaml(contributions))
-        else:
-            self.set_header("Content-Type", "application/json")
-            self.write(to_json(contributions))
-
-
-class ContributionsPostHandler(RequestHandler):
-    """Store a new version of contribution data for a project."""
-
-    def set_default_headers(self):
-        self.set_header("Access-Control-Allow-Origin", "*")
-        self.set_header("Access-Control-Allow-Methods", "POST, OPTIONS")
-        self.set_header("Access-Control-Allow-Headers", "Content-Type")
-
-    def options(self):
-        self.set_status(204)
-
-    def post(self):
-        self.set_header("Content-Type", "application/json")
-        project = self.get_argument("project", None)
-        if not project:
-            self.set_status(400)
-            self.write(json.dumps({"error": "project query parameter is required"}))
-            return
-
-        body = self.request.body
-        if not body:
-            self.set_status(400)
-            self.write(json.dumps({"error": "request body is required"}))
-            return
-
-        try:
-            data = body.decode("utf-8")
-            stripped = data.strip()
-            if stripped.startswith("{") or stripped.startswith("["):
-                new_contributions = from_json(stripped)
-            else:
-                new_contributions = from_yaml(stripped)
-        except Exception as e:
-            self.set_status(400)
-            self.write(json.dumps({"error": f"Failed to parse body: {e}"}))
-            return
-
-        password = self.get_argument("password", None)
-        token_id = None
-        token_type = None
-
-        if password:
-            token_record = lookup_token(project, password)
-            if token_record is not None:
-                token_id = password
-                token_type = token_record["token_type"]
-                token_author = token_record.get("author_name")
-                ok, err = _validate_token_scope(project, token_type, token_author, new_contributions)
-                if not ok:
-                    self.set_status(403)
-                    self.write(json.dumps({"error": err}))
-                    return
-            else:
-                if not verify_project_password(project, password):
-                    self.set_status(401)
-                    self.write(json.dumps({"error": "Unauthorized"}))
-                    return
-        else:
-            if not verify_project_password(project, ""):
-                self.set_status(401)
-                self.write(json.dumps({"error": "Unauthorized"}))
-                return
-
-        if password and token_id is None and not is_project_locked(project):
-            set_project_password(project, password)
-
-        message = self.get_argument("message", None)
-
-        try:
-            commit_hash = store_contributions(project, new_contributions, message=message)
-        except Exception as e:
-            _logger.exception("POST /contributions/post project=%s", project)
-            self.set_status(500)
-            self.write(json.dumps({"error": str(e)}))
-            return
-
-        if token_id and token_type == "add_author":
-            consume_token(project, token_id)
-
-        self.set_status(200)
-        self.write(json.dumps({"commit": commit_hash, "project": project}))
-
-
-class ContributionsTokenHandler(RequestHandler):
-    """Create a scoped one-time or reusable token for a project.
-
-    GET /contributions/token
-        ?doi=<doi-or-project-name>
-        &type=add_author|edit_author
-        [&author=<name>]          required for edit_author
-        [&days=<n>]               default 365, capped at 365
-        [&password=<hash>]        required when the project is password-protected
-
-    *doi* may be either a real DOI or a project name; the server tries DOI
-    lookup first and falls back to project-name lookup automatically.
-
-    Returns ``{"token": "<uuid>", "type": "<type>", "expires_days": <n>}``.
-    Requires the admin password when the project is locked.
-    """
-
-    def set_default_headers(self):
-        self.set_header("Access-Control-Allow-Origin", "*")
-        self.set_header("Access-Control-Allow-Methods", "GET, OPTIONS")
-        self.set_header("Access-Control-Allow-Headers", "Content-Type")
-
-    def options(self):
-        self.set_status(204)
-
-    def get(self):
-        self.set_header("Content-Type", "application/json")
-        doi = self.get_argument("doi", None)
-        if not doi:
-            self.set_status(400)
-            self.write(json.dumps({"error": "doi query parameter is required"}))
-            return
-
-        token_type = self.get_argument("type", None)
-        if token_type not in ("add_author", "edit_author", "multi_author"):
-            self.set_status(400)
-            self.write(json.dumps({"error": "type must be 'add_author', 'edit_author', or 'multi_author'"}))
-            return
-
-        author = self.get_argument("author", None)
-        if token_type == "edit_author" and not author:
-            self.set_status(400)
-            self.write(json.dumps({"error": "author parameter is required for edit_author tokens"}))
-            return
-
-        days_str = self.get_argument("days", "365")
-        try:
-            days = int(days_str)
-        except ValueError:
-            self.set_status(400)
-            self.write(json.dumps({"error": "days must be an integer"}))
-            return
-
-        try:
-            _, project_name = _resolve_project(doi)
-        except FileNotFoundError as e:
-            self.set_status(404)
-            self.write(json.dumps({"error": str(e)}))
-            return
-        except Exception as e:
-            _logger.exception("GET /contributions/token doi=%s", doi)
-            self.set_status(500)
-            self.write(json.dumps({"error": str(e)}))
-            return
-
-        password = self.get_argument("password", None)
+        password = request.query_params.get("password", None)
         if not verify_project_password(project_name, password or ""):
-            self.set_status(401)
-            self.write(json.dumps({"error": "Unauthorized"}))
-            return
+            return JSONResponse(status_code=401, content={"error": "Unauthorized"})
 
+        contributions.locked = is_project_locked(project_name)
+        fmt = request.query_params.get("format", "json").lower()
+        if fmt == "yaml":
+            return Response(content=to_yaml(contributions), media_type="text/plain; charset=utf-8")
+        return Response(content=to_json(contributions), media_type="application/json")
+
+    if request.query_params.get("history", None) == "true":
         try:
-            token_id = create_token(project_name, token_type, author_name=author, expires_days=days)
+            commits = list_project_commits(project)
+        except FileNotFoundError as e:
+            return JSONResponse(status_code=404, content={"error": str(e)})
         except Exception as e:
-            _logger.exception("GET /contributions/token create_token project=%s type=%s", project_name, token_type)
-            self.set_status(500)
-            self.write(json.dumps({"error": str(e)}))
-            return
+            _logger.exception("GET /contributions/get history project=%s", project)
+            return JSONResponse(status_code=500, content={"error": str(e)})
+        return JSONResponse(content=commits)
 
-        capped_days = min(days, _MAX_MULTI_AUTHOR_DAYS if token_type == "multi_author" else 365)
-        self.set_status(200)
-        self.write(json.dumps({"token": token_id, "type": token_type, "expires_days": capped_days}))
+    commit = request.query_params.get("commit", None)
+    fmt = request.query_params.get("format", "json").lower()
 
+    try:
+        contributions = get_contributions(project, commit_hash=commit)
+    except FileNotFoundError as e:
+        return JSONResponse(status_code=404, content={"error": str(e)})
+    except Exception as e:
+        _logger.exception("GET /contributions/get project=%s commit=%s", project, commit)
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
-class ContributionsAuthorImageHandler(RequestHandler):
-    """Return the S3 image key for an author's headshot.
-
-    GET /contributions/author-image?author=<name>
-        Returns ``{"author": "<name>", "image_key": "<s3-key>"}`` when found.
-        Returns 404 when no image exists for the author.
-        Returns 400 when the *author* parameter is missing.
-    """
-
-    def set_default_headers(self):
-        self.set_header("Access-Control-Allow-Origin", "*")
-        self.set_header("Access-Control-Allow-Methods", "GET, OPTIONS")
-        self.set_header("Access-Control-Allow-Headers", "Content-Type")
-
-    def options(self):
-        self.set_status(204)
-
-    def get(self):
-        self.set_header("Content-Type", "application/json")
-        author = self.get_argument("author", None)
-        if not author:
-            self.set_status(400)
-            self.write(json.dumps({"error": "author query parameter is required"}))
-            return
-        key = get_author_image_key(author)
-        if key is None:
-            self.set_status(404)
-            self.write(json.dumps({"error": f"No image found for author '{author}'"}))
-            return
-        self.set_status(200)
-        self.write(json.dumps({"author": author, "image_key": key}))
+    contributions.locked = is_project_locked(project)
+    if fmt == "yaml":
+        return Response(content=to_yaml(contributions), media_type="text/plain; charset=utf-8")
+    return Response(content=to_json(contributions), media_type="application/json")
 
 
-CONTRIBUTION_ROUTES = [
-    (r"/contributions/get", ContributionsGetHandler),
-    (r"/contributions/post", ContributionsPostHandler),
-    (r"/contributions/token", ContributionsTokenHandler),
-    (r"/contributions/author-image", ContributionsAuthorImageHandler),
-]
+@contributions_router.post("/contributions/post")
+async def contributions_post(request: Request):
+    project = request.query_params.get("project", None)
+    if not project:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "project query parameter is required"},
+        )
+
+    body = await request.body()
+    if not body:
+        return JSONResponse(status_code=400, content={"error": "request body is required"})
+
+    try:
+        data = body.decode("utf-8")
+        stripped = data.strip()
+        if stripped.startswith("{") or stripped.startswith("["):
+            new_contributions = from_json(stripped)
+        else:
+            new_contributions = from_yaml(stripped)
+    except Exception as e:
+        return JSONResponse(status_code=400, content={"error": f"Failed to parse body: {e}"})
+
+    password = request.query_params.get("password", None)
+    token_id = None
+    token_type = None
+
+    if password:
+        token_record = lookup_token(project, password)
+        if token_record is not None:
+            token_id = password
+            token_type = token_record["token_type"]
+            token_author = token_record.get("author_name")
+            ok, err = _validate_token_scope(project, token_type, token_author, new_contributions)
+            if not ok:
+                return JSONResponse(status_code=403, content={"error": err})
+        else:
+            if not verify_project_password(project, password):
+                return JSONResponse(status_code=401, content={"error": "Unauthorized"})
+    else:
+        if not verify_project_password(project, ""):
+            return JSONResponse(status_code=401, content={"error": "Unauthorized"})
+
+    if password and token_id is None and not is_project_locked(project):
+        set_project_password(project, password)
+
+    message = request.query_params.get("message", None)
+
+    try:
+        commit_hash = store_contributions(project, new_contributions, message=message)
+    except Exception as e:
+        _logger.exception("POST /contributions/post project=%s", project)
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+    if token_id and token_type == "add_author":
+        consume_token(project, token_id)
+
+    return JSONResponse(content={"commit": commit_hash, "project": project})
+
+
+@contributions_router.get("/contributions/token")
+async def contributions_token(request: Request):
+    doi = request.query_params.get("doi", None)
+    if not doi:
+        return JSONResponse(status_code=400, content={"error": "doi query parameter is required"})
+
+    token_type = request.query_params.get("type", None)
+    if token_type not in ("add_author", "edit_author", "multi_author"):
+        return JSONResponse(
+            status_code=400,
+            content={"error": "type must be 'add_author', 'edit_author', or 'multi_author'"},
+        )
+
+    author = request.query_params.get("author", None)
+    if token_type == "edit_author" and not author:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "author parameter is required for edit_author tokens"},
+        )
+
+    days_str = request.query_params.get("days", "365")
+    try:
+        days = int(days_str)
+    except ValueError:
+        return JSONResponse(status_code=400, content={"error": "days must be an integer"})
+
+    try:
+        _, project_name = _resolve_project(doi)
+    except FileNotFoundError as e:
+        return JSONResponse(status_code=404, content={"error": str(e)})
+    except Exception as e:
+        _logger.exception("GET /contributions/token doi=%s", doi)
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+    password = request.query_params.get("password", None)
+    if not verify_project_password(project_name, password or ""):
+        return JSONResponse(status_code=401, content={"error": "Unauthorized"})
+
+    try:
+        token_id = create_token(project_name, token_type, author_name=author, expires_days=days)
+    except Exception as e:
+        _logger.exception("GET /contributions/token create_token project=%s type=%s", project_name, token_type)
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+    capped_days = min(days, _MAX_MULTI_AUTHOR_DAYS if token_type == "multi_author" else 365)
+    return JSONResponse(content={"token": token_id, "type": token_type, "expires_days": capped_days})
+
+
+@contributions_router.get("/contributions/author-image")
+async def contributions_author_image(request: Request):
+    author = request.query_params.get("author", None)
+    if not author:
+        return JSONResponse(status_code=400, content={"error": "author query parameter is required"})
+    key = get_author_image_key(author)
+    if key is None:
+        return JSONResponse(status_code=404, content={"error": f"No image found for author '{author}'"})
+    return JSONResponse(content={"author": author, "image_key": key})
+
+
+CONTRIBUTION_ROUTES = contributions_router

@@ -1,9 +1,7 @@
 from aind_data_access_api.document_db import MetadataDbClient
 from zombie_squirrel import custom, asset_basics
 from aind_metadata_validator.metadata_validator import validate_metadata
-import panel as pn
 import pandas as pd
-import param
 import numpy as np
 import io
 import logging
@@ -18,7 +16,7 @@ from aind_data_schema_models.modalities import (
 from aind_metadata_validator.mappings import (
     SECOND_LAYER_MAPPING,
 )
-from aind_metadata_viz.utils import METASTATE_MAP, hd_style
+from aind_metadata_viz.utils import METASTATE_MAP
 
 DEV_OR_PROD = "prod"
 VALIDATOR_TABLE_NAME = f"metadata_status_{DEV_OR_PROD}_v2"
@@ -42,19 +40,18 @@ CACHE_RESET_HOUR = 60 * 60
 MODALITIES = [mod().abbreviation for mod in Modality.ALL]
 
 
-class Database(param.Parameterized):
+class Database:
     """Local representation of aind-data-schema metadata stored in a
     DocDB MongoDB instance
     """
-
-    modality_filter = param.String(default="all")
-    derived_filter = param.String(default="All assets")
 
     def __init__(
         self,
         test_mode=False,
     ):
         """Initialize"""
+        self.modality_filter = "all"
+        self.derived_filter = "All assets"
         self.data = _load_data(test_mode=test_mode)
         self.set_file(CORE_FILES[0])
         self.set_field("")
@@ -244,7 +241,6 @@ class Database(param.Parameterized):
         return sio.getvalue()
 
 
-@pn.cache(ttl=CACHE_RESET_DAY)
 def _get_status() -> pd.DataFrame:
     """Get the status of the metadata"""
     response = custom(VALIDATOR_TABLE_NAME)
@@ -259,7 +255,6 @@ def _get_status() -> pd.DataFrame:
     return response
 
 
-@pn.cache(ttl=CACHE_RESET_DAY)
 def _get_metadata(test_mode=False) -> pd.DataFrame:
     df = asset_basics()[["_id", "name", "location", "modalities", "data_level"]].copy()
     df["modalities"] = df["modalities"].fillna("").str.replace(", ", ",", regex=False)
@@ -299,7 +294,6 @@ def _load_data(test_mode=False) -> pd.DataFrame:
     return data
 
 
-@pn.cache(ttl=CACHE_RESET_HOUR)
 def _get_record_by_name(name: str) -> list:
     """Get a single record by name"""
 
@@ -357,27 +351,6 @@ class RecordValidator:
         logger.removeHandler(ch)
         log_capture_string.close()
 
-    def panel(self):
-        """Return a panel object with the validation results"""
-        if self.state is None:
-            return pn.pane.Markdown("No record was found.")
-        else:
-            print(self.state["metadata"].value)
-            state = pn.pane.Markdown(
-                f"""
-Overall metadata: {hd_style(METASTATE_MAP[self.state["metadata"].value], self.colors)}
-"""
-            )
-            file_state = {}
-            for file in CORE_FILES:
-                file_state[file] = hd_style(
-                    METASTATE_MAP[self.state[file].value], self.colors
-                )
-            print(file_state)
-            df = pd.DataFrame(file_state, index=[0])
-            file_state = pn.pane.DataFrame(df, width=920, escape=False)
-
-            log = pn.pane.Markdown(self.log, width=920)
-
-            return pn.Column(state, file_state, log, width=515)
-        # return (self.state, self.log)
+    def get_state(self):
+        """Return validation state dict and log string"""
+        return self.state, self.log

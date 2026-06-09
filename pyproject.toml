@@ -18,31 +18,24 @@ dynamic = ["version"]
 
 dependencies = [
     'pydantic<=2.11.0',
-    'panel>=1.8.2',
-    'altair',
+    'fastapi',
+    'uvicorn[standard]',
     'aind-data-schema>=2.6.0,<3',
     'aind-data-access-api[docdb]',
     'zombie-squirrel>=0.28.6,<1',
     'aind-metadata-validator>=0.11.6,<2',
-    'flask',
-    'langchain',
-    'langchain_aws',
     'aind-metadata-upgrader>=0.15.23,<1',
     'numpy<2.0',
-    'vl-convert-python',
-    'biodata-query[panel] @ git+https://github.com/AllenNeuralDynamics/biodata-query.git@v0.6.1',
+    'biodata-query @ git+https://github.com/AllenNeuralDynamics/biodata-query.git@v0.6.1',
     'boto3',
+    'requests',
 ]
 
 [project.optional-dependencies]
 dev = [
-    'black',
-    'coverage',
-    'flake8',
-    'interrogate',
-    'isort',
-    'furo',
     'pytest',
+    'httpx',
+    'coverage',
 ]
 
 [tool.setuptools.packages.find]
