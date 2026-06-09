@@ -80,6 +80,34 @@ response = requests.get(
 print(response.json())
 ```
 
+### Upgrade endpoint
+
+`POST /upgrade` accepts a `metadata.json` dict and runs it through [`aind-metadata-upgrader`](https://github.com/AllenNeuralDynamics/aind-metadata-upgrader). It always returns original and upgraded JSON side by side for each field, even when some fields fail.
+
+```python
+import requests, json
+
+with open("metadata.json") as f:
+    metadata = json.load(f)
+
+response = requests.post(
+    "https://metadata-portal.allenneuraldynamics.org/upgrade",
+    json=metadata,
+)
+result = response.json()
+# result["overall_success"]  — True if all fields upgraded cleanly
+# result["overall_error"]    — error string if the full upgrade failed
+# result["partial_success"]  — True if at least one field succeeded
+# result["files_tested"]     — per-field breakdown:
+#   {
+#     "subject": {"success": True, "error": None, "original": {...}, "upgraded": {...}},
+#     "acquisition": {"success": False, "error": "...", "original": {...}, "upgraded": null},
+#     ...
+#   }
+```
+
+Fields that rename across schema versions (e.g. `session` → `acquisition`, `rig` → `instrument`) include a `"converted_to"` key indicating the new name.
+
 ### Query endpoints
 
 - `GET /upgrade-query` — Build a query using the LLM query builder. Pass query string parameters as needed.

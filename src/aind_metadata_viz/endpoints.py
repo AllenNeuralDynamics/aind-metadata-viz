@@ -11,12 +11,15 @@ from aind_data_schema.core.model import Model
 from aind_data_schema_models.data_name_patterns import DataLevel, Group
 from aind_data_schema_models.organizations import Organization
 from aind_data_schema_models.modalities import Modality
+from aind_metadata_upgrader.upgrade import Upgrade
 from datetime import datetime, timezone
 from typing import List, Optional
 import asyncio
+import copy
 import json
 import requests
 import logging
+import traceback
 
 from biodata_query.llm.endpoint import handle_get_query
 from biodata_query.query import retrieve_records
@@ -569,10 +572,143 @@ class RunQueryHandler(RequestHandler):
             self.write({"error": "Query execution failed", "details": str(e)})
 
 
+_UPGRADE_FIELD_CONVERSION_MAP = {
+    "session": "acquisition",
+    "rig": "instrument",
+}
+
+_UPGRADE_CORE_FILES = [
+    "data_description",
+    "procedures",
+    "subject",
+    "session",
+    "acquisition",
+    "rig",
+    "instrument",
+    "processing",
+    "quality_control",
+]
+
+
+def _run_upgrade_on_dict(record: dict) -> dict:
+    record = dict(record)
+    record.setdefault("_id", record.get("name", "upload"))
+    record.setdefault("name", record.get("_id", "upload"))
+    record.setdefault("location", "")
+
+    original_record = copy.deepcopy(record)
+
+    results = {
+        "overall_success": False,
+        "overall_error": None,
+        "files_tested": {},
+    }
+
+    try:
+        upgrader = Upgrade(copy.deepcopy(record))
+        upgraded_metadata = upgrader.metadata.model_dump(mode="json")
+        results["overall_success"] = True
+
+        for core_file in _UPGRADE_CORE_FILES:
+            if core_file in original_record and original_record[core_file]:
+                converted_to = _UPGRADE_FIELD_CONVERSION_MAP.get(core_file)
+                target_field = converted_to if converted_to else core_file
+                results["files_tested"][core_file] = {
+                    "success": True,
+                    "error": None,
+                    "original": original_record[core_file],
+                    "upgraded": upgraded_metadata.get(target_field),
+                    "converted_to": converted_to,
+                }
+
+        return results
+
+    except Exception as e:
+        results["overall_error"] = str(e)
+        results["overall_traceback"] = traceback.format_exc()
+
+    for core_file in _UPGRADE_CORE_FILES:
+        if core_file not in original_record or not original_record[core_file]:
+            continue
+
+        converted_to = _UPGRADE_FIELD_CONVERSION_MAP.get(core_file)
+        test_dict = {core_file: copy.deepcopy(original_record[core_file])}
+        if core_file != "subject" and "subject" in original_record:
+            test_dict["subject"] = copy.deepcopy(original_record["subject"])
+        test_dict["_id"] = record.get("_id", "upload")
+        test_dict["name"] = record.get("name", "upload")
+        test_dict["location"] = record.get("location", "")
+
+        try:
+            field_upgrader = Upgrade(test_dict, skip_metadata_validation=True)
+            field_upgraded = field_upgrader.metadata.model_dump(mode="json")
+            target_field = converted_to if converted_to else core_file
+            results["files_tested"][core_file] = {
+                "success": True,
+                "error": None,
+                "original": original_record[core_file],
+                "upgraded": field_upgraded.get(target_field),
+                "converted_to": converted_to,
+            }
+        except Exception as e:
+            results["files_tested"][core_file] = {
+                "success": False,
+                "error": str(e),
+                "original": original_record[core_file],
+                "upgraded": None,
+                "converted_to": converted_to,
+            }
+
+    successful_fields = [
+        f for f, r in results["files_tested"].items() if r["success"]
+    ]
+    results["partial_success"] = len(successful_fields) > 0
+
+    return results
+
+
+class UpgradeHandler(RequestHandler):
+
+    def set_default_headers(self):
+        self.set_header("Access-Control-Allow-Origin", "*")
+        self.set_header("Access-Control-Allow-Methods", "POST, OPTIONS")
+        self.set_header("Access-Control-Allow-Headers", "Content-Type")
+
+    def options(self):
+        self.set_status(204)
+
+    def post(self):
+        self.set_header("Content-Type", "application/json")
+
+        try:
+            data = json.loads(self.request.body)
+        except json.JSONDecodeError:
+            self.set_status(400)
+            self.write({"error": "Invalid JSON format."})
+            return
+
+        if not isinstance(data, dict):
+            self.set_status(400)
+            self.write({"error": "Request body must be a JSON object."})
+            return
+
+        has_core_fields = any(
+            data.get(f) for f in _UPGRADE_CORE_FILES
+        )
+        if not has_core_fields:
+            self.set_status(400)
+            self.write({"error": "No recognized metadata fields found in request body."})
+            return
+
+        result = _run_upgrade_on_dict(data)
+        self.write(result)
+
+
 from aind_metadata_viz.contributions.handlers import CONTRIBUTION_ROUTES
 
 ROUTES = [
     (r"/gather", GatherHandler),
+    (r"/upgrade", UpgradeHandler),
     (r"/validate/metadata", UploadMetadataHandler),
     (r"/validate/files", ValidateFilesHandler),
     (r"/upgrade-query", GetQueryHandler),
