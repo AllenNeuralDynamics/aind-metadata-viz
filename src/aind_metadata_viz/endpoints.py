@@ -23,6 +23,11 @@ from biodata_query.query import retrieve_records
 router = APIRouter()
 
 
+@router.get("/health")
+async def health_check():
+    return JSONResponse(status_code=200, content={"status": "healthy"})
+
+
 @router.get("/view")
 async def redirect_view(name: str = ""):
     return RedirectResponse(url=f"https://data.allenneuraldynamics.org/record?name={name}", status_code=301)
