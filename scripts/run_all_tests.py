@@ -70,6 +70,7 @@ def main():
         "test_individual_fields.py",
         "test_files_endpoint.py",
         "test_gather_integration.py",
+        "test_chat_integration.py",
     ]
 
     results = []
