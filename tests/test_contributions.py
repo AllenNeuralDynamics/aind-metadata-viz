@@ -6,8 +6,6 @@ from unittest.mock import MagicMock, patch
 
 from botocore.exceptions import ClientError
 
-from tornado.testing import AsyncHTTPTestCase
-from tornado.web import Application
 
 from aind_data_schema_models.registries import Registry
 from pydantic import ValidationError
@@ -40,7 +38,15 @@ from aind_metadata_viz.contributions.store import (
     lookup_token,
     consume_token,
 )
-from aind_metadata_viz.contributions.handlers import CONTRIBUTION_ROUTES
+from aind_metadata_viz.contributions.handlers import contributions_router
+from fastapi.testclient import TestClient
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+_app = FastAPI()
+_app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+_app.include_router(contributions_router)
+client = TestClient(_app)
 
 
 class _FakePaginator:
@@ -495,18 +501,13 @@ def _make_project_json(name="handler-project"):
     return to_json(pc)
 
 
-class ContributionsHandlerTestCase(AsyncHTTPTestCase):
-    def get_app(self):
-        return Application(CONTRIBUTION_ROUTES)
-
+class ContributionsHandlerTestCase(unittest.TestCase):
     def setUp(self):
         self._fake = _FakeS3()
         self._s3_patch = _s3_patch(self._fake)
         self._s3_patch.start()
-        super().setUp()
 
     def tearDown(self):
-        super().tearDown()
         self._s3_patch.stop()
 
     def _patch_store(self):
@@ -535,37 +536,37 @@ class TestContributionsGetHandler(ContributionsHandlerTestCase):
         return pc
 
     def test_missing_project_param_returns_400(self):
-        resp = self.fetch("/contributions/get")
-        self.assertEqual(resp.code, 400)
-        body = json.loads(resp.body)
+        resp = client.get("/contributions/get")
+        self.assertEqual(resp.status_code, 400)
+        body = resp.json()
         self.assertIn("error", body)
 
     def test_unknown_project_returns_404(self):
         with self._patch_get():
-            resp = self.fetch("/contributions/get?project=no-such-project")
-            self.assertEqual(resp.code, 404)
+            resp = client.get("/contributions/get?project=no-such-project")
+            self.assertEqual(resp.status_code, 404)
 
     def test_get_existing_project_returns_200(self):
         self._seed_project()
         with self._patch_get():
-            resp = self.fetch("/contributions/get?project=handler-project")
-            self.assertEqual(resp.code, 200)
-            body = json.loads(resp.body)
+            resp = client.get("/contributions/get?project=handler-project")
+            self.assertEqual(resp.status_code, 200)
+            body = resp.json()
             self.assertEqual(body["project_name"], "handler-project")
 
     def test_get_returns_json_content_type(self):
         self._seed_project()
         with self._patch_get():
-            resp = self.fetch("/contributions/get?project=handler-project")
+            resp = client.get("/contributions/get?project=handler-project")
             self.assertIn("application/json", resp.headers.get("Content-Type", ""))
 
     def test_get_yaml_format(self):
         self._seed_project()
         with self._patch_get():
-            resp = self.fetch("/contributions/get?project=handler-project&format=yaml")
-            self.assertEqual(resp.code, 200)
+            resp = client.get("/contributions/get?project=handler-project&format=yaml")
+            self.assertEqual(resp.status_code, 200)
             self.assertIn("text/plain", resp.headers.get("Content-Type", ""))
-            self.assertIn("handler-project", resp.body.decode())
+            self.assertIn("handler-project", resp.text)
 
     def test_get_specific_commit(self):
         self._seed_project()
@@ -574,9 +575,9 @@ class TestContributionsGetHandler(ContributionsHandlerTestCase):
         commits = list_project_commits("handler-project")
         old_hash = commits[-1]["commit"]
         with self._patch_get():
-            resp = self.fetch(f"/contributions/get?project=handler-project&commit={old_hash}")
-            self.assertEqual(resp.code, 200)
-            body = json.loads(resp.body)
+            resp = client.get(f"/contributions/get?project=handler-project&commit={old_hash}")
+            self.assertEqual(resp.status_code, 200)
+            body = resp.json()
             self.assertIsNone(body["doi"])
 
     def test_get_history(self):
@@ -586,70 +587,53 @@ class TestContributionsGetHandler(ContributionsHandlerTestCase):
             _make_project("handler-project"),
         )
         with self._patch_list():
-            resp = self.fetch("/contributions/get?project=handler-project&history=true")
-            self.assertEqual(resp.code, 200)
-            body = json.loads(resp.body)
+            resp = client.get("/contributions/get?project=handler-project&history=true")
+            self.assertEqual(resp.status_code, 200)
+            body = resp.json()
             self.assertIsInstance(body, list)
             self.assertGreater(len(body), 0)
 
     def test_get_history_missing_project_returns_404(self):
         with self._patch_list():
-            resp = self.fetch("/contributions/get?project=no-such&history=true")
-            self.assertEqual(resp.code, 404)
+            resp = client.get("/contributions/get?project=no-such&history=true")
+            self.assertEqual(resp.status_code, 404)
 
     def test_options_returns_204(self):
-        resp = self.fetch("/contributions/get", method="OPTIONS")
-        self.assertEqual(resp.code, 204)
+        resp = client.options("/contributions/get", headers={"Origin": "http://example.com", "Access-Control-Request-Method": "GET"})
+        self.assertIn(resp.status_code, (200, 204))
 
     def test_cors_headers_present(self):
         self._seed_project()
         with self._patch_get():
-            resp = self.fetch("/contributions/get?project=handler-project")
+            resp = client.get(
+                "/contributions/get?project=handler-project",
+                headers={"Origin": "http://example.com"},
+            )
             self.assertEqual(resp.headers.get("Access-Control-Allow-Origin"), "*")
 
 
 class TestContributionsPostHandler(ContributionsHandlerTestCase):
     def test_post_missing_project_param_returns_400(self):
         body = _make_project_json()
-        resp = self.fetch(
-            "/contributions/post",
-            method="POST",
-            body=body,
-            headers={"Content-Type": "application/json"},
-        )
-        self.assertEqual(resp.code, 400)
+        resp = client.post("/contributions/post", content=body, headers={"Content-Type": "application/json"})
+        self.assertEqual(resp.status_code, 400)
 
     def test_post_missing_body_returns_400(self):
         with self._patch_store():
-            resp = self.fetch(
-                "/contributions/post?project=handler-project",
-                method="POST",
-                body="",
-                headers={"Content-Type": "application/json"},
-            )
-            self.assertEqual(resp.code, 400)
+            resp = client.post("/contributions/post?project=handler-project", content="", headers={"Content-Type": "application/json"})
+            self.assertEqual(resp.status_code, 400)
 
     def test_post_invalid_body_returns_400(self):
         with self._patch_store():
-            resp = self.fetch(
-                "/contributions/post?project=handler-project",
-                method="POST",
-                body="not valid json or yaml",
-                headers={"Content-Type": "application/json"},
-            )
-            self.assertEqual(resp.code, 400)
+            resp = client.post("/contributions/post?project=handler-project", content="not valid json or yaml", headers={"Content-Type": "application/json"})
+            self.assertEqual(resp.status_code, 400)
 
     def test_post_valid_json_returns_200(self):
         body = _make_project_json("handler-project")
         with self._patch_store():
-            resp = self.fetch(
-                "/contributions/post?project=handler-project",
-                method="POST",
-                body=body,
-                headers={"Content-Type": "application/json"},
-            )
-            self.assertEqual(resp.code, 200)
-            data = json.loads(resp.body)
+            resp = client.post("/contributions/post?project=handler-project", content=body, headers={"Content-Type": "application/json"})
+            self.assertEqual(resp.status_code, 200)
+            data = resp.json()
             self.assertIn("commit", data)
             self.assertEqual(data["project"], "handler-project")
 
@@ -657,51 +641,31 @@ class TestContributionsPostHandler(ContributionsHandlerTestCase):
         pc = _make_project("handler-project")
         y = to_yaml(pc)
         with self._patch_store():
-            resp = self.fetch(
-                "/contributions/post?project=handler-project",
-                method="POST",
-                body=y,
-                headers={"Content-Type": "text/plain"},
-            )
-            self.assertEqual(resp.code, 200)
+            resp = client.post("/contributions/post?project=handler-project", content=y, headers={"Content-Type": "application/json"})
+            self.assertEqual(resp.status_code, 200)
 
     def test_post_commit_hash_is_32_chars(self):
         body = _make_project_json("handler-project")
         with self._patch_store():
-            resp = self.fetch(
-                "/contributions/post?project=handler-project",
-                method="POST",
-                body=body,
-                headers={"Content-Type": "application/json"},
-            )
-            data = json.loads(resp.body)
+            resp = client.post("/contributions/post?project=handler-project", content=body, headers={"Content-Type": "application/json"})
+            data = resp.json()
             self.assertEqual(len(data["commit"]), 32)
 
     def test_post_options_returns_204(self):
-        resp = self.fetch("/contributions/post", method="OPTIONS")
-        self.assertEqual(resp.code, 204)
+        resp = client.options("/contributions/post", headers={"Origin": "http://example.com", "Access-Control-Request-Method": "GET"})
+        self.assertIn(resp.status_code, (200, 204))
 
     def test_post_cors_headers_present(self):
         body = _make_project_json("handler-project")
         with self._patch_store():
-            resp = self.fetch(
-                "/contributions/post?project=handler-project",
-                method="POST",
-                body=body,
-                headers={"Content-Type": "application/json"},
-            )
+            resp = client.post("/contributions/post?project=handler-project", content=body, headers={"Content-Type": "application/json", "Origin": "http://example.com"})
             self.assertEqual(resp.headers.get("Access-Control-Allow-Origin"), "*")
 
     def test_post_with_custom_message(self):
         body = _make_project_json("handler-project")
         with self._patch_store():
-            resp = self.fetch(
-                "/contributions/post?project=handler-project&message=my-commit",
-                method="POST",
-                body=body,
-                headers={"Content-Type": "application/json"},
-            )
-            self.assertEqual(resp.code, 200)
+            resp = client.post("/contributions/post?project=handler-project&message=my-commit", content=body, headers={"Content-Type": "application/json"})
+            self.assertEqual(resp.status_code, 200)
 
 
 class TestPasswordStore(unittest.TestCase):
@@ -796,21 +760,21 @@ class TestGetHandlerWithPassword(ContributionsHandlerTestCase):
     def test_get_always_public_no_password(self):
         self._seed_project()
         with self._patch_get():
-            resp = self.fetch("/contributions/get?project=pw-handler-project")
-            self.assertEqual(resp.code, 200)
+            resp = client.get("/contributions/get?project=pw-handler-project")
+            self.assertEqual(resp.status_code, 200)
 
     def test_get_always_public_with_password_param(self):
         self._seed_project()
         with self._patch_get():
-            resp = self.fetch("/contributions/get?project=pw-handler-project&password=anything")
-            self.assertEqual(resp.code, 200)
+            resp = client.get("/contributions/get?project=pw-handler-project&password=anything")
+            self.assertEqual(resp.status_code, 200)
 
     def test_doi_lookup_returns_200(self):
         pc = _make_project("doi-handler-project")
         with self._patch_doi(pc):
-            resp = self.fetch("/contributions/get?doi=10.1234/test")
-            self.assertEqual(resp.code, 200)
-            body = json.loads(resp.body)
+            resp = client.get("/contributions/get?doi=10.1234/test")
+            self.assertEqual(resp.status_code, 200)
+            body = resp.json()
             self.assertEqual(body["project_name"], "doi-handler-project")
 
     def test_doi_not_found_returns_404(self):
@@ -822,13 +786,13 @@ class TestGetHandlerWithPassword(ContributionsHandlerTestCase):
             "aind_metadata_viz.contributions.handlers.get_contributions",
             side_effect=FileNotFoundError("not found"),
         ):
-            resp = self.fetch("/contributions/get?doi=10.9999/nope")
-            self.assertEqual(resp.code, 404)
+            resp = client.get("/contributions/get?doi=10.9999/nope")
+            self.assertEqual(resp.status_code, 404)
 
     def test_missing_both_project_and_doi_returns_400(self):
-        resp = self.fetch("/contributions/get")
-        self.assertEqual(resp.code, 400)
-        body = json.loads(resp.body)
+        resp = client.get("/contributions/get")
+        self.assertEqual(resp.status_code, 400)
+        body = resp.json()
         self.assertIn("error", body)
 
 
@@ -842,48 +806,28 @@ class TestPostHandlerWithPassword(ContributionsHandlerTestCase):
     def test_post_no_password_set_returns_200(self):
         body = _make_project_json("handler-project")
         with self._patch_store(), self._patch_verify(True):
-            resp = self.fetch(
-                "/contributions/post?project=handler-project",
-                method="POST",
-                body=body,
-                headers={"Content-Type": "application/json"},
-            )
-            self.assertEqual(resp.code, 200)
+            resp = client.post("/contributions/post?project=handler-project", content=body, headers={"Content-Type": "application/json"})
+            self.assertEqual(resp.status_code, 200)
 
     def test_post_correct_password_returns_200(self):
         body = _make_project_json("handler-project")
         with self._patch_store(), self._patch_verify(True):
-            resp = self.fetch(
-                "/contributions/post?project=handler-project&password=correct",
-                method="POST",
-                body=body,
-                headers={"Content-Type": "application/json"},
-            )
-            self.assertEqual(resp.code, 200)
+            resp = client.post("/contributions/post?project=handler-project&password=correct", content=body, headers={"Content-Type": "application/json"})
+            self.assertEqual(resp.status_code, 200)
 
     def test_post_wrong_password_returns_401(self):
         body = _make_project_json("handler-project")
         with self._patch_verify(False):
-            resp = self.fetch(
-                "/contributions/post?project=handler-project&password=wrong",
-                method="POST",
-                body=body,
-                headers={"Content-Type": "application/json"},
-            )
-            self.assertEqual(resp.code, 401)
-            data = json.loads(resp.body)
+            resp = client.post("/contributions/post?project=handler-project&password=wrong", content=body, headers={"Content-Type": "application/json"})
+            self.assertEqual(resp.status_code, 401)
+            data = resp.json()
             self.assertIn("error", data)
 
     def test_post_missing_password_returns_401_when_required(self):
         body = _make_project_json("handler-project")
         with self._patch_verify(False):
-            resp = self.fetch(
-                "/contributions/post?project=handler-project",
-                method="POST",
-                body=body,
-                headers={"Content-Type": "application/json"},
-            )
-            self.assertEqual(resp.code, 401)
+            resp = client.post("/contributions/post?project=handler-project", content=body, headers={"Content-Type": "application/json"})
+            self.assertEqual(resp.status_code, 401)
 
 
 
@@ -1172,21 +1116,21 @@ class TestTokenHandler(ContributionsHandlerTestCase):
         )
 
     def test_missing_doi_returns_400(self):
-        resp = self.fetch("/contributions/token?type=add_author")
-        self.assertEqual(resp.code, 400)
-        self.assertIn("doi", json.loads(resp.body)["error"])
+        resp = client.get("/contributions/token?type=add_author")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("doi", resp.json()["error"])
 
     def test_invalid_type_returns_400(self):
-        resp = self.fetch("/contributions/token?doi=10.1/x&type=bad_type")
-        self.assertEqual(resp.code, 400)
+        resp = client.get("/contributions/token?doi=10.1/x&type=bad_type")
+        self.assertEqual(resp.status_code, 400)
 
     def test_multi_author_token_created(self):
         pc = _make_project("tok-project")
         with self._patch_contributions_by_doi(pc), self._patch_verify(True), \
                 self._patch_create_token("ccddee11" * 4):
-            resp = self.fetch("/contributions/token?doi=10.1/x&type=multi_author")
-            self.assertEqual(resp.code, 200)
-            body = json.loads(resp.body)
+            resp = client.get("/contributions/token?doi=10.1/x&type=multi_author")
+            self.assertEqual(resp.status_code, 200)
+            body = resp.json()
             self.assertEqual(body["type"], "multi_author")
             self.assertEqual(body["token"], "ccddee11" * 4)
 
@@ -1194,24 +1138,24 @@ class TestTokenHandler(ContributionsHandlerTestCase):
         pc = _make_project("tok-project")
         with self._patch_contributions_by_doi(pc), self._patch_verify(True), \
                 self._patch_create_token():
-            resp = self.fetch("/contributions/token?doi=10.1/x&type=multi_author&days=9999")
-            self.assertEqual(resp.code, 200)
-            body = json.loads(resp.body)
+            resp = client.get("/contributions/token?doi=10.1/x&type=multi_author&days=9999")
+            self.assertEqual(resp.status_code, 200)
+            body = resp.json()
             self.assertEqual(body["expires_days"], 7)
 
     def test_multi_author_custom_days_within_cap(self):
         pc = _make_project("tok-project")
         with self._patch_contributions_by_doi(pc), self._patch_verify(True), \
                 self._patch_create_token():
-            resp = self.fetch("/contributions/token?doi=10.1/x&type=multi_author&days=3")
-            self.assertEqual(resp.code, 200)
-            body = json.loads(resp.body)
+            resp = client.get("/contributions/token?doi=10.1/x&type=multi_author&days=3")
+            self.assertEqual(resp.status_code, 200)
+            body = resp.json()
             self.assertEqual(body["expires_days"], 3)
 
     def test_edit_author_without_author_param_returns_400(self):
-        resp = self.fetch("/contributions/token?doi=10.1/x&type=edit_author")
-        self.assertEqual(resp.code, 400)
-        self.assertIn("author", json.loads(resp.body)["error"])
+        resp = client.get("/contributions/token?doi=10.1/x&type=edit_author")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("author", resp.json()["error"])
 
     def test_doi_not_found_returns_404(self):
         with self._patch_contributions_by_doi(side_effect=FileNotFoundError("nope")), \
@@ -1219,22 +1163,22 @@ class TestTokenHandler(ContributionsHandlerTestCase):
                     "aind_metadata_viz.contributions.handlers.get_contributions",
                     side_effect=FileNotFoundError("nope"),
                 ):
-            resp = self.fetch("/contributions/token?doi=10.1/x&type=add_author")
-            self.assertEqual(resp.code, 404)
+            resp = client.get("/contributions/token?doi=10.1/x&type=add_author")
+            self.assertEqual(resp.status_code, 404)
 
     def test_wrong_password_returns_401(self):
         pc = _make_project("tok-project")
         with self._patch_contributions_by_doi(pc), self._patch_verify(False):
-            resp = self.fetch("/contributions/token?doi=10.1/x&type=add_author&password=bad")
-            self.assertEqual(resp.code, 401)
+            resp = client.get("/contributions/token?doi=10.1/x&type=add_author&password=bad")
+            self.assertEqual(resp.status_code, 401)
 
     def test_add_author_token_created(self):
         pc = _make_project("tok-project")
         with self._patch_contributions_by_doi(pc), self._patch_verify(True), \
                 self._patch_create_token("aabbccdd" * 4):
-            resp = self.fetch("/contributions/token?doi=10.1/x&type=add_author")
-            self.assertEqual(resp.code, 200)
-            body = json.loads(resp.body)
+            resp = client.get("/contributions/token?doi=10.1/x&type=add_author")
+            self.assertEqual(resp.status_code, 200)
+            body = resp.json()
             self.assertEqual(body["type"], "add_author")
             self.assertEqual(body["token"], "aabbccdd" * 4)
 
@@ -1242,46 +1186,46 @@ class TestTokenHandler(ContributionsHandlerTestCase):
         pc = _make_project("tok-project")
         with self._patch_contributions_by_doi(pc), self._patch_verify(True), \
                 self._patch_create_token("11223344" * 4):
-            resp = self.fetch(
+            resp = client.get(
                 "/contributions/token?doi=10.1/x&type=edit_author&author=Jane+Smith"
             )
-            self.assertEqual(resp.code, 200)
-            body = json.loads(resp.body)
+            self.assertEqual(resp.status_code, 200)
+            body = resp.json()
             self.assertEqual(body["type"], "edit_author")
 
     def test_expires_days_capped_at_365(self):
         pc = _make_project("tok-project")
         with self._patch_contributions_by_doi(pc), self._patch_verify(True), \
                 self._patch_create_token():
-            resp = self.fetch("/contributions/token?doi=10.1/x&type=add_author&days=9999")
-            self.assertEqual(resp.code, 200)
-            body = json.loads(resp.body)
+            resp = client.get("/contributions/token?doi=10.1/x&type=add_author&days=9999")
+            self.assertEqual(resp.status_code, 200)
+            body = resp.json()
             self.assertEqual(body["expires_days"], 365)
 
     def test_custom_days_reflected(self):
         pc = _make_project("tok-project")
         with self._patch_contributions_by_doi(pc), self._patch_verify(True), \
                 self._patch_create_token():
-            resp = self.fetch("/contributions/token?doi=10.1/x&type=add_author&days=30")
-            self.assertEqual(resp.code, 200)
-            body = json.loads(resp.body)
+            resp = client.get("/contributions/token?doi=10.1/x&type=add_author&days=30")
+            self.assertEqual(resp.status_code, 200)
+            body = resp.json()
             self.assertEqual(body["expires_days"], 30)
 
     def test_non_integer_days_returns_400(self):
         pc = _make_project("tok-project")
         with self._patch_contributions_by_doi(pc), self._patch_verify(True):
-            resp = self.fetch("/contributions/token?doi=10.1/x&type=add_author&days=abc")
-            self.assertEqual(resp.code, 400)
+            resp = client.get("/contributions/token?doi=10.1/x&type=add_author&days=abc")
+            self.assertEqual(resp.status_code, 400)
 
     def test_options_returns_204(self):
-        resp = self.fetch("/contributions/token", method="OPTIONS")
-        self.assertEqual(resp.code, 204)
+        resp = client.options("/contributions/token", headers={"Origin": "http://example.com", "Access-Control-Request-Method": "GET"})
+        self.assertIn(resp.status_code, (200, 204))
 
     def test_cors_headers_present(self):
         pc = _make_project("tok-project")
         with self._patch_contributions_by_doi(pc), self._patch_verify(True), \
                 self._patch_create_token():
-            resp = self.fetch("/contributions/token?doi=10.1/x&type=add_author")
+            resp = client.get("/contributions/token?doi=10.1/x&type=add_author", headers={"Origin": "http://example.com"})
             self.assertEqual(resp.headers.get("Access-Control-Allow-Origin"), "*")
 
     def test_project_name_lookup_creates_token(self):
@@ -1293,9 +1237,9 @@ class TestTokenHandler(ContributionsHandlerTestCase):
                 ), \
                 self._patch_verify(True), \
                 self._patch_create_token("aabbccdd" * 4):
-            resp = self.fetch("/contributions/token?doi=tok-project&type=add_author")
-            self.assertEqual(resp.code, 200)
-            body = json.loads(resp.body)
+            resp = client.get("/contributions/token?doi=tok-project&type=add_author")
+            self.assertEqual(resp.status_code, 200)
+            body = resp.json()
             self.assertEqual(body["type"], "add_author")
             self.assertEqual(body["token"], "aabbccdd" * 4)
 
@@ -1305,8 +1249,8 @@ class TestTokenHandler(ContributionsHandlerTestCase):
                     "aind_metadata_viz.contributions.handlers.get_contributions",
                     side_effect=FileNotFoundError("no project"),
                 ):
-            resp = self.fetch("/contributions/token?doi=missing&type=add_author")
-            self.assertEqual(resp.code, 404)
+            resp = client.get("/contributions/token?doi=missing&type=add_author")
+            self.assertEqual(resp.status_code, 404)
 
     def test_project_name_wrong_password_returns_401(self):
         pc = _make_project("tok-project")
@@ -1316,8 +1260,8 @@ class TestTokenHandler(ContributionsHandlerTestCase):
                     return_value=pc,
                 ), \
                 self._patch_verify(False):
-            resp = self.fetch("/contributions/token?doi=tok-project&type=add_author&password=bad")
-            self.assertEqual(resp.code, 401)
+            resp = client.get("/contributions/token?doi=tok-project&type=add_author&password=bad")
+            self.assertEqual(resp.status_code, 401)
 
 
 class TestPostHandlerWithToken(ContributionsHandlerTestCase):
@@ -1353,13 +1297,8 @@ class TestPostHandlerWithToken(ContributionsHandlerTestCase):
         body = to_json(self._make_project_with_two_authors())
         with self._patch_store(), self._patch_lookup_token(record), \
                 self._patch_validate_scope((True, None)), self._patch_consume():
-            resp = self.fetch(
-                "/contributions/post?project=tok-post-project&password=tok1",
-                method="POST",
-                body=body,
-                headers={"Content-Type": "application/json"},
-            )
-            self.assertEqual(resp.code, 200)
+            resp = client.post("/contributions/post?project=tok-post-project&password=tok1", content=body, headers={"Content-Type": "application/json"})
+            self.assertEqual(resp.status_code, 200)
 
     def test_add_author_token_consumed_after_store(self):
         record = {"token_id": "tok1", "token_type": "add_author", "author_name": None}
@@ -1368,12 +1307,7 @@ class TestPostHandlerWithToken(ContributionsHandlerTestCase):
         with self._patch_store(), self._patch_lookup_token(record), \
                 self._patch_validate_scope((True, None)), \
                 patch("aind_metadata_viz.contributions.handlers.consume_token", mock_consume):
-            self.fetch(
-                "/contributions/post?project=tok-post-project&password=tok1",
-                method="POST",
-                body=body,
-                headers={"Content-Type": "application/json"},
-            )
+            client.post("/contributions/post?project=tok-post-project&password=tok1", content=body, headers={"Content-Type": "application/json"})
             mock_consume.assert_called_once_with("tok-post-project", "tok1")
 
     def test_valid_edit_author_token_not_consumed(self):
@@ -1383,13 +1317,8 @@ class TestPostHandlerWithToken(ContributionsHandlerTestCase):
         with self._patch_store(), self._patch_lookup_token(record), \
                 self._patch_validate_scope((True, None)), \
                 patch("aind_metadata_viz.contributions.handlers.consume_token", mock_consume):
-            resp = self.fetch(
-                "/contributions/post?project=tok-post-project&password=tok2",
-                method="POST",
-                body=body,
-                headers={"Content-Type": "application/json"},
-            )
-            self.assertEqual(resp.code, 200)
+            resp = client.post("/contributions/post?project=tok-post-project&password=tok2", content=body, headers={"Content-Type": "application/json"})
+            self.assertEqual(resp.status_code, 200)
             mock_consume.assert_not_called()
 
     def test_valid_multi_author_token_not_consumed(self):
@@ -1399,13 +1328,8 @@ class TestPostHandlerWithToken(ContributionsHandlerTestCase):
         with self._patch_store(), self._patch_lookup_token(record), \
                 self._patch_validate_scope((True, None)), \
                 patch("aind_metadata_viz.contributions.handlers.consume_token", mock_consume):
-            resp = self.fetch(
-                "/contributions/post?project=tok-post-project&password=tok4",
-                method="POST",
-                body=body,
-                headers={"Content-Type": "application/json"},
-            )
-            self.assertEqual(resp.code, 200)
+            resp = client.post("/contributions/post?project=tok-post-project&password=tok4", content=body, headers={"Content-Type": "application/json"})
+            self.assertEqual(resp.status_code, 200)
             mock_consume.assert_not_called()
 
     def test_out_of_scope_token_returns_403(self):
@@ -1413,26 +1337,16 @@ class TestPostHandlerWithToken(ContributionsHandlerTestCase):
         body = to_json(self._make_project_with_two_authors())
         with self._patch_lookup_token(record), \
                 self._patch_validate_scope((False, "add_author token allows adding exactly one new author")):
-            resp = self.fetch(
-                "/contributions/post?project=tok-post-project&password=tok1",
-                method="POST",
-                body=body,
-                headers={"Content-Type": "application/json"},
-            )
-            self.assertEqual(resp.code, 403)
-            self.assertIn("error", json.loads(resp.body))
+            resp = client.post("/contributions/post?project=tok-post-project&password=tok1", content=body, headers={"Content-Type": "application/json"})
+            self.assertEqual(resp.status_code, 403)
+            self.assertIn("error", resp.json())
 
     def test_invalid_token_falls_back_to_password_check(self):
         body = to_json(self._make_project_with_two_authors())
         with self._patch_lookup_token(None), \
                 patch("aind_metadata_viz.contributions.handlers.verify_project_password", return_value=False):
-            resp = self.fetch(
-                "/contributions/post?project=tok-post-project&password=notavalidtoken",
-                method="POST",
-                body=body,
-                headers={"Content-Type": "application/json"},
-            )
-            self.assertEqual(resp.code, 401)
+            resp = client.post("/contributions/post?project=tok-post-project&password=notavalidtoken", content=body, headers={"Content-Type": "application/json"})
+            self.assertEqual(resp.status_code, 401)
 
     def test_valid_token_bypasses_admin_password(self):
         record = {"token_id": "tok3", "token_type": "edit_author", "author_name": "Alice"}
@@ -1441,13 +1355,8 @@ class TestPostHandlerWithToken(ContributionsHandlerTestCase):
         with self._patch_store(), self._patch_lookup_token(record), \
                 self._patch_validate_scope((True, None)), self._patch_consume(), \
                 patch("aind_metadata_viz.contributions.handlers.verify_project_password", mock_verify):
-            resp = self.fetch(
-                "/contributions/post?project=tok-post-project&password=tok3",
-                method="POST",
-                body=body,
-                headers={"Content-Type": "application/json"},
-            )
-            self.assertEqual(resp.code, 200)
+            resp = client.post("/contributions/post?project=tok-post-project&password=tok3", content=body, headers={"Content-Type": "application/json"})
+            self.assertEqual(resp.status_code, 200)
             mock_verify.assert_not_called()
 
 
@@ -1505,36 +1414,36 @@ class TestContributionsAuthorImageHandler(ContributionsHandlerTestCase):
         )
 
     def test_missing_author_param_returns_400(self):
-        resp = self.fetch("/contributions/author-image")
-        self.assertEqual(resp.code, 400)
-        body = json.loads(resp.body)
+        resp = client.get("/contributions/author-image")
+        self.assertEqual(resp.status_code, 400)
+        body = resp.json()
         self.assertIn("error", body)
 
     def test_unknown_author_returns_404(self):
         with self._patch_image():
-            resp = self.fetch("/contributions/author-image?author=Nobody")
-            self.assertEqual(resp.code, 404)
-            body = json.loads(resp.body)
+            resp = client.get("/contributions/author-image?author=Nobody")
+            self.assertEqual(resp.status_code, 404)
+            body = resp.json()
             self.assertIn("error", body)
 
     def test_known_author_returns_200_with_key(self):
         key = self._put_image("Jane Smith")
         with self._patch_image():
-            resp = self.fetch("/contributions/author-image?author=Jane+Smith")
-            self.assertEqual(resp.code, 200)
-            body = json.loads(resp.body)
+            resp = client.get("/contributions/author-image?author=Jane+Smith")
+            self.assertEqual(resp.status_code, 200)
+            body = resp.json()
             self.assertEqual(body["author"], "Jane Smith")
             self.assertEqual(body["image_key"], key)
 
     def test_response_is_json_content_type(self):
         self._put_image("Jane Smith")
         with self._patch_image():
-            resp = self.fetch("/contributions/author-image?author=Jane+Smith")
+            resp = client.get("/contributions/author-image?author=Jane+Smith")
             self.assertIn("application/json", resp.headers.get("Content-Type", ""))
 
     def test_options_returns_204(self):
-        resp = self.fetch("/contributions/author-image", method="OPTIONS")
-        self.assertEqual(resp.code, 204)
+        resp = client.options("/contributions/author-image", headers={"Origin": "http://example.com", "Access-Control-Request-Method": "GET"})
+        self.assertIn(resp.status_code, (200, 204))
 
 
 if __name__ == "__main__":

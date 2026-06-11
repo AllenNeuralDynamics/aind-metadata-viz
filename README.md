@@ -2,7 +2,93 @@
 
 [metadata visualizations](https://metadata-portal.allenneuraldynamics.org/)
 
-## Validation endpoints
+## REST API
+
+The portal exposes a REST API served by FastAPI/uvicorn.
+
+### Gather endpoint
+
+Gathers and validates metadata from the metadata service for a given subject.
+
+- `POST /gather` — body is a JSON object with required `subject_id` and `project_name`
+- Optional body keys: `metadata_service_url`, `modalities` (list), `tags` (list), `group`, `restrictions`, `data_summary`, `acquisition_start_time`
+
+```python
+response = requests.post(
+    "https://metadata-portal.allenneuraldynamics-test.org/gather",
+    json={"subject_id": "123456", "project_name": "MyProject"},
+)
+print(response.json())
+```
+
+### Upgrade endpoint
+
+`POST /upgrade` accepts a `metadata.json` dict and runs it through [`aind-metadata-upgrader`](https://github.com/AllenNeuralDynamics/aind-metadata-upgrader). It always returns original and upgraded JSON side by side for each field, even when some fields fail.
+
+```python
+import requests, json
+
+with open("metadata.json") as f:
+    metadata = json.load(f)
+
+response = requests.post(
+    "https://metadata-portal.allenneuraldynamics.org/upgrade",
+    json=metadata,
+)
+result = response.json()
+# result["overall_success"]  — True if all fields upgraded cleanly
+# result["overall_error"]    — error string if the full upgrade failed
+# result["partial_success"]  — True if at least one field succeeded
+# result["files_tested"]     — per-field breakdown
+```
+
+### Query endpoints
+
+- `GET /upgrade-query` — Build a query using the LLM query builder.
+- `POST /retrieve-records` — Run a query against the metadata store.
+
+Optional query parameters for `/retrieve-records`:
+- `names_only=true` — return only asset names
+- `limit=<int>` — limit number of results (default 0 = no limit)
+- `projection=<json>` — JSON object specifying which fields to include/exclude
+
+```python
+response = requests.post(
+    "https://metadata-portal.allenneuraldynamics-test.org/retrieve-records",
+    params={"limit": 10, "projection": '{"subject.subject_id": 1, "name": 1}'},
+    json={"subject.subject_id": "123456"},
+)
+print(response.json())
+```
+
+### Contributions endpoints
+
+Stores and retrieves [CRediT](https://credit.niso.org/) authorship contributions for a project, versioned via SQLite.
+
+| Endpoint | Description |
+|---|---|
+| `GET /contributions/get?project=<name>` | Latest contribution data (JSON by default) |
+| `GET /contributions/get?project=<name>&format=yaml` | Latest contribution data as YAML |
+| `GET /contributions/get?project=<name>&commit=<hash>` | Contribution data at a specific commit |
+| `GET /contributions/get?project=<name>&history=true` | List of all commits, newest first |
+| `GET /contributions/get?doi=<doi>` | Look up a project by DOI |
+| `POST /contributions/post?project=<name>[&message=<msg>][&password=<hash>]` | Store a new version; body is JSON or YAML |
+| `GET /contributions/token?doi=<doi>&type=add_author\|edit_author[&author=<name>][&days=<n>][&password=<hash>]` | Create a scoped token for a project |
+| `GET /contributions/author-image?author=<name>` | Returns the S3 key for an author's headshot |
+
+## Local dev
+
+```sh
+uv sync --extra dev
+uvicorn aind_metadata_viz.main:app --reload
+```
+
+## CI/CD
+
+```sh
+docker build -t aind-metadata-viz .
+docker run -p 8000:8000 aind-metadata-viz
+```
 
 The metadata portal hosts validation endpoints for the latest [`aind-data-schema`](https://github.com/AllenNeuralDynamics/aind-data-schema) release. You can hit these endpoints with:
 
@@ -79,6 +165,34 @@ response = requests.get(
 )
 print(response.json())
 ```
+
+### Upgrade endpoint
+
+`POST /upgrade` accepts a `metadata.json` dict and runs it through [`aind-metadata-upgrader`](https://github.com/AllenNeuralDynamics/aind-metadata-upgrader). It always returns original and upgraded JSON side by side for each field, even when some fields fail.
+
+```python
+import requests, json
+
+with open("metadata.json") as f:
+    metadata = json.load(f)
+
+response = requests.post(
+    "https://metadata-portal.allenneuraldynamics.org/upgrade",
+    json=metadata,
+)
+result = response.json()
+# result["overall_success"]  — True if all fields upgraded cleanly
+# result["overall_error"]    — error string if the full upgrade failed
+# result["partial_success"]  — True if at least one field succeeded
+# result["files_tested"]     — per-field breakdown:
+#   {
+#     "subject": {"success": True, "error": None, "original": {...}, "upgraded": {...}},
+#     "acquisition": {"success": False, "error": "...", "original": {...}, "upgraded": null},
+#     ...
+#   }
+```
+
+Fields that rename across schema versions (e.g. `session` → `acquisition`, `rig` → `instrument`) include a `"converted_to"` key indicating the new name.
 
 ### Query endpoints
 

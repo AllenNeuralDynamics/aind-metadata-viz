@@ -1,4 +1,4 @@
-FROM python:3.10-slim
+FROM python:3.11-slim
 
 WORKDIR /app
 
@@ -22,4 +22,4 @@ credential_source = EcsContainer
 EOF
 
 EXPOSE 8000
-ENTRYPOINT ["sh", "-c", "panel serve src/aind_metadata_viz/app.py src/aind_metadata_viz/view.py src/aind_metadata_viz/query.py src/aind_metadata_viz/upgrade.py src/aind_metadata_viz/fiber_viewer.py --static-dirs images=src/aind_metadata_viz/images --plugins aind_metadata_viz.endpoints --address 0.0.0.0 --port 8000 --allow-websocket-origin ${ALLOW_WEBSOCKET_ORIGIN} --keep-alive 10000 --index app.py"]
+ENTRYPOINT ["uvicorn", "aind_metadata_viz.main:app", "--host", "0.0.0.0", "--port", "8000"]
