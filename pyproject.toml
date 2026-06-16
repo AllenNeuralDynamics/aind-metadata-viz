@@ -29,7 +29,7 @@ dependencies = [
     'biodata-query @ git+https://github.com/AllenNeuralDynamics/biodata-query.git@v0.6.1',
     'boto3',
     'requests',
-    "aind-data-mcp>=0.3.4",
+    "aind-data-mcp>=0.4.0",
     "pytest>=9.0.3",
     "httpx>=0.28.1",
     "coverage>=7.14.1",
