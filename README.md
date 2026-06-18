@@ -61,6 +61,36 @@ response = requests.post(
 print(response.json())
 ```
 
+### Chat endpoint
+
+`POST /chat` — Ask a natural-language question about the metadata store. The agent can query records, look up schema info, and summarize results.
+
+Request body:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `message` | string | yes | User question (max 4096 bytes) |
+| `history` | list | no | Prior turns; each `{"role": "user"\|"assistant", "content": "..."}` (max 20 turns) |
+
+Response body:
+
+| Field | Description |
+|---|---|
+| `response` | Agent's answer text |
+| `stop_reason` | Why the agent stopped (e.g. `"end_turn"`) |
+| `iterations` | Number of reasoning steps |
+| `tool_calls` | List of `{name, input, output, is_error}` tool invocations |
+
+Rate-limited per IP (default: 10/min, 200/day).
+
+```python
+response = requests.post(
+    "https://metadata-portal.allenneuraldynamics.org/chat",
+    json={"message": "How many SmartSPIM assets are there?"},
+)
+print(response.json()["response"])
+```
+
 ### Contributions endpoints
 
 Stores and retrieves [CRediT](https://credit.niso.org/) authorship contributions for a project, versioned via SQLite.
@@ -211,6 +241,36 @@ response = requests.post(
     json={"subject.subject_id": "123456"},
 )
 print(response.json())
+```
+
+### Chat endpoint
+
+`POST /chat` — Ask a natural-language question about the metadata store. The agent can query records, look up schema info, and summarize results.
+
+Request body:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `message` | string | yes | User question (max 4096 bytes) |
+| `history` | list | no | Prior turns; each `{"role": "user"\|"assistant", "content": "..."}` (max 20 turns) |
+
+Response body:
+
+| Field | Description |
+|---|---|
+| `response` | Agent's answer text |
+| `stop_reason` | Why the agent stopped (e.g. `"end_turn"`) |
+| `iterations` | Number of reasoning steps |
+| `tool_calls` | List of `{name, input, output, is_error}` tool invocations |
+
+Rate-limited per IP (default: 10/min, 200/day).
+
+```python
+response = requests.post(
+    "https://metadata-portal.allenneuraldynamics.org/chat",
+    json={"message": "How many SmartSPIM assets are there?"},
+)
+print(response.json()["response"])
 ```
 
 ### Contributions endpoints
