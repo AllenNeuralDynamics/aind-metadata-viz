@@ -433,21 +433,35 @@ def _run_upgrade_on_dict(record: dict) -> dict:
 
 
 @router.post("/upgrade")
-async def upgrade_endpoint(request: Request):
-    try:
-        data = await request.json()
-    except Exception:
-        return JSONResponse(status_code=400, content={"error": "Invalid JSON format."})
+async def upgrade_endpoint(request: Request, asset_name: Optional[str] = None):
+    if asset_name:
+        try:
+            fetch_result = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: retrieve_records({"name": asset_name}, limit=1),
+            )
+        except Exception as e:
+            return JSONResponse(status_code=500, content={"error": f"Failed to fetch record: {str(e)}"})
 
-    if not isinstance(data, dict):
-        return JSONResponse(status_code=400, content={"error": "Request body must be a JSON object."})
+        if not fetch_result.records:
+            return JSONResponse(status_code=404, content={"error": f"Asset '{asset_name}' not found."})
 
-    has_core_fields = any(data.get(f) for f in _UPGRADE_CORE_FILES)
-    if not has_core_fields:
-        return JSONResponse(
-            status_code=400,
-            content={"error": "No recognized metadata fields found in request body."},
-        )
+        data = fetch_result.records[0]
+    else:
+        try:
+            data = await request.json()
+        except Exception:
+            return JSONResponse(status_code=400, content={"error": "Invalid JSON format."})
+
+        if not isinstance(data, dict):
+            return JSONResponse(status_code=400, content={"error": "Request body must be a JSON object."})
+
+        has_core_fields = any(data.get(f) for f in _UPGRADE_CORE_FILES)
+        if not has_core_fields:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "No recognized metadata fields found in request body."},
+            )
 
     result = _run_upgrade_on_dict(data)
     return JSONResponse(content=result)

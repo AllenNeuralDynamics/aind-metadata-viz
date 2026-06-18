@@ -61,6 +61,59 @@ response = requests.post(
 print(response.json())
 ```
 
+### Chat endpoint
+
+`POST /chat` — Ask a natural-language question about the metadata store. The agent can query records, look up schema info, and summarize results.
+
+Query parameters:
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `id` | string | no | Optional caller identifier logged with each request (e.g. a username or app name) |
+
+Request body:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `message` | string | yes | User question (max 4096 bytes) |
+| `history` | list | no | Prior turns; each `{"role": "user"\|"assistant", "content": "..."}` (max 20 turns) |
+
+Response body:
+
+| Field | Description |
+|---|---|
+| `response` | Agent's answer text |
+| `stop_reason` | Why the agent stopped (e.g. `"end_turn"`) |
+| `iterations` | Number of reasoning steps |
+| `tool_calls` | List of `{name, input, output, is_error}` tool invocations |
+
+Rate-limited per IP (default: 10/min, 200/day).
+
+Every successful request is appended as a JSON Lines record to a daily log file in S3:
+`s3://aind-scratch-data/aind-metadata-viz-logs/chat_log_{YYYY-MM-DD}.json`
+
+Each log record contains:
+
+| Field | Description |
+|---|---|
+| `timestamp` | ISO-8601 UTC timestamp |
+| `requester_id` | Value of the `?id=` query parameter, or `null` |
+| `ip` | Client IP address |
+| `message` | User message |
+| `response` | Agent response |
+| `stop_reason` | Agent stop reason |
+| `iterations` | Number of agent reasoning steps |
+| `tool_call_count` | Number of tool calls made |
+
+```python
+response = requests.post(
+    "https://metadata-portal.allenneuraldynamics.org/chat",
+    params={"id": "my-app"},
+    json={"message": "How many SmartSPIM assets are there?"},
+)
+print(response.json()["response"])
+```
+
 ### Contributions endpoints
 
 Stores and retrieves [CRediT](https://credit.niso.org/) authorship contributions for a project, versioned via SQLite.
@@ -211,6 +264,59 @@ response = requests.post(
     json={"subject.subject_id": "123456"},
 )
 print(response.json())
+```
+
+### Chat endpoint
+
+`POST /chat` — Ask a natural-language question about the metadata store. The agent can query records, look up schema info, and summarize results.
+
+Query parameters:
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `id` | string | no | Optional caller identifier logged with each request (e.g. a username or app name) |
+
+Request body:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `message` | string | yes | User question (max 4096 bytes) |
+| `history` | list | no | Prior turns; each `{"role": "user"\|"assistant", "content": "..."}` (max 20 turns) |
+
+Response body:
+
+| Field | Description |
+|---|---|
+| `response` | Agent's answer text |
+| `stop_reason` | Why the agent stopped (e.g. `"end_turn"`) |
+| `iterations` | Number of reasoning steps |
+| `tool_calls` | List of `{name, input, output, is_error}` tool invocations |
+
+Rate-limited per IP (default: 10/min, 200/day).
+
+Every successful request is appended as a JSON Lines record to a daily log file in S3:
+`s3://aind-scratch-data/aind-metadata-viz-logs/chat_log_{YYYY-MM-DD}.json`
+
+Each log record contains:
+
+| Field | Description |
+|---|---|
+| `timestamp` | ISO-8601 UTC timestamp |
+| `requester_id` | Value of the `?id=` query parameter, or `null` |
+| `ip` | Client IP address |
+| `message` | User message |
+| `response` | Agent response |
+| `stop_reason` | Agent stop reason |
+| `iterations` | Number of agent reasoning steps |
+| `tool_call_count` | Number of tool calls made |
+
+```python
+response = requests.post(
+    "https://metadata-portal.allenneuraldynamics.org/chat",
+    params={"id": "my-app"},
+    json={"message": "How many SmartSPIM assets are there?"},
+)
+print(response.json()["response"])
 ```
 
 ### Contributions endpoints
