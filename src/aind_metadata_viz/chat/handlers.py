@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import logging
 import os
+from typing import Optional
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 
 from .agent import result_to_dict, run_agent
+from .log import append_chat_log
 from .ratelimit import RateLimiter, client_ip
 
 logger = logging.getLogger(__name__)
@@ -65,7 +67,10 @@ def _validate(data) -> tuple[str | None, dict | None]:
 
 
 @chat_router.post("/chat")
-async def chat_endpoint(request: Request):
+async def chat_endpoint(
+    request: Request,
+    id: Optional[str] = Query(default=None, description="Optional caller identifier"),
+):
     ip = client_ip(
         request.headers, request.client.host if request.client else None
     )
@@ -108,5 +113,14 @@ async def chat_endpoint(request: Request):
         result.stop_reason,
         result.iterations,
         len(result.tool_calls),
+    )
+    append_chat_log(
+        message=payload["message"],
+        response=result_to_dict(result).get("response", ""),
+        stop_reason=result.stop_reason,
+        iterations=result.iterations,
+        tool_call_count=len(result.tool_calls),
+        ip=ip,
+        requester_id=id,
     )
     return JSONResponse(content=result_to_dict(result))

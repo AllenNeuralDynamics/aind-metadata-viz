@@ -300,5 +300,74 @@ class TestValidateFilesHandler(unittest.TestCase):
         )
 
 
+class TestUpgradeEndpoint(unittest.TestCase):
+
+    def _minimal_subject(self):
+        return {
+            "object_type": "Subject",
+            "subject_id": "12345",
+            "sex": "Male",
+            "date_of_birth": "2023-01-01",
+            "species": {
+                "name": "Mus musculus",
+                "registry": "National Center for Biotechnology Information (NCBI)",
+                "registry_identifier": "NCBI:txid10090",
+            },
+            "genotype": "wt",
+        }
+
+    def test_upgrade_with_body(self):
+        payload = {"subject": self._minimal_subject()}
+        response = client.post("/upgrade", json=payload)
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertIn("files_tested", body)
+        self.assertIn("subject", body["files_tested"])
+
+    def test_upgrade_invalid_json(self):
+        response = client.post(
+            "/upgrade",
+            content=b"not json",
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Invalid JSON format", response.json()["error"])
+
+    def test_upgrade_no_core_fields(self):
+        response = client.post("/upgrade", json={"foo": "bar"})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("No recognized metadata fields", response.json()["error"])
+
+    @patch("aind_metadata_viz.endpoints.retrieve_records")
+    def test_upgrade_by_asset_name(self, mock_retrieve):
+        mock_result = Mock()
+        mock_result.records = [{"name": "test-asset", "subject": self._minimal_subject()}]
+        mock_retrieve.return_value = mock_result
+
+        response = client.post("/upgrade?asset_name=test-asset")
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertIn("files_tested", body)
+        mock_retrieve.assert_called_once_with({"name": "test-asset"}, limit=1)
+
+    @patch("aind_metadata_viz.endpoints.retrieve_records")
+    def test_upgrade_by_asset_name_not_found(self, mock_retrieve):
+        mock_result = Mock()
+        mock_result.records = []
+        mock_retrieve.return_value = mock_result
+
+        response = client.post("/upgrade?asset_name=nonexistent")
+        self.assertEqual(response.status_code, 404)
+        self.assertIn("not found", response.json()["error"])
+
+    @patch("aind_metadata_viz.endpoints.retrieve_records")
+    def test_upgrade_by_asset_name_fetch_error(self, mock_retrieve):
+        mock_retrieve.side_effect = Exception("connection error")
+
+        response = client.post("/upgrade?asset_name=test-asset")
+        self.assertEqual(response.status_code, 500)
+        self.assertIn("Failed to fetch record", response.json()["error"])
+
+
 if __name__ == "__main__":
     unittest.main()

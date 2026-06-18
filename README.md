@@ -65,6 +65,12 @@ print(response.json())
 
 `POST /chat` — Ask a natural-language question about the metadata store. The agent can query records, look up schema info, and summarize results.
 
+Query parameters:
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `id` | string | no | Optional caller identifier logged with each request (e.g. a username or app name) |
+
 Request body:
 
 | Field | Type | Required | Description |
@@ -83,9 +89,26 @@ Response body:
 
 Rate-limited per IP (default: 10/min, 200/day).
 
+Every successful request is appended as a JSON Lines record to a daily log file in S3:
+`s3://aind-scratch-data/aind-metadata-viz-logs/chat_log_{YYYY-MM-DD}.json`
+
+Each log record contains:
+
+| Field | Description |
+|---|---|
+| `timestamp` | ISO-8601 UTC timestamp |
+| `requester_id` | Value of the `?id=` query parameter, or `null` |
+| `ip` | Client IP address |
+| `message` | User message |
+| `response` | Agent response |
+| `stop_reason` | Agent stop reason |
+| `iterations` | Number of agent reasoning steps |
+| `tool_call_count` | Number of tool calls made |
+
 ```python
 response = requests.post(
     "https://metadata-portal.allenneuraldynamics.org/chat",
+    params={"id": "my-app"},
     json={"message": "How many SmartSPIM assets are there?"},
 )
 print(response.json()["response"])
@@ -247,6 +270,12 @@ print(response.json())
 
 `POST /chat` — Ask a natural-language question about the metadata store. The agent can query records, look up schema info, and summarize results.
 
+Query parameters:
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `id` | string | no | Optional caller identifier logged with each request (e.g. a username or app name) |
+
 Request body:
 
 | Field | Type | Required | Description |
@@ -265,9 +294,26 @@ Response body:
 
 Rate-limited per IP (default: 10/min, 200/day).
 
+Every successful request is appended as a JSON Lines record to a daily log file in S3:
+`s3://aind-scratch-data/aind-metadata-viz-logs/chat_log_{YYYY-MM-DD}.json`
+
+Each log record contains:
+
+| Field | Description |
+|---|---|
+| `timestamp` | ISO-8601 UTC timestamp |
+| `requester_id` | Value of the `?id=` query parameter, or `null` |
+| `ip` | Client IP address |
+| `message` | User message |
+| `response` | Agent response |
+| `stop_reason` | Agent stop reason |
+| `iterations` | Number of agent reasoning steps |
+| `tool_call_count` | Number of tool calls made |
+
 ```python
 response = requests.post(
     "https://metadata-portal.allenneuraldynamics.org/chat",
+    params={"id": "my-app"},
     json={"message": "How many SmartSPIM assets are there?"},
 )
 print(response.json()["response"])
