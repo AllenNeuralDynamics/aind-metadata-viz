@@ -17,7 +17,7 @@ import logging
 import traceback
 
 from biodata_query.llm.endpoint import handle_get_query
-from biodata_query.query import retrieve_records
+from biodata_query.query import retrieve_aggregation, retrieve_records
 
 
 router = APIRouter()
@@ -299,8 +299,29 @@ async def retrieve_records_endpoint(request: Request):
     except Exception:
         return JSONResponse(status_code=400, content={"error": "Invalid JSON format."})
 
+    # Aggregation path: body is a list (MongoDB aggregation pipeline)
+    if isinstance(data, list):
+        try:
+            result = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: retrieve_aggregation(data),
+            )
+            response_body = {
+                "backend": result.backend,
+                "elapsed_seconds": result.elapsed_seconds,
+                "asset_names": result.asset_names,
+            }
+            if result.records is not None:
+                response_body["records"] = result.records
+            return JSONResponse(content=response_body)
+        except Exception as e:
+            return JSONResponse(
+                status_code=500,
+                content={"error": "Aggregation execution failed", "details": str(e)},
+            )
+
     if not isinstance(data, dict):
-        return JSONResponse(status_code=400, content={"error": "Request body must be a JSON object."})
+        return JSONResponse(status_code=400, content={"error": "Request body must be a JSON object or a list (aggregation pipeline)."})
 
     names_only = request.query_params.get("names_only", "false").lower() == "true"
     limit_str = request.query_params.get("limit", "0")
