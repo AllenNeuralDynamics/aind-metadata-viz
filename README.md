@@ -45,9 +45,11 @@ result = response.json()
 ### Query endpoints
 
 - `GET /upgrade-query` — Build a query using the LLM query builder.
-- `POST /retrieve-records` — Run a query against the metadata store.
+- `POST /retrieve-records` — Run a filter query or aggregation pipeline against the metadata store.
 
-Optional query parameters for `/retrieve-records`:
+To run a **filter query**, send a JSON object as the body:
+
+Optional query parameters:
 - `names_only=true` — return only asset names
 - `limit=<int>` — limit number of results (default 0 = no limit)
 - `projection=<json>` — JSON object specifying which fields to include/exclude
@@ -57,6 +59,19 @@ response = requests.post(
     "https://metadata-portal.allenneuraldynamics-test.org/retrieve-records",
     params={"limit": 10, "projection": '{"subject.subject_id": 1, "name": 1}'},
     json={"subject.subject_id": "123456"},
+)
+print(response.json())
+```
+
+To run an **aggregation pipeline**, send a JSON array of pipeline stage dicts as the body. The pipeline is always executed against DocumentDB.
+
+```python
+response = requests.post(
+    "https://metadata-portal.allenneuraldynamics-test.org/retrieve-records",
+    json=[
+        {"$match": {"data_description.project_name": "MyProject"}},
+        {"$group": {"_id": "$subject.subject_id", "count": {"$sum": 1}}},
+    ],
 )
 print(response.json())
 ```
@@ -250,9 +265,11 @@ Fields that rename across schema versions (e.g. `session` → `acquisition`, `ri
 ### Query endpoints
 
 - `GET /upgrade-query` — Build a query using the LLM query builder. Pass query string parameters as needed.
-- `POST /retrieve-records` — Run a query. Accepts a JSON object as the request body.
+- `POST /retrieve-records` — Run a filter query or aggregation pipeline against the metadata store.
 
-Optional query parameters for `/retrieve-records`:
+To run a **filter query**, send a JSON object as the body:
+
+Optional query parameters:
 - `names_only=true` — return only asset names
 - `limit=<int>` — limit number of results (default 0 = no limit)
 - `projection=<json>` — JSON object specifying which fields to include/exclude (e.g. `{"subject.subject_id": 1}`)
@@ -262,6 +279,19 @@ response = requests.post(
     "https://metadata-portal.allenneuraldynamics-test.org/retrieve-records",
     params={"limit": 10, "projection": '{"subject.subject_id": 1, "name": 1}'},
     json={"subject.subject_id": "123456"},
+)
+print(response.json())
+```
+
+To run an **aggregation pipeline**, send a JSON array of pipeline stage dicts as the body. The pipeline is always executed against DocumentDB.
+
+```python
+response = requests.post(
+    "https://metadata-portal.allenneuraldynamics-test.org/retrieve-records",
+    json=[
+        {"$match": {"data_description.project_name": "MyProject"}},
+        {"$group": {"_id": "$subject.subject_id", "count": {"$sum": 1}}},
+    ],
 )
 print(response.json())
 ```

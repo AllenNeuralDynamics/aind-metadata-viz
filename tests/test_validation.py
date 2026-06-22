@@ -369,5 +369,71 @@ class TestUpgradeEndpoint(unittest.TestCase):
         self.assertIn("Failed to fetch record", response.json()["error"])
 
 
+class TestRetrieveRecordsEndpoint(unittest.TestCase):
+
+    @patch("aind_metadata_viz.endpoints.retrieve_records")
+    def test_filter_query(self, mock_retrieve):
+        mock_result = Mock()
+        mock_result.backend = "cache"
+        mock_result.elapsed_seconds = 0.1
+        mock_result.asset_names = ["asset-1"]
+        mock_result.records = [{"name": "asset-1"}]
+        mock_retrieve.return_value = mock_result
+
+        response = client.post("/retrieve-records", json={"subject.subject_id": "123456"})
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["asset_names"], ["asset-1"])
+        self.assertEqual(body["records"], [{"name": "asset-1"}])
+        mock_retrieve.assert_called_once()
+
+    @patch("aind_metadata_viz.endpoints.retrieve_aggregation")
+    def test_aggregation_pipeline(self, mock_aggregate):
+        mock_result = Mock()
+        mock_result.backend = "docdb"
+        mock_result.elapsed_seconds = 0.2
+        mock_result.asset_names = ["asset-2"]
+        mock_result.records = [{"name": "asset-2", "count": 5}]
+        mock_aggregate.return_value = mock_result
+
+        pipeline = [{"$match": {"subject.subject_id": "123456"}}, {"$limit": 5}]
+        response = client.post("/retrieve-records", json=pipeline)
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["backend"], "docdb")
+        self.assertEqual(body["asset_names"], ["asset-2"])
+        self.assertEqual(body["records"], [{"name": "asset-2", "count": 5}])
+        mock_aggregate.assert_called_once_with(pipeline)
+
+    @patch("aind_metadata_viz.endpoints.retrieve_aggregation")
+    def test_aggregation_pipeline_error(self, mock_aggregate):
+        mock_aggregate.side_effect = Exception("pipeline error")
+
+        response = client.post("/retrieve-records", json=[{"$match": {}}])
+        self.assertEqual(response.status_code, 500)
+        self.assertIn("Aggregation execution failed", response.json()["error"])
+
+    @patch("aind_metadata_viz.endpoints.retrieve_records")
+    def test_filter_query_error(self, mock_retrieve):
+        mock_retrieve.side_effect = Exception("connection error")
+
+        response = client.post("/retrieve-records", json={"name": "test"})
+        self.assertEqual(response.status_code, 500)
+        self.assertIn("Query execution failed", response.json()["error"])
+
+    def test_invalid_json(self):
+        response = client.post(
+            "/retrieve-records",
+            content=b"not json",
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Invalid JSON format", response.json()["error"])
+
+    def test_invalid_body_type(self):
+        response = client.post("/retrieve-records", json="a string")
+        self.assertEqual(response.status_code, 400)
+
+
 if __name__ == "__main__":
     unittest.main()
