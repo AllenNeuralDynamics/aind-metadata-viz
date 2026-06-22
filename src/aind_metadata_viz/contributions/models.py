@@ -47,34 +47,20 @@ class RoleContribution(BaseModel):
 
     role: CreditRole
     level: ContributionLevel
-    start_date: Optional[date] = Field(
-        default=None,
-        description="Optional start date for the contribution (e.g. when an author started working on the project)",
-    )
-    end_date: Optional[date] = Field(
-        default=None,
-        description="Optional end date for the contribution",
-    )
     description: Optional[str] = Field(
         default=None, description="Optional free-text description"
-    )
-    linked_sections: Optional[List[str]] = Field(
-        default=None,
-        description="Optional list of paper headers/subheaders that the contribution is linked to (e.g. Introduction, Methods)",
     )
     linked_assets: Optional[List[str]] = Field(
         default=None,
     )
 
-    @model_validator(mode="after")
-    def check_dates(self):
-        start_date = self.start_date
-        end_date = self.end_date
-        if end_date and not start_date:
-            raise ValueError("start_date is required if end_date is provided")
-        if start_date and end_date and end_date < start_date:
-            raise ValueError("end_date cannot be before start_date")
-        return self
+
+class SectionContribution(BaseModel):
+    """A contribution to a specific section of a paper."""
+
+    section: str = Field(description="Name of the paper section (e.g. Introduction, Methods)")
+    description: Optional[str] = Field(default=None, description="Optional free-text description of the contribution")
+    level: ContributionLevel
 
 
 class Author(Person):
@@ -93,7 +79,12 @@ class AuthorContribution(BaseModel):
         default=None,
         description="Optional publication authorship position, used for display purposes (e.g. first, middle, senior)",
     )
+    start_date: Optional[date] = Field(
+        default=None,
+        description="Optional date when the author started working on the project",
+    )
     credit_levels: List[RoleContribution] = Field(default_factory=list)
+    section_levels: List[SectionContribution] = Field(default_factory=list)
     from_asset: bool = Field(
         default=False,
         description="True when an author is listed in the metadata of a data asset",
