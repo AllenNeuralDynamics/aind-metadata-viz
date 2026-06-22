@@ -83,6 +83,10 @@ class AuthorContribution(BaseModel):
         default=None,
         description="Optional date when the author started working on the project",
     )
+    end_date: Optional[date] = Field(
+        default=None,
+        description="Optional date when the author stopped working on the project",
+    )
     credit_levels: List[RoleContribution] = Field(default_factory=list)
     section_levels: List[SectionContribution] = Field(default_factory=list)
     from_asset: bool = Field(
