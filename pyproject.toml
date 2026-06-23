@@ -25,7 +25,7 @@ dependencies = [
     'aind-metadata-validator>=0.11.6,<2',
     'aind-metadata-upgrader>=0.15.23,<1',
     'numpy<2.0',
-    'biodata-query @ git+https://github.com/AllenNeuralDynamics/biodata-query.git@v0.6.1',
+    'biodata-query @ git+https://github.com/AllenNeuralDynamics/biodata-query.git@v0.7.0',
     'boto3',
     'requests',
     "aind-data-mcp>=0.4.0",
