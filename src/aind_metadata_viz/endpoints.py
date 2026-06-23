@@ -16,8 +16,11 @@ import requests
 import logging
 import traceback
 
+from aind_data_access_api.document_db import MetadataDbClient
 from biodata_query.llm.endpoint import handle_get_query
 from biodata_query.query import retrieve_aggregation, retrieve_records
+
+_DOCDB_HOST = "api.allenneuraldynamics.org"
 
 
 router = APIRouter()
@@ -457,17 +460,19 @@ def _run_upgrade_on_dict(record: dict) -> dict:
 async def upgrade_endpoint(request: Request, asset_name: Optional[str] = None):
     if asset_name:
         try:
-            fetch_result = await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: retrieve_records({"name": asset_name}, limit=1),
-            )
+            def _fetch_v1_record():
+                client = MetadataDbClient(host=_DOCDB_HOST, version="v1")
+                records = client.retrieve_docdb_records(filter_query={"name": asset_name})
+                return records
+
+            records = await asyncio.get_event_loop().run_in_executor(None, _fetch_v1_record)
         except Exception as e:
             return JSONResponse(status_code=500, content={"error": f"Failed to fetch record: {str(e)}"})
 
-        if not fetch_result.records:
+        if not records:
             return JSONResponse(status_code=404, content={"error": f"Asset '{asset_name}' not found."})
 
-        data = fetch_result.records[0]
+        data = records[0]
     else:
         try:
             data = await request.json()
