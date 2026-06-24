@@ -37,6 +37,7 @@ from aind_metadata_viz.contributions.store import (
     create_token,
     lookup_token,
     consume_token,
+    find_active_token,
 )
 from aind_metadata_viz.contributions.handlers import contributions_router
 from fastapi.testclient import TestClient
@@ -1444,6 +1445,278 @@ class TestContributionsAuthorImageHandler(ContributionsHandlerTestCase):
     def test_options_returns_204(self):
         resp = client.options("/contributions/author-image", headers={"Origin": "http://example.com", "Access-Control-Request-Method": "GET"})
         self.assertIn(resp.status_code, (200, 204))
+
+
+class TestFindActiveToken(unittest.TestCase):
+    def setUp(self):
+        self._fake = _FakeS3()
+        self._patch = _s3_patch(self._fake)
+        self._patch.start()
+        self.pc = ProjectContributions(
+            project_name="active-tok-project",
+            contributors=[
+                AuthorContribution(author=_make_author("Alice"), credit_levels=[_make_role()]),
+            ],
+        )
+        store_contributions("active-tok-project", self.pc)
+
+    def tearDown(self):
+        self._patch.stop()
+
+    def test_returns_none_when_no_tokens(self):
+        self.assertIsNone(find_active_token("active-tok-project", "edit_author", "Alice"))
+
+    def test_returns_active_edit_author_token(self):
+        token = create_token("active-tok-project", "edit_author", author_name="Alice")
+        record = find_active_token("active-tok-project", "edit_author", "Alice")
+        self.assertIsNotNone(record)
+        self.assertEqual(record["token_id"], token)
+
+    def test_ignores_different_author(self):
+        create_token("active-tok-project", "edit_author", author_name="Alice")
+        self.assertIsNone(find_active_token("active-tok-project", "edit_author", "Bob"))
+
+    def test_ignores_different_token_type(self):
+        create_token("active-tok-project", "edit_author", author_name="Alice")
+        self.assertIsNone(find_active_token("active-tok-project", "add_author", None))
+
+    def test_ignores_consumed_token(self):
+        token = create_token("active-tok-project", "edit_author", author_name="Alice")
+        consume_token("active-tok-project", token)
+        self.assertIsNone(find_active_token("active-tok-project", "edit_author", "Alice"))
+
+    def test_ignores_expired_token(self):
+        from datetime import datetime, timezone, timedelta
+        token = create_token("active-tok-project", "edit_author", author_name="Alice")
+        token_key = "contributions-app/_tokens/active-tok-project.json"
+        raw = self._fake._store[token_key]
+        data = json.loads(raw)
+        for t in data["tokens"]:
+            if t["token_id"] == token:
+                t["expires_at"] = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+        self._fake._store[token_key] = json.dumps(data).encode()
+        self.assertIsNone(find_active_token("active-tok-project", "edit_author", "Alice"))
+
+    def test_returns_first_active_match_when_multiple(self):
+        t1 = create_token("active-tok-project", "edit_author", author_name="Alice")
+        create_token("active-tok-project", "edit_author", author_name="Alice")
+        record = find_active_token("active-tok-project", "edit_author", "Alice")
+        self.assertEqual(record["token_id"], t1)
+
+
+class TestTokenHandlerReuseEditToken(ContributionsHandlerTestCase):
+    """Verify GET /contributions/token reuses existing valid edit_author tokens."""
+
+    def _patch_contributions_by_doi(self, pc):
+        return patch(
+            "aind_metadata_viz.contributions.handlers.get_contributions_by_doi",
+            return_value=pc,
+        )
+
+    def _patch_verify(self, return_value=True):
+        return patch(
+            "aind_metadata_viz.contributions.handlers.verify_project_password",
+            return_value=return_value,
+        )
+
+    def test_reuses_existing_active_edit_author_token(self):
+        pc = _make_project("reuse-edit-project")
+        # Seed an existing edit_author token via the real store helper.
+        existing_token = create_token(
+            "reuse-edit-project", "edit_author", author_name="Jane Smith"
+        )
+        mock_create = MagicMock(return_value="newtoken")
+        with self._patch_contributions_by_doi(pc), self._patch_verify(True), \
+                patch("aind_metadata_viz.contributions.handlers.create_token", mock_create):
+            resp = client.get(
+                "/contributions/token?doi=10.1/x&type=edit_author&author=Jane+Smith"
+            )
+            self.assertEqual(resp.status_code, 200)
+            body = resp.json()
+            self.assertEqual(body["token"], existing_token)
+            self.assertTrue(body.get("reused"))
+            mock_create.assert_not_called()
+
+    def test_creates_new_token_when_no_existing_for_author(self):
+        pc = _make_project("reuse-edit-project")
+        # Existing token is for a different author — should not be reused.
+        create_token("reuse-edit-project", "edit_author", author_name="Other Person")
+        mock_create = MagicMock(return_value="freshtoken")
+        with self._patch_contributions_by_doi(pc), self._patch_verify(True), \
+                patch("aind_metadata_viz.contributions.handlers.create_token", mock_create):
+            resp = client.get(
+                "/contributions/token?doi=10.1/x&type=edit_author&author=Jane+Smith"
+            )
+            self.assertEqual(resp.status_code, 200)
+            body = resp.json()
+            self.assertEqual(body["token"], "freshtoken")
+            self.assertNotIn("reused", body)
+            mock_create.assert_called_once()
+
+    def test_creates_new_token_when_existing_is_consumed(self):
+        pc = _make_project("reuse-edit-project")
+        old_token = create_token(
+            "reuse-edit-project", "edit_author", author_name="Jane Smith"
+        )
+        consume_token("reuse-edit-project", old_token)
+        mock_create = MagicMock(return_value="freshtoken")
+        with self._patch_contributions_by_doi(pc), self._patch_verify(True), \
+                patch("aind_metadata_viz.contributions.handlers.create_token", mock_create):
+            resp = client.get(
+                "/contributions/token?doi=10.1/x&type=edit_author&author=Jane+Smith"
+            )
+            self.assertEqual(resp.status_code, 200)
+            body = resp.json()
+            self.assertEqual(body["token"], "freshtoken")
+            mock_create.assert_called_once()
+
+    def test_add_author_token_not_reused(self):
+        """Only edit_author tokens are reused; add_author creates fresh each time."""
+        pc = _make_project("reuse-edit-project")
+        create_token("reuse-edit-project", "add_author")
+        mock_create = MagicMock(return_value="freshtoken")
+        with self._patch_contributions_by_doi(pc), self._patch_verify(True), \
+                patch("aind_metadata_viz.contributions.handlers.create_token", mock_create):
+            resp = client.get("/contributions/token?doi=10.1/x&type=add_author")
+            self.assertEqual(resp.status_code, 200)
+            body = resp.json()
+            self.assertEqual(body["token"], "freshtoken")
+            mock_create.assert_called_once()
+
+
+class TestPostHandlerReturnsEditToken(ContributionsHandlerTestCase):
+    """When a token-authenticated POST adds a new author, an edit_author token is returned."""
+
+    def _seed_two_author_project(self, name="post-edit-project"):
+        pc = ProjectContributions(
+            project_name=name,
+            contributors=[
+                AuthorContribution(author=_make_author("Alice"), credit_levels=[_make_role()]),
+                AuthorContribution(author=_make_author("Bob"), credit_levels=[_make_role()]),
+            ],
+        )
+        store_contributions(name, pc)
+        return pc
+
+    def _three_author_payload(self, name="post-edit-project", new_name="Carol"):
+        pc = ProjectContributions(
+            project_name=name,
+            contributors=[
+                AuthorContribution(author=_make_author("Alice"), credit_levels=[_make_role()]),
+                AuthorContribution(author=_make_author("Bob"), credit_levels=[_make_role()]),
+                AuthorContribution(author=_make_author(new_name), credit_levels=[_make_role()]),
+            ],
+        )
+        return to_json(pc)
+
+    def test_add_author_token_returns_edit_token_for_new_author(self):
+        self._seed_two_author_project()
+        token = create_token("post-edit-project", "add_author")
+        body = self._three_author_payload(new_name="Carol")
+        resp = client.post(
+            f"/contributions/post?project=post-edit-project&password={token}",
+            content=body,
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["edit_author"], "Carol")
+        self.assertIn("edit_token", data)
+        # The returned edit token should resolve to a valid edit_author record for Carol.
+        record = lookup_token("post-edit-project", data["edit_token"])
+        self.assertIsNotNone(record)
+        self.assertEqual(record["token_type"], "edit_author")
+        self.assertEqual(record["author_name"], "Carol")
+
+    def test_multi_author_token_returns_edit_token_for_new_author(self):
+        self._seed_two_author_project()
+        token = create_token("post-edit-project", "multi_author")
+        body = self._three_author_payload(new_name="Dave")
+        resp = client.post(
+            f"/contributions/post?project=post-edit-project&password={token}",
+            content=body,
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["edit_author"], "Dave")
+        record = lookup_token("post-edit-project", data["edit_token"])
+        self.assertIsNotNone(record)
+        self.assertEqual(record["token_type"], "edit_author")
+        self.assertEqual(record["author_name"], "Dave")
+
+    def test_returned_edit_token_uses_max_validity(self):
+        from datetime import datetime, timezone
+        self._seed_two_author_project()
+        token = create_token("post-edit-project", "multi_author")
+        body = self._three_author_payload(new_name="Erin")
+        resp = client.post(
+            f"/contributions/post?project=post-edit-project&password={token}",
+            content=body,
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(resp.status_code, 200)
+        record = lookup_token("post-edit-project", resp.json()["edit_token"])
+        delta = datetime.fromisoformat(record["expires_at"]) - datetime.now(timezone.utc)
+        # _MAX_TOKEN_DAYS is 365; allow tiny clock drift.
+        self.assertGreater(delta.days, 360)
+        self.assertLessEqual(delta.days, 365)
+
+    def test_returned_edit_token_reuses_existing_active_token(self):
+        self._seed_two_author_project()
+        # Pre-seed an edit_author token for the soon-to-be-added author "Frank".
+        pre_existing = create_token(
+            "post-edit-project", "edit_author", author_name="Frank"
+        )
+        token = create_token("post-edit-project", "multi_author")
+        body = self._three_author_payload(new_name="Frank")
+        resp = client.post(
+            f"/contributions/post?project=post-edit-project&password={token}",
+            content=body,
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["edit_token"], pre_existing)
+
+    def test_edit_author_token_does_not_return_new_edit_token(self):
+        self._seed_two_author_project()
+        token = create_token(
+            "post-edit-project", "edit_author", author_name="Alice"
+        )
+        # Modify Alice but don't add any authors.
+        modified = ProjectContributions(
+            project_name="post-edit-project",
+            contributors=[
+                AuthorContribution(
+                    author=_make_author("Alice", affiliation=["New Org"]),
+                    credit_levels=[_make_role()],
+                ),
+                AuthorContribution(author=_make_author("Bob"), credit_levels=[_make_role()]),
+            ],
+        )
+        resp = client.post(
+            f"/contributions/post?project=post-edit-project&password={token}",
+            content=to_json(modified),
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertNotIn("edit_token", data)
+        self.assertNotIn("edit_author", data)
+
+    def test_admin_password_post_does_not_return_edit_token(self):
+        self._seed_two_author_project()
+        # No password set on the project (publicly writable in this setup),
+        # so an empty-password POST is treated as admin and no token logic runs.
+        body = self._three_author_payload(new_name="Gina")
+        resp = client.post(
+            "/contributions/post?project=post-edit-project",
+            content=body,
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertNotIn("edit_token", data)
 
 
 if __name__ == "__main__":

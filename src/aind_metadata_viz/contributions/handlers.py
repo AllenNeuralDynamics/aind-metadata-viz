@@ -30,11 +30,14 @@ from fastapi.responses import JSONResponse, Response
 
 _logger = logging.getLogger(__name__)
 
+from datetime import datetime, timezone
+
 from . import from_json, from_yaml, get_contributions, list_project_commits, store_contributions, to_json, to_yaml
 from .models import ProjectContributions
 from .store import (
     consume_token,
     create_token,
+    find_active_token,
     get_author_image_key,
     get_contributions_by_doi,
     is_project_locked,
@@ -42,6 +45,7 @@ from .store import (
     set_project_password,
     verify_project_password,
     _MAX_MULTI_AUTHOR_DAYS,
+    _MAX_TOKEN_DAYS,
 )
 
 
@@ -192,6 +196,7 @@ async def contributions_post(request: Request):
     password = request.query_params.get("password", None)
     token_id = None
     token_type = None
+    new_author_name = None
 
     if password:
         token_record = lookup_token(project, password)
@@ -202,6 +207,15 @@ async def contributions_post(request: Request):
             ok, err = _validate_token_scope(project, token_type, token_author, new_contributions)
             if not ok:
                 return JSONResponse(status_code=403, content={"error": err})
+            if token_type in ("add_author", "multi_author"):
+                try:
+                    existing_pre = get_contributions(project)
+                    existing_names_pre = {c.author.name for c in existing_pre.contributors}
+                except FileNotFoundError:
+                    existing_names_pre = set()
+                added = {c.author.name for c in new_contributions.contributors} - existing_names_pre
+                if len(added) == 1:
+                    new_author_name = next(iter(added))
         else:
             if not verify_project_password(project, password):
                 return JSONResponse(status_code=401, content={"error": "Unauthorized"})
@@ -223,7 +237,38 @@ async def contributions_post(request: Request):
     if token_id and token_type == "add_author":
         consume_token(project, token_id)
 
-    return JSONResponse(content={"commit": commit_hash, "project": project})
+    response_body = {"commit": commit_hash, "project": project}
+
+    if new_author_name:
+        try:
+            existing_edit = find_active_token(project, "edit_author", author_name=new_author_name)
+        except Exception:
+            _logger.exception(
+                "POST /contributions/post find_active_token project=%s author=%s",
+                project,
+                new_author_name,
+            )
+            existing_edit = None
+        try:
+            if existing_edit is not None:
+                edit_token = existing_edit["token_id"]
+            else:
+                edit_token = create_token(
+                    project,
+                    "edit_author",
+                    author_name=new_author_name,
+                    expires_days=_MAX_TOKEN_DAYS,
+                )
+            response_body["edit_token"] = edit_token
+            response_body["edit_author"] = new_author_name
+        except Exception:
+            _logger.exception(
+                "POST /contributions/post create_token project=%s author=%s",
+                project,
+                new_author_name,
+            )
+
+    return JSONResponse(content=response_body)
 
 
 @contributions_router.get("/contributions/token")
@@ -263,6 +308,31 @@ async def contributions_token(request: Request):
     password = request.query_params.get("password", None)
     if not verify_project_password(project_name, password or ""):
         return JSONResponse(status_code=401, content={"error": "Unauthorized"})
+
+    if token_type == "edit_author":
+        try:
+            existing = find_active_token(project_name, "edit_author", author_name=author)
+        except Exception:
+            _logger.exception(
+                "GET /contributions/token find_active_token project=%s author=%s",
+                project_name,
+                author,
+            )
+            existing = None
+        if existing is not None:
+            try:
+                remaining = datetime.fromisoformat(existing["expires_at"]) - datetime.now(timezone.utc)
+                remaining_days = max(1, remaining.days)
+            except (KeyError, ValueError):
+                remaining_days = days
+            return JSONResponse(
+                content={
+                    "token": existing["token_id"],
+                    "type": token_type,
+                    "expires_days": remaining_days,
+                    "reused": True,
+                }
+            )
 
     try:
         token_id = create_token(project_name, token_type, author_name=author, expires_days=days)

@@ -31,6 +31,7 @@ from .store import (
     create_token,
     lookup_token,
     consume_token,
+    find_active_token,
     verify_project_password,
 )
 
@@ -57,4 +58,5 @@ __all__ = [
     "create_token",
     "lookup_token",
     "consume_token",
+    "find_active_token",
 ]

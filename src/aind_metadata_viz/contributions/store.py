@@ -373,3 +373,37 @@ def consume_token(
             token["used"] = True
             break
     _put_json(key, data)
+
+
+def find_active_token(
+    project_name: str,
+    token_type: str,
+    author_name: Optional[str] = None,
+    store_dir=None,  # retained for API compatibility; ignored
+) -> Optional[dict]:
+    """Return an existing valid token matching *token_type*/*author_name*, or None.
+
+    A token is "active" when it is unexpired and (for one-time tokens) unused.
+    The returned dict has the same shape as ``lookup_token``'s result.
+    """
+    key = _token_key(project_name)
+    data = _get_json(key)
+    if data is None:
+        return None
+
+    now = datetime.now(timezone.utc)
+    for token in data.get("tokens", []):
+        if token.get("used"):
+            continue
+        if token.get("token_type") != token_type:
+            continue
+        if token.get("author_name") != author_name:
+            continue
+        try:
+            expires = datetime.fromisoformat(token["expires_at"])
+        except (KeyError, ValueError):
+            continue
+        if now > expires:
+            continue
+        return token
+    return None
