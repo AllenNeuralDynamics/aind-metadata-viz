@@ -115,3 +115,8 @@ class ProjectContributions(BaseModel):
     doi: Optional[str] = Field(default=None, description="Optional DOI associated with this set of contributions")
     assets: List[str] = Field(default_factory=list, description="List of asset names associated with the project")
     locked: bool = Field(default=False, description="Whether this project is password-protected")
+    show_sections: bool = Field(default=False, description="Whether to show section contributions in the interface")
+    show_levels: bool = Field(default=True, description="Whether to show CRediT contribution levels in the interface")
+    show_timeline: bool = Field(default=False, description="Whether to show author timelines in the interface")
+    allow_lead: bool = Field(default=True, description="Whether to allow designation of lead authors in the interface")
+    allow_levels: bool = Field(default=True, description="Whether to allow designation of CRediT contribution levels in the interface")
