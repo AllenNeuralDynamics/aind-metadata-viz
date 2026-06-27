@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 from .agent import result_to_dict, run_agent
 from .log import append_chat_log
 from .ratelimit import RateLimiter, client_ip
+from .security import origin_error
 
 logger = logging.getLogger(__name__)
 
@@ -19,8 +20,9 @@ MAX_MESSAGE_BYTES = int(os.environ.get("CHAT_MAX_MESSAGE_BYTES", "4096"))
 MAX_HISTORY_TURNS = int(os.environ.get("CHAT_MAX_HISTORY_TURNS", "20"))
 
 chat_rate_limiter = RateLimiter(
-    per_minute=int(os.environ.get("CHAT_RATE_PER_MIN", "10")),
+    per_minute=int(os.environ.get("CHAT_RATE_PER_MIN", "60")),
     per_day=int(os.environ.get("CHAT_RATE_PER_DAY", "200")),
+    burst=int(os.environ.get("CHAT_RATE_BURST", "1")),
 )
 
 chat_router = APIRouter()
@@ -74,6 +76,10 @@ async def chat_endpoint(
     ip = client_ip(
         request.headers, request.client.host if request.client else None
     )
+    blocked = origin_error(request.headers)
+    if blocked:
+        return JSONResponse(status_code=403, content={"error": blocked})
+
     allowed, error = chat_rate_limiter.check("chat", ip)
     if not allowed:
         return JSONResponse(status_code=429, content={"error": error})

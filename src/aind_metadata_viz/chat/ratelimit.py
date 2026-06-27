@@ -20,13 +20,20 @@ class RateLimiter:
 
     All limits are per (bucket_key, client_id) pair. Bucket keys let us run
     independent limiters for different endpoints (e.g. "chat" and "mcp").
+
+    ``burst`` is the bucket capacity (max requests allowed instantaneously).
+    It defaults to ``per_minute`` for backward compatibility; set it to 1
+    to enforce a strict steady rate with no burst allowance.
     """
 
-    def __init__(self, per_minute: int, per_day: int):
+    def __init__(self, per_minute: int, per_day: int, burst: int | None = None):
         if per_minute <= 0 or per_day <= 0:
             raise ValueError("limits must be positive")
+        if burst is not None and burst <= 0:
+            raise ValueError("burst must be positive")
         self.per_minute = per_minute
         self.per_day = per_day
+        self.burst = burst if burst is not None else per_minute
         self._refill_rate = per_minute / 60.0
         self._buckets: dict[tuple[str, str], _Bucket] = {}
         self._lock = threading.Lock()
@@ -38,7 +45,7 @@ class RateLimiter:
             key = (bucket_key, client_id)
             b = self._buckets.get(key)
             if b is None:
-                b = _Bucket(tokens=float(self.per_minute), last_refill=now)
+                b = _Bucket(tokens=float(self.burst), last_refill=now)
                 self._buckets[key] = b
 
             if now - b.day_start >= 86400:
@@ -53,7 +60,7 @@ class RateLimiter:
 
             elapsed = now - b.last_refill
             b.tokens = min(
-                float(self.per_minute), b.tokens + elapsed * self._refill_rate
+                float(self.burst), b.tokens + elapsed * self._refill_rate
             )
             b.last_refill = now
 

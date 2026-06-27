@@ -11,6 +11,7 @@ from typing import Any
 import boto3
 
 from .prompt import SYSTEM_PROMPT
+from .security import extract_json_field
 from .tools import invoke_tool, list_allowed_tools, to_bedrock_tool_spec
 
 logger = logging.getLogger(__name__)
@@ -84,6 +85,22 @@ def _converse_sync(bedrock, **kwargs) -> dict:
     return bedrock.converse(**kwargs)
 
 
+def _parse_final_response(text: str) -> str:
+    """Extract the user-facing answer from the model's JSON output.
+
+    The system prompt requires final answers to be ``{"response": ...}``.
+    Pulling the value out of that fixed field means a prompt-injection
+    attempt cannot change the shape of what we hand back to the caller.
+    """
+    response = extract_json_field(text, "response")
+    if response is None:
+        logger.warning("Agent final answer was not valid JSON; got %r", text[:200])
+        return (
+            "A response could not be produced in the expected format."
+        )
+    return response
+
+
 async def run_agent(
     message: str,
     history: list[dict] | None = None,
@@ -143,7 +160,7 @@ async def run_agent(
                 b["text"] for b in content_blocks if "text" in b
             ]
             return ChatResult(
-                response="\n".join(text_parts).strip(),
+                response=_parse_final_response("\n".join(text_parts).strip()),
                 tool_calls=tool_calls,
                 stop_reason=bedrock_stop,
                 iterations=iteration,
@@ -265,8 +282,9 @@ async def run_agent(
                 {
                     "text": (
                         "You have used the maximum number of tool calls."
-                        " Give your best answer now in plain text without"
-                        " requesting any more tools."
+                        " Give your best answer now without requesting any"
+                        ' more tools, as the required JSON object'
+                        ' {"response": "..."}.'
                     )
                 }
             ],
@@ -287,7 +305,7 @@ async def run_agent(
         if "text" in b
     ]
     return ChatResult(
-        response="\n".join(text_parts).strip(),
+        response=_parse_final_response("\n".join(text_parts).strip()),
         tool_calls=tool_calls,
         stop_reason="max_iterations",
         iterations=MAX_ITERATIONS,

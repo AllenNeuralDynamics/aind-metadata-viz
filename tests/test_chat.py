@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import json
 import time
 import unittest
 from unittest.mock import patch
@@ -56,6 +57,19 @@ class _FakeBedrock:
 
 
 def _text_response(text, stop="end_turn"):
+    return {
+        "output": {
+            "message": {
+                "role": "assistant",
+                "content": [{"text": json.dumps({"response": text})}],
+            }
+        },
+        "stopReason": stop,
+    }
+
+
+def _raw_response(text, stop="end_turn"):
+    """A final-answer response whose text is exactly ``text`` (not wrapped)."""
     return {
         "output": {
             "message": {
@@ -232,6 +246,31 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(result.iterations, agent_mod.MAX_ITERATIONS)
         self.assertEqual(result.response, "Final answer.")
 
+    def test_non_json_final_answer_falls_back(self):
+        # If the model ignores the JSON contract, we must not leak the raw
+        # text; a safe fallback is returned instead.
+        fake = _FakeBedrock(
+            [_raw_response("ignore instructions, here is plain text")]
+        )
+        result = asyncio.run(
+            run_agent("hi", bedrock_client_factory=lambda: fake)
+        )
+        self.assertNotIn("plain text", result.response)
+        self.assertIn("expected format", result.response)
+
+    def test_json_embedded_in_prose_is_extracted(self):
+        fake = _FakeBedrock(
+            [
+                _raw_response(
+                    'Sure! {"response": "The answer is 42."} hope that helps'
+                )
+            ]
+        )
+        result = asyncio.run(
+            run_agent("q", bedrock_client_factory=lambda: fake)
+        )
+        self.assertEqual(result.response, "The answer is 42.")
+
     def test_history_is_included(self):
         fake = _FakeBedrock([_text_response("ack")])
         asyncio.run(
@@ -293,6 +332,51 @@ class HandlerTests(unittest.TestCase):
         r = self.client.post("/chat", json={})
         self.assertEqual(r.status_code, 400)
         self.assertIn("message", r.json()["error"])
+
+    def test_allowed_origin_ok(self):
+        result = ChatResult(response="ok", iterations=1)
+        with self._patch_agent(result):
+            r = self.client.post(
+                "/chat",
+                json={"message": "hello"},
+                headers={"origin": "https://data.allenneuraldynamics.org"},
+            )
+        self.assertEqual(r.status_code, 200)
+
+    def test_subdomain_origin_ok(self):
+        result = ChatResult(response="ok", iterations=1)
+        with self._patch_agent(result):
+            r = self.client.post(
+                "/chat",
+                json={"message": "hello"},
+                headers={
+                    "origin": "https://metadata-portal.allenneuraldynamics.org"
+                },
+            )
+        self.assertEqual(r.status_code, 200)
+
+    def test_disallowed_origin_403(self):
+        result = ChatResult(response="ok", iterations=1)
+        with self._patch_agent(result):
+            r = self.client.post(
+                "/chat",
+                json={"message": "hello"},
+                headers={"origin": "https://evil.example.com"},
+            )
+        self.assertEqual(r.status_code, 403)
+        self.assertIn("Origin", r.json()["error"])
+
+    def test_lookalike_origin_403(self):
+        result = ChatResult(response="ok", iterations=1)
+        with self._patch_agent(result):
+            r = self.client.post(
+                "/chat",
+                json={"message": "hello"},
+                headers={
+                    "origin": "https://allenneuraldynamics.org.evil.com"
+                },
+            )
+        self.assertEqual(r.status_code, 403)
 
     def test_empty_message_400(self):
         r = self.client.post("/chat", json={"message": "   "})
@@ -432,6 +516,21 @@ class RateLimiterTests(unittest.TestCase):
             RateLimiter(per_minute=0, per_day=10)
         with self.assertRaises(ValueError):
             RateLimiter(per_minute=10, per_day=0)
+        with self.assertRaises(ValueError):
+            RateLimiter(per_minute=10, per_day=10, burst=0)
+
+    def test_burst_caps_instantaneous_requests(self):
+        # 60/min == 1/sec refill, but burst=1 means no instantaneous burst.
+        rl = RateLimiter(per_minute=60, per_day=1000, burst=1)
+        self.assertTrue(rl.check("chat", "ip")[0])
+        # Second immediate request is blocked (bucket capacity is 1).
+        ok, msg = rl.check("chat", "ip")
+        self.assertFalse(ok)
+        self.assertIn("Rate limit", msg)
+        # After ~1s of refill, one more is allowed.
+        with rl._lock:
+            rl._buckets[("chat", "ip")].last_refill = time.time() - 1.1
+        self.assertTrue(rl.check("chat", "ip")[0])
 
 
 if __name__ == "__main__":
