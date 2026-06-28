@@ -171,6 +171,12 @@ class SummaryResult:
     summary: str
     compacted_bytes: int
     original_bytes: int
+    model_id: str = ""
+    stop_reason: str = ""
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    latency_ms: int = 0
 
 
 def _build_user_prompt(name: str, compacted: dict) -> str:
@@ -230,11 +236,20 @@ async def summarize_record(
             "expected format."
         )
 
+    usage = response.get("usage", {}) or {}
+    metrics = response.get("metrics", {}) or {}
+
     return SummaryResult(
         name=name,
         summary=summary,
         compacted_bytes=compacted_bytes,
         original_bytes=original_bytes,
+        model_id=chosen_model,
+        stop_reason=response.get("stopReason", ""),
+        input_tokens=int(usage.get("inputTokens", 0) or 0),
+        output_tokens=int(usage.get("outputTokens", 0) or 0),
+        total_tokens=int(usage.get("totalTokens", 0) or 0),
+        latency_ms=int(metrics.get("latencyMs", 0) or 0),
     )
 
 

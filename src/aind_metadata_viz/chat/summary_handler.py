@@ -10,12 +10,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from typing import Optional
 
 from biodata_query.query import retrieve_records
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 
+from .log import append_summary_log
 from .ratelimit import RateLimiter, client_ip
 from .security import origin_error
 from .summary import (
@@ -60,6 +62,7 @@ async def summary_endpoint(
     ip = client_ip(
         request.headers, request.client.host if request.client else None
     )
+    started = time.monotonic()
     blocked = origin_error(request.headers)
     if blocked:
         return JSONResponse(status_code=403, content={"error": blocked})
@@ -112,12 +115,35 @@ async def summary_endpoint(
             },
         )
 
+    duration_ms = int((time.monotonic() - started) * 1000)
     logger.info(
-        "summary ip=%s name=%s original=%d compacted=%d",
+        "summary ip=%s name=%s original=%d compacted=%d "
+        "in_tokens=%d out_tokens=%d total_tokens=%d latency_ms=%d "
+        "duration_ms=%d",
         ip,
         name,
         result.original_bytes,
         result.compacted_bytes,
+        result.input_tokens,
+        result.output_tokens,
+        result.total_tokens,
+        result.latency_ms,
+        duration_ms,
     )
-    _ = id  # accepted for parity with /chat but currently unused
+    append_summary_log(
+        name=result.name,
+        summary=result.summary,
+        model_id=result.model_id,
+        stop_reason=result.stop_reason,
+        input_tokens=result.input_tokens,
+        output_tokens=result.output_tokens,
+        total_tokens=result.total_tokens,
+        latency_ms=result.latency_ms,
+        original_bytes=result.original_bytes,
+        compacted_bytes=result.compacted_bytes,
+        duration_ms=duration_ms,
+        status_code=200,
+        ip=ip,
+        requester_id=id,
+    )
     return JSONResponse(content=result_to_dict(result))

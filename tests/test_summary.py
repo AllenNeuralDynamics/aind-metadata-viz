@@ -226,7 +226,10 @@ class SummaryHandlerTests(unittest.TestCase):
             with patch.object(
                 handler_mod, "summarize_record", _fake_summarize
             ):
-                r = self.client.get("/summary", params={"name": "asset_x"})
+                with patch.object(handler_mod, "append_summary_log"):
+                    r = self.client.get(
+                        "/summary", params={"name": "asset_x"}
+                    )
         self.assertEqual(r.status_code, 200, r.text)
         body = r.json()
         self.assertEqual(body["name"], "asset_x")
@@ -249,13 +252,14 @@ class SummaryHandlerTests(unittest.TestCase):
             handler_mod, "_fetch_v2_record", return_value={"name": "x"}
         ):
             with patch.object(handler_mod, "summarize_record", _fake):
-                r = self.client.get(
-                    "/summary",
-                    params={"name": "x"},
-                    headers={
-                        "origin": "https://data.allenneuraldynamics.org"
-                    },
-                )
+                with patch.object(handler_mod, "append_summary_log"):
+                    r = self.client.get(
+                        "/summary",
+                        params={"name": "x"},
+                        headers={
+                            "origin": "https://data.allenneuraldynamics.org"
+                        },
+                    )
         self.assertEqual(r.status_code, 200)
 
     def test_disallowed_origin_403(self):
@@ -315,8 +319,13 @@ class SummaryHandlerTests(unittest.TestCase):
                     )
 
                 with patch.object(handler_mod, "summarize_record", _ok):
-                    r1 = self.client.get("/summary", params={"name": "x"})
-                    r2 = self.client.get("/summary", params={"name": "x"})
+                    with patch.object(handler_mod, "append_summary_log"):
+                        r1 = self.client.get(
+                            "/summary", params={"name": "x"}
+                        )
+                        r2 = self.client.get(
+                            "/summary", params={"name": "x"}
+                        )
         self.assertEqual(r1.status_code, 200)
         self.assertEqual(r2.status_code, 429)
 
