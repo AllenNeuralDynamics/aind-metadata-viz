@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Integration test for chat endpoint logging to S3.
+Integration test for chat and summary endpoint logging to S3.
 
-Sends a chat request with a known ?id= value, then reads the daily S3 log
-file and verifies that the record was written with the correct fields.
+Sends requests with a known ?id= value, then reads the daily S3 log
+files and verifies that records were written with the correct fields.
 
 Usage:
     python test_log_integration.py --env local
@@ -39,6 +39,10 @@ def check(label: str, condition: bool, detail: str = "") -> bool:
 
 def _log_key(date_str: str) -> str:
     return f"{_S3_PREFIX}/chat_log_{date_str}.json"
+
+
+def _summary_log_key(date_str: str) -> str:
+    return f"{_S3_PREFIX}/summary_log_{date_str}.json"
 
 
 def _read_log_lines(date_str: str) -> list[dict]:
@@ -149,6 +153,121 @@ def run_log_tests(base_url: str) -> bool:
     return all_passed
 
 
+def run_summary_log_tests(base_url: str) -> bool:
+    all_passed = True
+    summary_url = f"{base_url}/summary"
+    requester_id = f"summary-log-integration-test-{uuid.uuid4().hex[:8]}"
+    today_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    asset_name = "behavior_850743_2026-06-11_09-45-06"
+
+    print(f"\n--- Summary log integration tests (id={requester_id}) ---")
+
+    print("\n[Test 1] GET /summary writes a log record to S3")
+    resp = requests.get(
+        summary_url,
+        params={"name": asset_name, "id": requester_id},
+        timeout=120,
+    )
+    passed = check("Status 200", resp.status_code == 200, str(resp.status_code))
+    if not passed:
+        print(f"  Response: {resp.text[:200]}")
+        all_passed = False
+        return all_passed
+
+    body = resp.json()
+    summary_text = body.get("summary", "")
+    all_passed &= check("summary non-empty", bool(summary_text))
+    all_passed &= check("name matches", body.get("name") == asset_name)
+    all_passed &= check(
+        "original_bytes present", isinstance(body.get("original_bytes"), int)
+    )
+    all_passed &= check(
+        "compacted_bytes present", isinstance(body.get("compacted_bytes"), int)
+    )
+
+    print("\n[Test 2] Log record exists in S3 with correct fields")
+    s3 = boto3.client("s3")
+    try:
+        resp_s3 = s3.get_object(
+            Bucket=_S3_BUCKET, Key=_summary_log_key(today_utc)
+        )
+        raw = resp_s3["Body"].read().decode()
+    except Exception as exc:
+        all_passed &= check("S3 summary log readable", False, str(exc))
+        return all_passed
+
+    records = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if line:
+            try:
+                records.append(json.loads(line))
+            except json.JSONDecodeError:
+                pass
+
+    matching = [r for r in records if r.get("requester_id") == requester_id]
+    all_passed &= check(
+        "at least one log record with requester_id",
+        len(matching) >= 1,
+        f"{len(matching)} found",
+    )
+
+    if matching:
+        record = matching[-1]
+        all_passed &= check(
+            "timestamp present", bool(record.get("timestamp"))
+        )
+        all_passed &= check(
+            "name matches", record.get("name") == asset_name
+        )
+        all_passed &= check(
+            "summary matches response", record.get("summary") == summary_text
+        )
+        all_passed &= check(
+            "model_id present", bool(record.get("model_id"))
+        )
+        all_passed &= check(
+            "stop_reason present", bool(record.get("stop_reason"))
+        )
+        all_passed &= check(
+            "input_tokens is int",
+            isinstance(record.get("input_tokens"), int),
+            str(record.get("input_tokens")),
+        )
+        all_passed &= check(
+            "output_tokens is int",
+            isinstance(record.get("output_tokens"), int),
+            str(record.get("output_tokens")),
+        )
+        all_passed &= check(
+            "total_tokens is int",
+            isinstance(record.get("total_tokens"), int),
+            str(record.get("total_tokens")),
+        )
+        all_passed &= check(
+            "latency_ms is int",
+            isinstance(record.get("latency_ms"), int),
+            str(record.get("latency_ms")),
+        )
+        all_passed &= check(
+            "original_bytes is int",
+            isinstance(record.get("original_bytes"), int),
+        )
+        all_passed &= check(
+            "compacted_bytes is int",
+            isinstance(record.get("compacted_bytes"), int),
+        )
+        all_passed &= check(
+            "duration_ms is int",
+            isinstance(record.get("duration_ms"), int),
+        )
+        all_passed &= check(
+            "status_code is 200", record.get("status_code") == 200
+        )
+
+    return all_passed
+
+
 def main() -> None:
     args = parse_test_args()
     base_url = (
@@ -157,11 +276,12 @@ def main() -> None:
         else "http://localhost:5006"
     )
 
-    print(f"Testing chat logging against: {base_url}")
+    print(f"Testing logging against: {base_url}")
     print(f"S3 log bucket: s3://{_S3_BUCKET}/{_S3_PREFIX}/")
     print("=" * 80)
 
     ok = run_log_tests(base_url)
+    ok &= run_summary_log_tests(base_url)
 
     print("\n" + "=" * 80)
     if ok:
