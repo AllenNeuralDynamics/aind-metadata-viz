@@ -271,7 +271,7 @@ def run_summary_log_tests(base_url: str) -> bool:
 def main() -> None:
     args = parse_test_args()
     base_url = (
-        "https://metadata-portal.allenneuraldynamics-test.org"
+        "https://metadata-portal.allenneuraldynamics.org"
         if args.env == "prod"
         else "http://localhost:5006"
     )
