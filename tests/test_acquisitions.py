@@ -129,7 +129,7 @@ class TestAcquisitionTypeHandlers(unittest.TestCase):
         fake = _FakeS3()
         with _s3_patch(fake):
             response = client.post("/acquisition-types", json={"platform": "behavior"})
-        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.status_code, 422)
 
     def test_get_acquisition_types(self):
         fake = _FakeS3()

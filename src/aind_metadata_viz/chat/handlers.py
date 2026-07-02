@@ -68,7 +68,19 @@ def _validate(data) -> tuple[str | None, dict | None]:
     return None, {"message": message, "history": history or []}
 
 
-@chat_router.post("/chat")
+@chat_router.post(
+    "/chat",
+    tags=["chat"],
+    summary="Ask a natural-language question about the metadata store",
+    description=(
+        "The agent can query records, look up schema info, and summarize results. Body: "
+        "`{\"message\": str (max 4096 bytes), \"history\"?: [{\"role\": \"user\"|\"assistant\", "
+        "\"content\": str}, ...] (max 20 turns)}`. Returns `{\"response\", \"stop_reason\", "
+        "\"iterations\", \"tool_calls\": [{\"name\", \"input\", \"output\", \"is_error\"}]}`. "
+        "Rate-limited per IP (default: 60/min, 200/day). Every successful request is logged to "
+        "S3 (`s3://aind-scratch-data/aind-metadata-viz-logs/chat_log_{date}.json`)."
+    ),
+)
 async def chat_endpoint(
     request: Request,
     id: Optional[str] = Query(default=None, description="Optional caller identifier"),

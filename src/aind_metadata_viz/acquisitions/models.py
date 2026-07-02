@@ -18,11 +18,32 @@ class AcquisitionTypeEntry(BaseModel):
     acquisition_type: str = Field(..., description="Descriptive acquisition type string")
 
 
-class ScheduledAcquisition(BaseModel):
-    """A scheduled acquisition registered ahead of time."""
+class ScheduledAcquisitionCreate(BaseModel):
+    """Request body for registering a new scheduled acquisition."""
 
-    uuid: str = Field(..., description="Unique identifier for this scheduled acquisition")
+    subject_id: str = Field(..., description="Subject ID for this acquisition")
+    date: datetime.date = Field(..., description="Scheduled date of the acquisition")
+    acquisition_type: str = Field(
+        ..., description="Acquisition type; must already be registered via POST /acquisition-types"
+    )
+
+
+class ScheduledAcquisitionCreated(BaseModel):
+    """Response returned after registering a new scheduled acquisition."""
+
+    uuid: str = Field(..., description="Unique identifier for the newly-scheduled acquisition")
+
+
+class ScheduledAcquisitionDetail(BaseModel):
+    """A scheduled acquisition's details, without its uuid (the caller already has it)."""
+
     subject_id: str = Field(..., description="Subject ID for this acquisition")
     date: datetime.date = Field(..., description="Scheduled date of the acquisition")
     acquisition_type: str = Field(..., description="Acquisition type, checked against allowed types")
     platform: str = Field(..., description="Platform resolved from the acquisition_type")
+
+
+class ScheduledAcquisition(ScheduledAcquisitionDetail):
+    """A scheduled acquisition registered ahead of time, including its uuid."""
+
+    uuid: str = Field(..., description="Unique identifier for this scheduled acquisition")

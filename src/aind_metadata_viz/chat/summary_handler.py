@@ -51,7 +51,16 @@ def _fetch_v2_record(name: str) -> Optional[dict]:
     return result.records[0]
 
 
-@summary_router.get("/summary")
+@summary_router.get(
+    "/summary",
+    tags=["summary"],
+    summary="Summarize a metadata asset",
+    description=(
+        "Fetches a single record from DocDB v2 by exact `name` match, shrinks it to fit the "
+        "model's context window, and returns an LLM-generated summary. Rate-limited per IP "
+        "(default: 60/min, 200/day)."
+    ),
+)
 async def summary_endpoint(
     request: Request,
     name: str = Query(..., description="Exact DocDB asset name"),

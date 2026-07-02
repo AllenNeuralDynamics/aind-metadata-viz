@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, Query, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
 from aind_data_schema.core.subject import Subject
 from aind_data_schema.core.data_description import DataDescription
@@ -26,27 +26,44 @@ _DOCDB_HOST = "api.allenneuraldynamics.org"
 router = APIRouter()
 
 
-@router.get("/health")
+@router.get("/health", tags=["health"], summary="Health check")
 async def health_check():
     return JSONResponse(status_code=200, content={"status": "healthy"})
 
 
-@router.get("/view")
-async def redirect_view(name: str = ""):
+@router.get(
+    "/view",
+    tags=["redirects"],
+    summary="Redirect to the data portal's asset record view",
+)
+async def redirect_view(name: str = Query(default="", description="Asset name to view")):
     return RedirectResponse(url=f"https://data.allenneuraldynamics.org/record?name={name}", status_code=301)
 
 
-@router.get("/fiber_viewer")
-async def redirect_fiber_viewer(subject_id: str = ""):
+@router.get(
+    "/fiber_viewer",
+    tags=["redirects"],
+    summary="Redirect to the data portal's fiber viewer",
+)
+async def redirect_fiber_viewer(subject_id: str = Query(default="", description="Subject ID to view")):
     return RedirectResponse(url=f"https://data.allenneuraldynamics.org/subject?subject_id={subject_id}", status_code=301)
 
 
-@router.get("/query")
+@router.get(
+    "/query",
+    tags=["redirects"],
+    summary="Redirect to the data portal's asset search",
+)
 async def redirect_query():
     return RedirectResponse(url="https://data.allenneuraldynamics.org/assets", status_code=301)
 
 
-@router.get("/upgrade")
+@router.get(
+    "/upgrade",
+    tags=["redirects"],
+    summary="Redirect to the data portal's upgrade page",
+    description="Redirects to the data portal's web UI for upgrades. See POST /upgrade for the API.",
+)
 async def redirect_upgrade():
     return RedirectResponse(url="https://data.allenneuraldynamics.org/upgrade", status_code=301)
 
@@ -236,7 +253,18 @@ def _gather_metadata(
     return result
 
 
-@router.post("/gather")
+@router.post(
+    "/gather",
+    tags=["gather"],
+    summary="Gather and validate metadata for a subject",
+    description=(
+        "Gathers and validates metadata from the metadata service for a given subject. Body is a "
+        "JSON object with required `subject_id` and `project_name`. Optional keys: "
+        "`metadata_service_url`, `modalities` (list), `tags` (list), `group`, `restrictions`, "
+        "`data_summary`, `acquisition_start_time`. Returns `{\"subject\", \"procedures\", "
+        "\"data_description\"}`."
+    ),
+)
 async def gather(request: Request):
     try:
         data = await request.json()
@@ -282,7 +310,12 @@ async def gather(request: Request):
         )
 
 
-@router.get("/upgrade-query")
+@router.get(
+    "/upgrade-query",
+    tags=["query"],
+    summary="Build a query using the LLM query builder",
+    description="Pass arbitrary query string parameters as needed; they are forwarded to the LLM query builder.",
+)
 async def upgrade_query(request: Request):
     event = {"queryStringParameters": dict(request.query_params)}
     response = await asyncio.get_event_loop().run_in_executor(
@@ -295,8 +328,25 @@ async def upgrade_query(request: Request):
     )
 
 
-@router.post("/retrieve-records")
-async def retrieve_records_endpoint(request: Request):
+@router.post(
+    "/retrieve-records",
+    tags=["query"],
+    summary="Run a filter query or aggregation pipeline against the metadata store",
+    description=(
+        "Send a JSON object as the body to run a **filter query** against the metadata store, or "
+        "a JSON array of pipeline stage dicts to run an **aggregation pipeline** (always executed "
+        "against DocumentDB). Returns `{\"backend\", \"elapsed_seconds\", \"asset_names\", "
+        "\"records\"?}`."
+    ),
+)
+async def retrieve_records_endpoint(
+    request: Request,
+    names_only: str = Query(default="false", description="'true' to return only asset names (filter query only)"),
+    limit: str = Query(default="0", description="Limit number of results; 0 = no limit (filter query only)"),
+    projection: Optional[str] = Query(
+        default=None, description="JSON object specifying which fields to include/exclude (filter query only)"
+    ),
+):
     try:
         data = await request.json()
     except Exception:
@@ -326,19 +376,17 @@ async def retrieve_records_endpoint(request: Request):
     if not isinstance(data, dict):
         return JSONResponse(status_code=400, content={"error": "Request body must be a JSON object or a list (aggregation pipeline)."})
 
-    names_only = request.query_params.get("names_only", "false").lower() == "true"
-    limit_str = request.query_params.get("limit", "0")
+    names_only_bool = names_only.lower() == "true"
     try:
-        limit = int(limit_str)
+        limit_int = int(limit)
     except ValueError:
         return JSONResponse(status_code=400, content={"error": "limit must be an integer."})
 
-    projection_str = request.query_params.get("projection", None)
-    projection = None
-    if projection_str:
+    projection_dict = None
+    if projection:
         try:
-            projection = json.loads(projection_str)
-            if not isinstance(projection, dict):
+            projection_dict = json.loads(projection)
+            if not isinstance(projection_dict, dict):
                 raise ValueError
         except (json.JSONDecodeError, ValueError):
             return JSONResponse(status_code=400, content={"error": "projection must be a JSON object."})
@@ -346,7 +394,7 @@ async def retrieve_records_endpoint(request: Request):
     try:
         result = await asyncio.get_event_loop().run_in_executor(
             None,
-            lambda: retrieve_records(data, names_only=names_only, limit=limit, projection=projection),
+            lambda: retrieve_records(data, names_only=names_only_bool, limit=limit_int, projection=projection_dict),
         )
         response_body = {
             "backend": result.backend,
@@ -456,8 +504,26 @@ def _run_upgrade_on_dict(record: dict) -> dict:
     return results
 
 
-@router.post("/upgrade")
-async def upgrade_endpoint(request: Request, asset_name: Optional[str] = None):
+@router.post(
+    "/upgrade",
+    tags=["upgrade"],
+    summary="Upgrade metadata to the latest schema version",
+    description=(
+        "Accepts a `metadata.json`-shaped dict (or fetches one via `asset_name`) and runs it "
+        "through [aind-metadata-upgrader](https://github.com/AllenNeuralDynamics/aind-metadata-upgrader). "
+        "Always returns original and upgraded JSON side by side for each core field, even when "
+        "some fields fail: `{\"overall_success\", \"overall_error\", \"partial_success\"?, "
+        "\"files_tested\": {<field>: {\"success\", \"error\", \"original\", \"upgraded\", "
+        "\"converted_to\"?}}}`. Fields that rename across schema versions (e.g. `session` → "
+        "`acquisition`, `rig` → `instrument`) include a `converted_to` key."
+    ),
+)
+async def upgrade_endpoint(
+    request: Request,
+    asset_name: Optional[str] = Query(
+        default=None, description="Fetch and upgrade an existing asset by name instead of using the request body"
+    ),
+):
     if asset_name:
         try:
             def _fetch_v1_record():

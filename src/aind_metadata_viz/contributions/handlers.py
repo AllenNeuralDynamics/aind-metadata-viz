@@ -1,39 +1,19 @@
 """FastAPI router for the contributions REST endpoints.
 
-Routes
-------
-GET  /contributions/get?project=<name>[&commit=<hash>]
-    Returns the latest (or specified) contribution data as JSON.
-    All models are publicly readable without a password.
-
-GET  /contributions/get?doi=<doi-or-project-name>
-    Looks up by DOI first; falls back to treating the value as a project name.
-
-GET  /contributions/get?project=<name>&history=true
-    Returns a list of commits for the project, newest first.
-    Each entry: {"commit": "<sha>", "timestamp": "<iso8601>", "message": "<str>"}
-
-POST /contributions/post?project=<name>[&password=<hash>]
-    Body: JSON or YAML string of contribution data.
-    Stores a new versioned commit and returns the commit hash.
-    If *password* is supplied and the project has no password yet, the project
-    is locked with that password going forward.
-    If the project is already locked, *password* must match the stored hash;
-    omitting or supplying the wrong value returns 401.
+See /docs (Swagger UI) for full request/response schemas.
 """
 
-import json
 import logging
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse, Response
 
 _logger = logging.getLogger(__name__)
 
 from datetime import datetime, timezone
+from typing import Optional
 
 from . import from_json, from_yaml, get_contributions, list_project_commits, store_contributions, to_json, to_yaml
-from .models import ProjectContributions
 from .store import (
     consume_token,
     create_token,
@@ -49,7 +29,7 @@ from .store import (
 )
 
 
-contributions_router = APIRouter()
+contributions_router = APIRouter(tags=["contributions"])
 
 
 def _validate_token_scope(project_name, token_type, author_name, new_contributions):
@@ -113,11 +93,27 @@ def _resolve_project(identifier):
     return contributions, identifier
 
 
-@contributions_router.get("/contributions/get")
-async def contributions_get(request: Request):
-    project = request.query_params.get("project", None)
-    doi = request.query_params.get("doi", None)
-
+@contributions_router.get(
+    "/contributions/get",
+    summary="Fetch contribution data for a project",
+    description=(
+        "Returns the latest (or a specific) contribution data for a project. All models are "
+        "publicly readable without a password. Lookup by `project` name or by `doi` (falls back "
+        "to treating the DOI value as a project name). Pass `history=true` to instead return the "
+        "commit history (newest first) as `[{\"commit\", \"timestamp\", \"message\"}, ...]`, or "
+        "`commit=<hash>` to fetch a specific historical version."
+    ),
+)
+async def contributions_get(
+    project: Optional[str] = Query(default=None, description="Project name to fetch"),
+    doi: Optional[str] = Query(default=None, description="Look up a project by DOI instead of name"),
+    history: Optional[str] = Query(
+        default=None, description="Pass 'true' to return commit history instead of content"
+    ),
+    commit: Optional[str] = Query(default=None, description="Fetch a specific historical commit hash"),
+    format: str = Query(default="json", description="Response format: 'json' or 'yaml'"),
+    password: Optional[str] = Query(default=None, description="Required if the project is password-protected"),
+):
     if not project and not doi:
         return JSONResponse(
             status_code=400,
@@ -133,17 +129,16 @@ async def contributions_get(request: Request):
             _logger.exception("GET /contributions/get doi=%s", doi)
             return JSONResponse(status_code=500, content={"error": str(e)})
 
-        password = request.query_params.get("password", None)
         if not verify_project_password(project_name, password or ""):
             return JSONResponse(status_code=401, content={"error": "Unauthorized"})
 
         contributions.locked = is_project_locked(project_name)
-        fmt = request.query_params.get("format", "json").lower()
+        fmt = format.lower()
         if fmt == "yaml":
             return Response(content=to_yaml(contributions), media_type="text/plain; charset=utf-8")
         return Response(content=to_json(contributions), media_type="application/json")
 
-    if request.query_params.get("history", None) == "true":
+    if history == "true":
         try:
             commits = list_project_commits(project)
         except FileNotFoundError as e:
@@ -153,8 +148,7 @@ async def contributions_get(request: Request):
             return JSONResponse(status_code=500, content={"error": str(e)})
         return JSONResponse(content=commits)
 
-    commit = request.query_params.get("commit", None)
-    fmt = request.query_params.get("format", "json").lower()
+    fmt = format.lower()
 
     try:
         contributions = get_contributions(project, commit_hash=commit)
@@ -170,9 +164,23 @@ async def contributions_get(request: Request):
     return Response(content=to_json(contributions), media_type="application/json")
 
 
-@contributions_router.post("/contributions/post")
-async def contributions_post(request: Request):
-    project = request.query_params.get("project", None)
+@contributions_router.post(
+    "/contributions/post",
+    summary="Store a new version of a project's contribution data",
+    description=(
+        "Body is a JSON or YAML string of contribution data (sniffed automatically). Stores a new "
+        "versioned commit and returns the commit hash. If `password` is supplied and the project "
+        "has no password yet, the project is locked with that password going forward. If the "
+        "project is already locked, `password` must match the stored hash; omitting or supplying "
+        "the wrong value returns 401."
+    ),
+)
+async def contributions_post(
+    request: Request,
+    project: Optional[str] = Query(default=None, description="Project name (required; 400 if missing)"),
+    password: Optional[str] = Query(default=None, description="Password or scoped token for a locked project"),
+    message: Optional[str] = Query(default=None, description="Optional commit message"),
+):
     if not project:
         return JSONResponse(
             status_code=400,
@@ -193,7 +201,6 @@ async def contributions_post(request: Request):
     except Exception as e:
         return JSONResponse(status_code=400, content={"error": f"Failed to parse body: {e}"})
 
-    password = request.query_params.get("password", None)
     token_id = None
     token_type = None
     new_author_name = None
@@ -225,8 +232,6 @@ async def contributions_post(request: Request):
 
     if password and token_id is None and not is_project_locked(project):
         set_project_password(project, password)
-
-    message = request.query_params.get("message", None)
 
     try:
         commit_hash = store_contributions(project, new_contributions, message=message)
@@ -271,29 +276,41 @@ async def contributions_post(request: Request):
     return JSONResponse(content=response_body)
 
 
-@contributions_router.get("/contributions/token")
-async def contributions_token(request: Request):
-    doi = request.query_params.get("doi", None)
+@contributions_router.get(
+    "/contributions/token",
+    summary="Create a scoped token for a project",
+    description=(
+        "Creates a scoped token in place of a password: `add_author` (one-time use), "
+        "`edit_author` (scoped to `author`, reusable until expiry), or `multi_author` (reusable, "
+        "lets multiple people each add themselves, capped at 7 days)."
+    ),
+)
+async def contributions_token(
+    doi: Optional[str] = Query(default=None, description="Project DOI (required; 400 if missing)"),
+    token_type: Optional[str] = Query(
+        default=None, alias="type", description="'add_author' | 'edit_author' | 'multi_author'"
+    ),
+    author: Optional[str] = Query(default=None, description="Author name (required for edit_author tokens)"),
+    days: str = Query(default="365", description="Token validity in days"),
+    password: Optional[str] = Query(default=None, description="Required if the project is password-protected"),
+):
     if not doi:
         return JSONResponse(status_code=400, content={"error": "doi query parameter is required"})
 
-    token_type = request.query_params.get("type", None)
     if token_type not in ("add_author", "edit_author", "multi_author"):
         return JSONResponse(
             status_code=400,
             content={"error": "type must be 'add_author', 'edit_author', or 'multi_author'"},
         )
 
-    author = request.query_params.get("author", None)
     if token_type == "edit_author" and not author:
         return JSONResponse(
             status_code=400,
             content={"error": "author parameter is required for edit_author tokens"},
         )
 
-    days_str = request.query_params.get("days", "365")
     try:
-        days = int(days_str)
+        days = int(days)
     except ValueError:
         return JSONResponse(status_code=400, content={"error": "days must be an integer"})
 
@@ -305,7 +322,6 @@ async def contributions_token(request: Request):
         _logger.exception("GET /contributions/token doi=%s", doi)
         return JSONResponse(status_code=500, content={"error": str(e)})
 
-    password = request.query_params.get("password", None)
     if not verify_project_password(project_name, password or ""):
         return JSONResponse(status_code=401, content={"error": "Unauthorized"})
 
@@ -344,9 +360,14 @@ async def contributions_token(request: Request):
     return JSONResponse(content={"token": token_id, "type": token_type, "expires_days": capped_days})
 
 
-@contributions_router.get("/contributions/author-image")
-async def contributions_author_image(request: Request):
-    author = request.query_params.get("author", None)
+@contributions_router.get(
+    "/contributions/author-image",
+    summary="Get an author's headshot S3 key",
+    description="Returns `{\"author\", \"image_key\"}` for the author's headshot; 404 if not found.",
+)
+async def contributions_author_image(
+    author: Optional[str] = Query(default=None, description="Author name (required; 400 if missing)"),
+):
     if not author:
         return JSONResponse(status_code=400, content={"error": "author query parameter is required"})
     key = get_author_image_key(author)
