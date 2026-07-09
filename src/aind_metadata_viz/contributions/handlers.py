@@ -3,6 +3,8 @@
 See /docs (Swagger UI) for full request/response schemas.
 """
 
+import asyncio
+import json
 import logging
 
 from fastapi import APIRouter, Query, Request
@@ -122,17 +124,17 @@ async def contributions_get(
 
     if doi:
         try:
-            contributions, project_name = _resolve_project(doi)
+            contributions, project_name = await asyncio.to_thread(_resolve_project, doi)
         except FileNotFoundError as e:
             return JSONResponse(status_code=404, content={"error": str(e)})
         except Exception as e:
             _logger.exception("GET /contributions/get doi=%s", doi)
             return JSONResponse(status_code=500, content={"error": str(e)})
 
-        if not verify_project_password(project_name, password or ""):
+        if not await asyncio.to_thread(verify_project_password, project_name, password or ""):
             return JSONResponse(status_code=401, content={"error": "Unauthorized"})
 
-        contributions.locked = is_project_locked(project_name)
+        contributions.locked = await asyncio.to_thread(is_project_locked, project_name)
         fmt = format.lower()
         if fmt == "yaml":
             return Response(content=to_yaml(contributions), media_type="text/plain; charset=utf-8")
@@ -140,7 +142,7 @@ async def contributions_get(
 
     if history == "true":
         try:
-            commits = list_project_commits(project)
+            commits = await asyncio.to_thread(list_project_commits, project)
         except FileNotFoundError as e:
             return JSONResponse(status_code=404, content={"error": str(e)})
         except Exception as e:
@@ -151,14 +153,14 @@ async def contributions_get(
     fmt = format.lower()
 
     try:
-        contributions = get_contributions(project, commit_hash=commit)
+        contributions = await asyncio.to_thread(get_contributions, project, commit_hash=commit)
     except FileNotFoundError as e:
         return JSONResponse(status_code=404, content={"error": str(e)})
     except Exception as e:
         _logger.exception("GET /contributions/get project=%s commit=%s", project, commit)
         return JSONResponse(status_code=500, content={"error": str(e)})
 
-    contributions.locked = is_project_locked(project)
+    contributions.locked = await asyncio.to_thread(is_project_locked, project)
     if fmt == "yaml":
         return Response(content=to_yaml(contributions), media_type="text/plain; charset=utf-8")
     return Response(content=to_json(contributions), media_type="application/json")
@@ -206,17 +208,19 @@ async def contributions_post(
     new_author_name = None
 
     if password:
-        token_record = lookup_token(project, password)
+        token_record = await asyncio.to_thread(lookup_token, project, password)
         if token_record is not None:
             token_id = password
             token_type = token_record["token_type"]
             token_author = token_record.get("author_name")
-            ok, err = _validate_token_scope(project, token_type, token_author, new_contributions)
+            ok, err = await asyncio.to_thread(
+                _validate_token_scope, project, token_type, token_author, new_contributions
+            )
             if not ok:
                 return JSONResponse(status_code=403, content={"error": err})
             if token_type in ("add_author", "multi_author"):
                 try:
-                    existing_pre = get_contributions(project)
+                    existing_pre = await asyncio.to_thread(get_contributions, project)
                     existing_names_pre = {c.author.name for c in existing_pre.contributors}
                 except FileNotFoundError:
                     existing_names_pre = set()
@@ -224,29 +228,31 @@ async def contributions_post(
                 if len(added) == 1:
                     new_author_name = next(iter(added))
         else:
-            if not verify_project_password(project, password):
+            if not await asyncio.to_thread(verify_project_password, project, password):
                 return JSONResponse(status_code=401, content={"error": "Unauthorized"})
     else:
-        if not verify_project_password(project, ""):
+        if not await asyncio.to_thread(verify_project_password, project, ""):
             return JSONResponse(status_code=401, content={"error": "Unauthorized"})
 
-    if password and token_id is None and not is_project_locked(project):
-        set_project_password(project, password)
+    if password and token_id is None and not await asyncio.to_thread(is_project_locked, project):
+        await asyncio.to_thread(set_project_password, project, password)
 
     try:
-        commit_hash = store_contributions(project, new_contributions, message=message)
+        commit_hash = await asyncio.to_thread(store_contributions, project, new_contributions, message=message)
     except Exception as e:
         _logger.exception("POST /contributions/post project=%s", project)
         return JSONResponse(status_code=500, content={"error": str(e)})
 
     if token_id and token_type == "add_author":
-        consume_token(project, token_id)
+        await asyncio.to_thread(consume_token, project, token_id)
 
     response_body = {"commit": commit_hash, "project": project}
 
     if new_author_name:
         try:
-            existing_edit = find_active_token(project, "edit_author", author_name=new_author_name)
+            existing_edit = await asyncio.to_thread(
+                find_active_token, project, "edit_author", author_name=new_author_name
+            )
         except Exception:
             _logger.exception(
                 "POST /contributions/post find_active_token project=%s author=%s",
@@ -258,7 +264,8 @@ async def contributions_post(
             if existing_edit is not None:
                 edit_token = existing_edit["token_id"]
             else:
-                edit_token = create_token(
+                edit_token = await asyncio.to_thread(
+                    create_token,
                     project,
                     "edit_author",
                     author_name=new_author_name,
@@ -315,19 +322,21 @@ async def contributions_token(
         return JSONResponse(status_code=400, content={"error": "days must be an integer"})
 
     try:
-        _, project_name = _resolve_project(doi)
+        _, project_name = await asyncio.to_thread(_resolve_project, doi)
     except FileNotFoundError as e:
         return JSONResponse(status_code=404, content={"error": str(e)})
     except Exception as e:
         _logger.exception("GET /contributions/token doi=%s", doi)
         return JSONResponse(status_code=500, content={"error": str(e)})
 
-    if not verify_project_password(project_name, password or ""):
+    if not await asyncio.to_thread(verify_project_password, project_name, password or ""):
         return JSONResponse(status_code=401, content={"error": "Unauthorized"})
 
     if token_type == "edit_author":
         try:
-            existing = find_active_token(project_name, "edit_author", author_name=author)
+            existing = await asyncio.to_thread(
+                find_active_token, project_name, "edit_author", author_name=author
+            )
         except Exception:
             _logger.exception(
                 "GET /contributions/token find_active_token project=%s author=%s",
@@ -351,7 +360,9 @@ async def contributions_token(
             )
 
     try:
-        token_id = create_token(project_name, token_type, author_name=author, expires_days=days)
+        token_id = await asyncio.to_thread(
+            create_token, project_name, token_type, author_name=author, expires_days=days
+        )
     except Exception as e:
         _logger.exception("GET /contributions/token create_token project=%s type=%s", project_name, token_type)
         return JSONResponse(status_code=500, content={"error": str(e)})
@@ -370,7 +381,7 @@ async def contributions_author_image(
 ):
     if not author:
         return JSONResponse(status_code=400, content={"error": "author query parameter is required"})
-    key = get_author_image_key(author)
+    key = await asyncio.to_thread(get_author_image_key, author)
     if key is None:
         return JSONResponse(status_code=404, content={"error": f"No image found for author '{author}'"})
     return JSONResponse(content={"author": author, "image_key": key})
