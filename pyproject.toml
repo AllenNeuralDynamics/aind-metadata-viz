@@ -28,11 +28,14 @@ dependencies = [
     'biodata-query @ git+https://github.com/AllenNeuralDynamics/biodata-query.git@v0.7.0',
     'boto3',
     'requests',
-    "aind-data-mcp>=0.4.3",
+    "aind-data-mcp>=0.4.5",
     "biodata-cache>=0.36.0",
     "pytest>=9.0.3",
     "httpx>=0.28.1",
     "coverage>=7.14.1",
+    'authlib',
+    'python-jose[cryptography]',
+    'itsdangerous',
 ]
 
 [project.optional-dependencies]
