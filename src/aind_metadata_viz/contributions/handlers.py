@@ -15,7 +15,16 @@ _logger = logging.getLogger(__name__)
 from datetime import datetime, timezone
 from typing import Optional
 
-from . import from_json, from_yaml, get_contributions, list_project_commits, store_contributions, to_json, to_yaml
+from . import (
+    from_json,
+    from_yaml,
+    get_contributions,
+    list_all_projects,
+    list_project_commits,
+    store_contributions,
+    to_json,
+    to_yaml,
+)
 from .store import (
     consume_token,
     create_token,
@@ -93,6 +102,24 @@ def _resolve_project(identifier):
         pass
     contributions = get_contributions(identifier)
     return contributions, identifier
+
+
+@contributions_router.get(
+    "/contributions/projects",
+    summary="List all current project names",
+    description=(
+        "Returns the sorted list of all project names that have contribution "
+        "data, as a JSON array of strings. Useful for autocomplete / fuzzy "
+        "matching of user-typed project names."
+    ),
+)
+async def contributions_projects():
+    try:
+        names = await asyncio.to_thread(list_all_projects)
+    except Exception as e:
+        _logger.exception("GET /contributions/projects")
+        return JSONResponse(status_code=500, content={"error": str(e)})
+    return JSONResponse(content=names)
 
 
 @contributions_router.get(

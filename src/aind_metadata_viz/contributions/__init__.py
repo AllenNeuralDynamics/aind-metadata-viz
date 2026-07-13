@@ -25,6 +25,7 @@ from .serializers import from_json, from_yaml, load, to_json, to_yaml
 from .store import (
     get_contributions,
     get_contributions_by_doi,
+    list_all_projects,
     list_project_commits,
     set_project_password,
     store_contributions,
@@ -51,6 +52,7 @@ __all__ = [
     # store
     "store_contributions",
     "get_contributions",
+    "list_all_projects",
     "list_project_commits",
     "set_project_password",
     "verify_project_password",

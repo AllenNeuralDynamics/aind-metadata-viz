@@ -228,20 +228,16 @@ def is_project_locked(
     return _get_json(_password_key(project_name)) is not None
 
 
-def get_contributions_by_doi(
-    doi: str,
-    store_dir=None,  # retained for API compatibility; ignored
-) -> ProjectContributions:
-    """Return the latest version of any project whose DOI matches *doi*.
+def _list_latest_project_keys() -> list:
+    """Return the newest version object key for every project.
 
-    Raises ``FileNotFoundError`` when no matching project is found.
+    Lists all project sub-prefixes under ``contributions-app/`` (skipping the
+    reserved ``_passwords/``, ``_tokens/`` and ``images/`` prefixes) and returns
+    the most recent version key for each.
     """
-    # List all project sub-prefixes under contributions-app/
     versions_prefix = f"{_S3_PREFIX}/"
     paginator = _s3().get_paginator("list_objects_v2")
 
-    # Collect the latest key per project by listing with delimiter
-    # Skip _passwords/ which is not a project prefix
     passwords_prefix = f"{_S3_PREFIX}/_passwords/"
     tokens_prefix = f"{_S3_PREFIX}/_tokens/"
     images_prefix = f"{_S3_PREFIX}/images/"
@@ -257,8 +253,34 @@ def get_contributions_by_doi(
                     proj_keys.append(obj["Key"])
             if proj_keys:
                 latest_keys.append(sorted(proj_keys)[-1])
+    return latest_keys
 
-    for key in latest_keys:
+
+def list_all_projects(
+    store_dir=None,  # retained for API compatibility; ignored
+) -> list:
+    """Return the sorted list of all current project names.
+
+    Reads the latest version object of every project to recover the true
+    ``project_id`` (the S3 prefix is a lossy ``_``-escaped form of the name).
+    """
+    names = set()
+    for key in _list_latest_project_keys():
+        obj = _get_json(key)
+        if obj and obj.get("project_id"):
+            names.add(obj["project_id"])
+    return sorted(names)
+
+
+def get_contributions_by_doi(
+    doi: str,
+    store_dir=None,  # retained for API compatibility; ignored
+) -> ProjectContributions:
+    """Return the latest version of any project whose DOI matches *doi*.
+
+    Raises ``FileNotFoundError`` when no matching project is found.
+    """
+    for key in _list_latest_project_keys():
         obj = _get_json(key)
         if obj:
             contrib = _from_json(obj["data"])
