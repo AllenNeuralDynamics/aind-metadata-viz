@@ -9,9 +9,12 @@ Models:
 Serialization:
     to_json, from_json, to_yaml, from_yaml, load
 
-Storage (SQLite-backed):
+Storage (S3-backed):
     store_contributions, get_contributions, set_project_password,
     verify_project_password, get_contributions_by_doi
+
+Membership / tokens (ORCID edit access):
+    list_members, is_member, add_member, remove_member, disable_token
 """
 
 from .models import (
@@ -33,7 +36,12 @@ from .store import (
     lookup_token,
     consume_token,
     find_active_token,
+    disable_token,
     verify_project_password,
+    list_members,
+    is_member,
+    add_member,
+    remove_member,
 )
 
 __all__ = [
@@ -61,4 +69,9 @@ __all__ = [
     "lookup_token",
     "consume_token",
     "find_active_token",
+    "disable_token",
+    "list_members",
+    "is_member",
+    "add_member",
+    "remove_member",
 ]

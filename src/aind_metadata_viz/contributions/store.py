@@ -240,12 +240,13 @@ def _list_latest_project_keys() -> list:
 
     passwords_prefix = f"{_S3_PREFIX}/_passwords/"
     tokens_prefix = f"{_S3_PREFIX}/_tokens/"
+    members_prefix = f"{_S3_PREFIX}/_members/"
     images_prefix = f"{_S3_PREFIX}/images/"
     latest_keys = []
     for page in paginator.paginate(Bucket=_S3_BUCKET, Prefix=versions_prefix, Delimiter="/"):
         for cp in page.get("CommonPrefixes", []):
             proj_prefix = cp["Prefix"]
-            if proj_prefix in (passwords_prefix, tokens_prefix, images_prefix):
+            if proj_prefix in (passwords_prefix, tokens_prefix, members_prefix, images_prefix):
                 continue
             proj_keys = []
             for inner_page in paginator.paginate(Bucket=_S3_BUCKET, Prefix=proj_prefix):
@@ -313,8 +314,10 @@ def create_token(
         Name of the target project.
     token_type:
         ``"add_author"`` (one-time use), ``"edit_author"`` (scoped to
-        *author_name*, reusable until expiry), or ``"multi_author"``
-        (reusable, lets multiple people each add themselves, capped at 7 days).
+        *author_name*, reusable until expiry), ``"multi_author"``
+        (reusable, lets multiple people each add themselves, capped at 7 days),
+        or ``"self_add"`` (permanent invite token — never expires, disabled
+        manually by an admin; used with the ORCID login / membership flow).
     author_name:
         Required for ``"edit_author"`` tokens.
     expires_days:
@@ -327,16 +330,22 @@ def create_token(
     str
         The UUID token the recipient presents in place of a password.
     """
-    if token_type not in ("add_author", "edit_author", "multi_author"):
+    if token_type not in ("add_author", "edit_author", "multi_author", "self_add"):
         raise ValueError(
-            f"token_type must be 'add_author', 'edit_author', or 'multi_author', got {token_type!r}"
+            "token_type must be 'add_author', 'edit_author', 'multi_author', "
+            f"or 'self_add', got {token_type!r}"
         )
     if token_type == "edit_author" and not author_name:
         raise ValueError("author_name is required for edit_author tokens")
 
-    max_days = _MAX_MULTI_AUTHOR_DAYS if token_type == "multi_author" else _MAX_TOKEN_DAYS
-    days = min(max(1, expires_days), max_days)
-    expires_at = (datetime.now(timezone.utc) + timedelta(days=days)).isoformat()
+    # ``self_add`` invite tokens are permanent: they never expire and are only
+    # revoked when an admin disables them (see ``disable_token``).
+    if token_type == "self_add":
+        expires_at = None
+    else:
+        max_days = _MAX_MULTI_AUTHOR_DAYS if token_type == "multi_author" else _MAX_TOKEN_DAYS
+        days = min(max(1, expires_days), max_days)
+        expires_at = (datetime.now(timezone.utc) + timedelta(days=days)).isoformat()
 
     token_id = uuid.uuid4().hex
     key = _token_key(project_name)
@@ -347,6 +356,7 @@ def create_token(
         "author_name": author_name,
         "expires_at": expires_at,
         "used": False,
+        "disabled": False,
     })
     _put_json(key, existing)
     return token_id
@@ -372,9 +382,10 @@ def lookup_token(
     for token in data.get("tokens", []):
         if token["token_id"] != token_id:
             continue
-        if token.get("used"):
+        if token.get("used") or token.get("disabled"):
             return None
-        if now > datetime.fromisoformat(token["expires_at"]):
+        expires_at = token.get("expires_at")
+        if expires_at is not None and now > datetime.fromisoformat(expires_at):
             return None
         return token
     return None
@@ -415,17 +426,133 @@ def find_active_token(
 
     now = datetime.now(timezone.utc)
     for token in data.get("tokens", []):
-        if token.get("used"):
+        if token.get("used") or token.get("disabled"):
             continue
         if token.get("token_type") != token_type:
             continue
         if token.get("author_name") != author_name:
             continue
+        expires_at = token.get("expires_at")
+        if expires_at is None:
+            # Permanent token (e.g. ``self_add``) — active until disabled.
+            return token
         try:
-            expires = datetime.fromisoformat(token["expires_at"])
+            expires = datetime.fromisoformat(expires_at)
         except (KeyError, ValueError):
             continue
         if now > expires:
             continue
         return token
     return None
+
+
+def disable_token(
+    project_name: str,
+    token_id: str,
+    store_dir=None,  # retained for API compatibility; ignored
+) -> bool:
+    """Mark *token_id* as disabled so it can no longer be used.
+
+    Returns True if a matching token was found and disabled, False otherwise.
+    Used by admins to revoke a permanent ``self_add`` invite link.
+    """
+    key = _token_key(project_name)
+    data = _get_json(key)
+    if data is None:
+        return False
+    found = False
+    for token in data.get("tokens", []):
+        if token["token_id"] == token_id:
+            token["disabled"] = True
+            found = True
+            break
+    if found:
+        _put_json(key, data)
+    return found
+
+
+# ---------------------------------------------------------------------------
+# Project membership (ORCID-based edit access)
+#
+# Stored at ``contributions-app/_members/{safe_project}.json`` as::
+#
+#     {"members": [{"orcid", "name", "granted_at", "granted_via"}, ...]}
+#
+# Membership records which authenticated ORCID iDs may edit a project. They are
+# created when a user follows a valid invite link and logs in (see the
+# ``/contributions/join`` endpoint) and are independent of the legacy
+# password/token auth, which continues to work unchanged.
+# ---------------------------------------------------------------------------
+
+
+def _members_key(project_name: str) -> str:
+    return f"{_S3_PREFIX}/_members/{_safe_key(project_name)}.json"
+
+
+def list_members(
+    project_name: str,
+    store_dir=None,  # retained for API compatibility; ignored
+) -> list:
+    """Return the list of member records for *project_name* (possibly empty)."""
+    data = _get_json(_members_key(project_name))
+    if data is None:
+        return []
+    return data.get("members", [])
+
+
+def is_member(
+    project_name: str,
+    orcid: str,
+    store_dir=None,  # retained for API compatibility; ignored
+) -> bool:
+    """Return True if *orcid* is a member of *project_name*."""
+    return any(m.get("orcid") == orcid for m in list_members(project_name))
+
+
+def add_member(
+    project_name: str,
+    orcid: str,
+    name: Optional[str] = None,
+    granted_via: Optional[str] = None,
+    store_dir=None,  # retained for API compatibility; ignored
+) -> dict:
+    """Grant *orcid* edit access to *project_name*. Idempotent.
+
+    Returns the (new or existing) member record. If the member already exists,
+    the stored ``name`` is refreshed when a newer one is supplied.
+    """
+    key = _members_key(project_name)
+    data = _get_json(key) or {"members": []}
+    for member in data["members"]:
+        if member.get("orcid") == orcid:
+            if name and member.get("name") != name:
+                member["name"] = name
+                _put_json(key, data)
+            return member
+    record = {
+        "orcid": orcid,
+        "name": name,
+        "granted_at": datetime.now(timezone.utc).isoformat(),
+        "granted_via": granted_via,
+    }
+    data["members"].append(record)
+    _put_json(key, data)
+    return record
+
+
+def remove_member(
+    project_name: str,
+    orcid: str,
+    store_dir=None,  # retained for API compatibility; ignored
+) -> bool:
+    """Revoke *orcid*'s access to *project_name*. Returns True if removed."""
+    key = _members_key(project_name)
+    data = _get_json(key)
+    if data is None:
+        return False
+    before = len(data.get("members", []))
+    data["members"] = [m for m in data.get("members", []) if m.get("orcid") != orcid]
+    if len(data["members"]) == before:
+        return False
+    _put_json(key, data)
+    return True

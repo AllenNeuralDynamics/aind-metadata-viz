@@ -26,21 +26,89 @@ from . import (
     to_yaml,
 )
 from .store import (
+    add_member,
     consume_token,
     create_token,
+    disable_token,
     find_active_token,
     get_author_image_key,
     get_contributions_by_doi,
+    is_member,
     is_project_locked,
+    list_members,
     lookup_token,
     set_project_password,
     verify_project_password,
     _MAX_MULTI_AUTHOR_DAYS,
     _MAX_TOKEN_DAYS,
 )
+from ..auth import get_current_user
 
 
 contributions_router = APIRouter(tags=["contributions"])
+
+
+def _member_owned_name(existing, orcid, name):
+    """Return the name of the contributor that belongs to *orcid*/*name*.
+
+    Matches by ORCID (``author.registry_identifier``) first, then by display
+    name. Returns None if the member has no row yet (they are adding it).
+    """
+    if existing is None:
+        return None
+    for c in existing.contributors:
+        if orcid and getattr(c.author, "registry_identifier", None) == orcid:
+            return c.author.name
+    if name:
+        for c in existing.contributors:
+            if c.author.name == name:
+                return c.author.name
+    return None
+
+
+def _validate_member_scope(project_name, orcid, name, new_contributions):
+    """Return ``(ok, error)`` for a member's save.
+
+    A member may only add or modify *their own* contributor row (matched by
+    ORCID or name); every other author must be left unchanged.
+    """
+    try:
+        existing = get_contributions(project_name)
+    except FileNotFoundError:
+        existing = None
+
+    owned = _member_owned_name(existing, orcid, name)
+    existing_by_name = (
+        {c.author.name: c for c in existing.contributors} if existing else {}
+    )
+    existing_names = set(existing_by_name)
+    new_names = {c.author.name for c in new_contributions.contributors}
+
+    removed = existing_names - new_names
+    if owned in removed:
+        removed = removed - {owned}
+    if removed:
+        return False, (
+            "You can only edit your own author entry; cannot remove: "
+            + ", ".join(sorted(removed))
+        )
+
+    added = new_names - existing_names
+    if len(added) > 1:
+        return False, "You can only add your own author entry"
+
+    for c in new_contributions.contributors:
+        if c.author.name == owned:
+            continue
+        if c.author.name in added:
+            # The single new row must be the member's own.
+            continue
+        old = existing_by_name.get(c.author.name)
+        if old and c.model_dump_json() != old.model_dump_json():
+            return False, (
+                f"You can only edit your own author entry, not '{c.author.name}'"
+            )
+    return True, None
 
 
 def _validate_token_scope(project_name, token_type, author_name, new_contributions):
@@ -233,8 +301,31 @@ async def contributions_post(
     token_id = None
     token_type = None
     new_author_name = None
+    authed_via_session = False
 
-    if password:
+    # Preferred path: a logged-in ORCID user who is a member (or admin) of the
+    # project. Members may only edit their own author row; admins may edit
+    # anything. This bypasses the legacy password/token checks entirely.
+    session_user = get_current_user(request)
+    if session_user and (
+        session_user["is_admin"]
+        or await asyncio.to_thread(is_member, project, session_user["orcid"])
+    ):
+        if not session_user["is_admin"]:
+            ok, err = await asyncio.to_thread(
+                _validate_member_scope,
+                project,
+                session_user["orcid"],
+                session_user.get("name"),
+                new_contributions,
+            )
+            if not ok:
+                return JSONResponse(status_code=403, content={"error": err})
+        authed_via_session = True
+
+    if authed_via_session:
+        pass
+    elif password:
         token_record = await asyncio.to_thread(lookup_token, project, password)
         if token_record is not None:
             token_id = password
@@ -261,7 +352,12 @@ async def contributions_post(
         if not await asyncio.to_thread(verify_project_password, project, ""):
             return JSONResponse(status_code=401, content={"error": "Unauthorized"})
 
-    if password and token_id is None and not await asyncio.to_thread(is_project_locked, project):
+    if (
+        not authed_via_session
+        and password
+        and token_id is None
+        and not await asyncio.to_thread(is_project_locked, project)
+    ):
         await asyncio.to_thread(set_project_password, project, password)
 
     try:
@@ -396,6 +492,169 @@ async def contributions_token(
 
     capped_days = min(days, _MAX_MULTI_AUTHOR_DAYS if token_type == "multi_author" else 365)
     return JSONResponse(content={"token": token_id, "type": token_type, "expires_days": capped_days})
+
+
+@contributions_router.get(
+    "/contributions/invite",
+    summary="Get or create a project's permanent invite link token (admin)",
+    description=(
+        "Admin only. Returns the project's permanent ``self_add`` invite token, "
+        "creating one if none is active. The token never expires; it is revoked "
+        "by calling DELETE on this endpoint. Recipients open "
+        "``/contributions/add?project=<name>&token=<token>``, log in with ORCID, "
+        "and are granted permanent membership to edit their own author entry."
+    ),
+)
+async def contributions_invite_get(
+    request: Request,
+    project: Optional[str] = Query(default=None, description="Project name"),
+):
+    user = get_current_user(request)
+    if user is None:
+        return JSONResponse(status_code=401, content={"error": "Login required"})
+    if not user["is_admin"]:
+        return JSONResponse(status_code=403, content={"error": "Admin privileges required"})
+    if not project:
+        return JSONResponse(status_code=400, content={"error": "project query parameter is required"})
+
+    try:
+        existing = await asyncio.to_thread(find_active_token, project, "self_add")
+        if existing is not None:
+            token_id = existing["token_id"]
+        else:
+            token_id = await asyncio.to_thread(create_token, project, "self_add")
+    except Exception as e:
+        _logger.exception("GET /contributions/invite project=%s", project)
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+    return JSONResponse(content={"token": token_id, "type": "self_add", "project": project})
+
+
+@contributions_router.delete(
+    "/contributions/invite",
+    summary="Disable a project's invite link token (admin)",
+    description=(
+        "Admin only. Disables the project's active ``self_add`` invite token so "
+        "the link can no longer be used to join. Existing members keep access."
+    ),
+)
+async def contributions_invite_delete(
+    request: Request,
+    project: Optional[str] = Query(default=None, description="Project name"),
+):
+    user = get_current_user(request)
+    if user is None:
+        return JSONResponse(status_code=401, content={"error": "Login required"})
+    if not user["is_admin"]:
+        return JSONResponse(status_code=403, content={"error": "Admin privileges required"})
+    if not project:
+        return JSONResponse(status_code=400, content={"error": "project query parameter is required"})
+
+    try:
+        active = await asyncio.to_thread(find_active_token, project, "self_add")
+        if active is None:
+            return JSONResponse(content={"project": project, "disabled": False})
+        await asyncio.to_thread(disable_token, project, active["token_id"])
+    except Exception as e:
+        _logger.exception("DELETE /contributions/invite project=%s", project)
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+    return JSONResponse(content={"project": project, "disabled": True})
+
+
+@contributions_router.post(
+    "/contributions/join",
+    summary="Join a project via an invite token (requires login)",
+    description=(
+        "Requires a logged-in ORCID user. Validates the supplied invite "
+        "``token`` for ``project`` and, if valid, grants the user permanent "
+        "membership (edit access to their own author entry). Idempotent."
+    ),
+)
+async def contributions_join(
+    request: Request,
+    project: Optional[str] = Query(default=None, description="Project name"),
+    token: Optional[str] = Query(default=None, description="Invite token"),
+):
+    user = get_current_user(request)
+    if user is None:
+        return JSONResponse(status_code=401, content={"error": "Login required"})
+    if not project or not token:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "project and token query parameters are required"},
+        )
+
+    record = await asyncio.to_thread(lookup_token, project, token)
+    if record is None or record.get("token_type") != "self_add":
+        return JSONResponse(
+            status_code=403, content={"error": "Invalid or disabled invite token"}
+        )
+
+    try:
+        await asyncio.to_thread(
+            add_member,
+            project,
+            user["orcid"],
+            user.get("name"),
+            f"invite:{record['token_id']}",
+        )
+    except Exception as e:
+        _logger.exception("POST /contributions/join project=%s", project)
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+    return JSONResponse(content={"project": project, "orcid": user["orcid"], "joined": True})
+
+
+@contributions_router.get(
+    "/contributions/access",
+    summary="Whether the current user can edit a project",
+    description=(
+        "Returns ``{can_edit, is_admin, is_member, logged_in}`` for the current "
+        "session user relative to ``project``. Used by the edit page to decide "
+        "whether to show the editor or a login / no-access prompt."
+    ),
+)
+async def contributions_access(
+    request: Request,
+    project: Optional[str] = Query(default=None, description="Project name"),
+):
+    user = get_current_user(request)
+    if user is None:
+        return JSONResponse(
+            content={"logged_in": False, "is_admin": False, "is_member": False, "can_edit": False}
+        )
+    member = False
+    if project:
+        member = await asyncio.to_thread(is_member, project, user["orcid"])
+    return JSONResponse(
+        content={
+            "logged_in": True,
+            "is_admin": user["is_admin"],
+            "is_member": member,
+            "can_edit": bool(user["is_admin"] or member),
+        }
+    )
+
+
+@contributions_router.get(
+    "/contributions/members",
+    summary="List members with edit access to a project (admin)",
+    description="Admin only. Returns the list of ORCID members for the project.",
+)
+async def contributions_members(
+    request: Request,
+    project: Optional[str] = Query(default=None, description="Project name"),
+):
+    user = get_current_user(request)
+    if user is None:
+        return JSONResponse(status_code=401, content={"error": "Login required"})
+    if not user["is_admin"]:
+        return JSONResponse(status_code=403, content={"error": "Admin privileges required"})
+    if not project:
+        return JSONResponse(status_code=400, content={"error": "project query parameter is required"})
+    members = await asyncio.to_thread(list_members, project)
+    return JSONResponse(content={"project": project, "members": members})
 
 
 @contributions_router.get(

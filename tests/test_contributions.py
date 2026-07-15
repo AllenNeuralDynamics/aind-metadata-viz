@@ -38,6 +38,11 @@ from aind_metadata_viz.contributions.store import (
     lookup_token,
     consume_token,
     find_active_token,
+    disable_token,
+    add_member,
+    is_member,
+    list_members,
+    remove_member,
 )
 from aind_metadata_viz.contributions.handlers import contributions_router
 from fastapi.testclient import TestClient
@@ -1717,6 +1722,262 @@ class TestPostHandlerReturnsEditToken(ContributionsHandlerTestCase):
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
         self.assertNotIn("edit_token", data)
+
+
+class TestMembershipStore(unittest.TestCase):
+    def setUp(self):
+        self._fake = _FakeS3()
+        self._patch = _s3_patch(self._fake)
+        self._patch.start()
+
+    def tearDown(self):
+        self._patch.stop()
+
+    def test_add_and_list_member(self):
+        add_member("proj", "0000-0001", "Alice", "invite:t1")
+        members = list_members("proj")
+        self.assertEqual(len(members), 1)
+        self.assertEqual(members[0]["orcid"], "0000-0001")
+        self.assertEqual(members[0]["name"], "Alice")
+        self.assertEqual(members[0]["granted_via"], "invite:t1")
+
+    def test_is_member(self):
+        self.assertFalse(is_member("proj", "0000-0001"))
+        add_member("proj", "0000-0001", "Alice")
+        self.assertTrue(is_member("proj", "0000-0001"))
+
+    def test_add_member_idempotent_refreshes_name(self):
+        add_member("proj", "0000-0001", "Alice")
+        add_member("proj", "0000-0001", "Alice Cooper")
+        members = list_members("proj")
+        self.assertEqual(len(members), 1)
+        self.assertEqual(members[0]["name"], "Alice Cooper")
+
+    def test_remove_member(self):
+        add_member("proj", "0000-0001", "Alice")
+        self.assertTrue(remove_member("proj", "0000-0001"))
+        self.assertFalse(is_member("proj", "0000-0001"))
+        self.assertFalse(remove_member("proj", "0000-0001"))
+
+    def test_list_members_empty(self):
+        self.assertEqual(list_members("nobody"), [])
+
+
+class TestSelfAddToken(unittest.TestCase):
+    def setUp(self):
+        self._fake = _FakeS3()
+        self._patch = _s3_patch(self._fake)
+        self._patch.start()
+
+    def tearDown(self):
+        self._patch.stop()
+
+    def test_self_add_token_is_permanent(self):
+        token = create_token("proj", "self_add")
+        record = lookup_token("proj", token)
+        self.assertIsNotNone(record)
+        self.assertEqual(record["token_type"], "self_add")
+        self.assertIsNone(record["expires_at"])
+
+    def test_find_active_self_add(self):
+        token = create_token("proj", "self_add")
+        active = find_active_token("proj", "self_add")
+        self.assertIsNotNone(active)
+        self.assertEqual(active["token_id"], token)
+
+    def test_disable_self_add_token(self):
+        token = create_token("proj", "self_add")
+        self.assertTrue(disable_token("proj", token))
+        self.assertIsNone(lookup_token("proj", token))
+        self.assertIsNone(find_active_token("proj", "self_add"))
+
+    def test_disable_unknown_token_returns_false(self):
+        create_token("proj", "self_add")
+        self.assertFalse(disable_token("proj", "no-such-token"))
+
+    def test_invalid_token_type_raises(self):
+        with self.assertRaises(ValueError):
+            create_token("proj", "bogus_type")
+
+
+def _patch_current_user(user):
+    """Patch the session-user lookup used by the contributions handlers."""
+    return patch(
+        "aind_metadata_viz.contributions.handlers.get_current_user",
+        return_value=user,
+    )
+
+
+_ADMIN = {"orcid": "0000-9999", "name": "Admin", "is_admin": True}
+_MEMBER = {"orcid": "0000-0007", "name": "Carol", "is_admin": False}
+
+
+class TestInviteHandlers(ContributionsHandlerTestCase):
+    def test_invite_requires_login(self):
+        with _patch_current_user(None):
+            resp = client.get("/contributions/invite?project=p")
+        self.assertEqual(resp.status_code, 401)
+
+    def test_invite_requires_admin(self):
+        with _patch_current_user(_MEMBER):
+            resp = client.get("/contributions/invite?project=p")
+        self.assertEqual(resp.status_code, 403)
+
+    def test_invite_admin_creates_and_reuses_token(self):
+        with _patch_current_user(_ADMIN):
+            resp = client.get("/contributions/invite?project=p")
+            self.assertEqual(resp.status_code, 200)
+            token = resp.json()["token"]
+            # A second call returns the same active token.
+            resp2 = client.get("/contributions/invite?project=p")
+            self.assertEqual(resp2.json()["token"], token)
+
+    def test_invite_delete_disables_token(self):
+        with _patch_current_user(_ADMIN):
+            token = client.get("/contributions/invite?project=p").json()["token"]
+            resp = client.delete("/contributions/invite?project=p")
+            self.assertEqual(resp.status_code, 200)
+            self.assertTrue(resp.json()["disabled"])
+        self.assertIsNone(lookup_token("p", token))
+
+    def test_invite_missing_project(self):
+        with _patch_current_user(_ADMIN):
+            resp = client.get("/contributions/invite")
+        self.assertEqual(resp.status_code, 400)
+
+
+class TestJoinHandler(ContributionsHandlerTestCase):
+    def test_join_requires_login(self):
+        with _patch_current_user(None):
+            resp = client.post("/contributions/join?project=p&token=t")
+        self.assertEqual(resp.status_code, 401)
+
+    def test_join_with_valid_token_grants_membership(self):
+        token = create_token("p", "self_add")
+        with _patch_current_user(_MEMBER):
+            resp = client.post(f"/contributions/join?project=p&token={token}")
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.json()["joined"])
+        self.assertTrue(is_member("p", _MEMBER["orcid"]))
+
+    def test_join_with_invalid_token_rejected(self):
+        with _patch_current_user(_MEMBER):
+            resp = client.post("/contributions/join?project=p&token=bogus")
+        self.assertEqual(resp.status_code, 403)
+        self.assertFalse(is_member("p", _MEMBER["orcid"]))
+
+    def test_join_rejects_non_self_add_token(self):
+        token = create_token("p", "add_author")
+        with _patch_current_user(_MEMBER):
+            resp = client.post(f"/contributions/join?project=p&token={token}")
+        self.assertEqual(resp.status_code, 403)
+
+
+class TestAccessHandler(ContributionsHandlerTestCase):
+    def test_anon_cannot_edit(self):
+        with _patch_current_user(None):
+            resp = client.get("/contributions/access?project=p")
+        data = resp.json()
+        self.assertFalse(data["logged_in"])
+        self.assertFalse(data["can_edit"])
+
+    def test_admin_can_edit(self):
+        with _patch_current_user(_ADMIN):
+            resp = client.get("/contributions/access?project=p")
+        self.assertTrue(resp.json()["can_edit"])
+
+    def test_member_can_edit(self):
+        add_member("p", _MEMBER["orcid"], _MEMBER["name"])
+        with _patch_current_user(_MEMBER):
+            resp = client.get("/contributions/access?project=p")
+        data = resp.json()
+        self.assertTrue(data["is_member"])
+        self.assertTrue(data["can_edit"])
+
+    def test_logged_in_non_member_cannot_edit(self):
+        with _patch_current_user(_MEMBER):
+            resp = client.get("/contributions/access?project=p")
+        data = resp.json()
+        self.assertTrue(data["logged_in"])
+        self.assertFalse(data["can_edit"])
+
+
+class TestMembersHandler(ContributionsHandlerTestCase):
+    def test_members_requires_admin(self):
+        with _patch_current_user(_MEMBER):
+            resp = client.get("/contributions/members?project=p")
+        self.assertEqual(resp.status_code, 403)
+
+    def test_members_lists_joined_users(self):
+        add_member("p", _MEMBER["orcid"], _MEMBER["name"])
+        with _patch_current_user(_ADMIN):
+            resp = client.get("/contributions/members?project=p")
+        self.assertEqual(resp.status_code, 200)
+        members = resp.json()["members"]
+        self.assertEqual(len(members), 1)
+        self.assertEqual(members[0]["orcid"], _MEMBER["orcid"])
+
+
+class TestSessionPostAuth(ContributionsHandlerTestCase):
+    """POST /contributions/post authenticated by an ORCID session."""
+
+    def _seed_two_author_project(self, name="sess-project"):
+        pc = ProjectContributions(
+            project_name=name,
+            contributors=[
+                AuthorContribution(author=_make_author("Alice"), credit_levels=[_make_role()]),
+                AuthorContribution(author=_make_author("Bob"), credit_levels=[_make_role()]),
+            ],
+        )
+        store_contributions(name, pc)
+        return pc
+
+    def _payload(self, contributors):
+        pc = ProjectContributions(project_name="sess-project", contributors=contributors)
+        return to_json(pc)
+
+    def test_member_can_add_own_row(self):
+        self._seed_two_author_project()
+        add_member("sess-project", _MEMBER["orcid"], _MEMBER["name"])
+        body = self._payload([
+            AuthorContribution(author=_make_author("Alice"), credit_levels=[_make_role()]),
+            AuthorContribution(author=_make_author("Bob"), credit_levels=[_make_role()]),
+            AuthorContribution(author=_make_author("Carol"), credit_levels=[_make_role()]),
+        ])
+        with _patch_current_user(_MEMBER):
+            resp = client.post(
+                "/contributions/post?project=sess-project",
+                content=body,
+                headers={"Content-Type": "application/json"},
+            )
+        self.assertEqual(resp.status_code, 200)
+
+    def test_member_cannot_remove_other_author(self):
+        self._seed_two_author_project()
+        add_member("sess-project", _MEMBER["orcid"], _MEMBER["name"])
+        body = self._payload([
+            AuthorContribution(author=_make_author("Alice"), credit_levels=[_make_role()]),
+        ])
+        with _patch_current_user(_MEMBER):
+            resp = client.post(
+                "/contributions/post?project=sess-project",
+                content=body,
+                headers={"Content-Type": "application/json"},
+            )
+        self.assertEqual(resp.status_code, 403)
+
+    def test_admin_session_can_edit_everything(self):
+        self._seed_two_author_project()
+        body = self._payload([
+            AuthorContribution(author=_make_author("Alice"), credit_levels=[_make_role()]),
+        ])
+        with _patch_current_user(_ADMIN):
+            resp = client.post(
+                "/contributions/post?project=sess-project",
+                content=body,
+                headers={"Content-Type": "application/json"},
+            )
+        self.assertEqual(resp.status_code, 200)
 
 
 if __name__ == "__main__":
