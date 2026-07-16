@@ -228,6 +228,23 @@ def is_project_locked(
     return _get_json(_password_key(project_name)) is not None
 
 
+def clear_project_password(
+    project_name: str,
+    store_dir=None,  # retained for API compatibility; ignored
+) -> bool:
+    """Remove any password on *project_name*, unlocking it.
+
+    After this the project is publicly readable *and* writable (an anonymous
+    POST is accepted; see ``verify_project_password`` returning True when no
+    password is set). Returns True if a password existed and was removed.
+    """
+    key = _password_key(project_name)
+    if _get_json(key) is None:
+        return False
+    _s3().delete_object(Bucket=_S3_BUCKET, Key=key)
+    return True
+
+
 def _list_latest_project_keys() -> list:
     """Return the newest version object key for every project.
 
@@ -514,30 +531,64 @@ def add_member(
     orcid: str,
     name: Optional[str] = None,
     granted_via: Optional[str] = None,
+    is_admin: Optional[bool] = None,
     store_dir=None,  # retained for API compatibility; ignored
 ) -> dict:
     """Grant *orcid* edit access to *project_name*. Idempotent.
 
     Returns the (new or existing) member record. If the member already exists,
-    the stored ``name`` is refreshed when a newer one is supplied.
+    the stored ``name`` is refreshed when a newer one is supplied, and the
+    ``is_admin`` flag is updated only when *is_admin* is passed explicitly
+    (``None`` leaves it untouched, so the self-add join flow never demotes an
+    existing project admin).
+
+    A member with ``is_admin=True`` is a *project admin*: they may edit the
+    whole project (every author row) and manage its invite link, mirroring the
+    power the old per-project password granted. Regular members may edit only
+    their own author row (see ``is_project_admin`` / ``_validate_member_scope``).
     """
     key = _members_key(project_name)
     data = _get_json(key) or {"members": []}
     for member in data["members"]:
         if member.get("orcid") == orcid:
+            changed = False
             if name and member.get("name") != name:
                 member["name"] = name
+                changed = True
+            if is_admin is not None and bool(member.get("is_admin")) != bool(is_admin):
+                member["is_admin"] = bool(is_admin)
+                changed = True
+            if changed:
                 _put_json(key, data)
             return member
     record = {
         "orcid": orcid,
         "name": name,
+        "is_admin": bool(is_admin),
         "granted_at": datetime.now(timezone.utc).isoformat(),
         "granted_via": granted_via,
     }
     data["members"].append(record)
     _put_json(key, data)
     return record
+
+
+def is_project_admin(
+    project_name: str,
+    orcid: str,
+    store_dir=None,  # retained for API compatibility; ignored
+) -> bool:
+    """Return True if *orcid* is a project admin of *project_name*.
+
+    Project admins are member records flagged ``is_admin``; they may edit every
+    author row and manage the invite link, exactly like the legacy password
+    holder. This is per-project and independent of the global ``ADMIN_ORCIDS``
+    allowlist.
+    """
+    return any(
+        m.get("orcid") == orcid and m.get("is_admin")
+        for m in list_members(project_name)
+    )
 
 
 def remove_member(

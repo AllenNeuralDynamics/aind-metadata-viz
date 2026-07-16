@@ -41,6 +41,7 @@ from aind_metadata_viz.contributions.store import (
     disable_token,
     add_member,
     is_member,
+    is_project_admin,
     list_members,
     remove_member,
 )
@@ -1761,6 +1762,32 @@ class TestMembershipStore(unittest.TestCase):
 
     def test_list_members_empty(self):
         self.assertEqual(list_members("nobody"), [])
+
+    def test_regular_member_is_not_project_admin(self):
+        add_member("proj", "0000-0001", "Alice")
+        self.assertTrue(is_member("proj", "0000-0001"))
+        self.assertFalse(is_project_admin("proj", "0000-0001"))
+
+    def test_add_project_admin(self):
+        add_member("proj", "0000-0002", "Bob", "migration", is_admin=True)
+        self.assertTrue(is_member("proj", "0000-0002"))
+        self.assertTrue(is_project_admin("proj", "0000-0002"))
+        # Scoped to this project only.
+        self.assertFalse(is_project_admin("other", "0000-0002"))
+
+    def test_add_member_does_not_demote_admin_when_is_admin_omitted(self):
+        # A later self-add/join (which omits is_admin) must not drop admin.
+        add_member("proj", "0000-0002", "Bob", is_admin=True)
+        add_member("proj", "0000-0002", "Bob", granted_via="invite:t9")
+        self.assertTrue(is_project_admin("proj", "0000-0002"))
+
+    def test_add_member_can_promote_and_demote_explicitly(self):
+        add_member("proj", "0000-0002", "Bob")
+        self.assertFalse(is_project_admin("proj", "0000-0002"))
+        add_member("proj", "0000-0002", "Bob", is_admin=True)
+        self.assertTrue(is_project_admin("proj", "0000-0002"))
+        add_member("proj", "0000-0002", "Bob", is_admin=False)
+        self.assertFalse(is_project_admin("proj", "0000-0002"))
 
 
 class TestSelfAddToken(unittest.TestCase):

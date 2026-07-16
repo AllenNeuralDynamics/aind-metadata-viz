@@ -34,6 +34,7 @@ from .store import (
     get_author_image_key,
     get_contributions_by_doi,
     is_member,
+    is_project_admin,
     is_project_locked,
     list_members,
     lookup_token,
@@ -307,21 +308,26 @@ async def contributions_post(
     # project. Members may only edit their own author row; admins may edit
     # anything. This bypasses the legacy password/token checks entirely.
     session_user = get_current_user(request)
-    if session_user and (
-        session_user["is_admin"]
-        or await asyncio.to_thread(is_member, project, session_user["orcid"])
-    ):
-        if not session_user["is_admin"]:
+    if session_user:
+        orcid = session_user["orcid"]
+        # Global admins and per-project admins may edit the whole project.
+        is_full_admin = session_user["is_admin"] or await asyncio.to_thread(
+            is_project_admin, project, orcid
+        )
+        if is_full_admin:
+            authed_via_session = True
+        elif await asyncio.to_thread(is_member, project, orcid):
+            # Regular members may only edit their own author row.
             ok, err = await asyncio.to_thread(
                 _validate_member_scope,
                 project,
-                session_user["orcid"],
+                orcid,
                 session_user.get("name"),
                 new_contributions,
             )
             if not ok:
                 return JSONResponse(status_code=403, content={"error": err})
-        authed_via_session = True
+            authed_via_session = True
 
     if authed_via_session:
         pass
@@ -512,10 +518,13 @@ async def contributions_invite_get(
     user = get_current_user(request)
     if user is None:
         return JSONResponse(status_code=401, content={"error": "Login required"})
-    if not user["is_admin"]:
-        return JSONResponse(status_code=403, content={"error": "Admin privileges required"})
     if not project:
         return JSONResponse(status_code=400, content={"error": "project query parameter is required"})
+    if not (
+        user["is_admin"]
+        or await asyncio.to_thread(is_project_admin, project, user["orcid"])
+    ):
+        return JSONResponse(status_code=403, content={"error": "Admin privileges required"})
 
     try:
         existing = await asyncio.to_thread(find_active_token, project, "self_add")
@@ -545,10 +554,13 @@ async def contributions_invite_delete(
     user = get_current_user(request)
     if user is None:
         return JSONResponse(status_code=401, content={"error": "Login required"})
-    if not user["is_admin"]:
-        return JSONResponse(status_code=403, content={"error": "Admin privileges required"})
     if not project:
         return JSONResponse(status_code=400, content={"error": "project query parameter is required"})
+    if not (
+        user["is_admin"]
+        or await asyncio.to_thread(is_project_admin, project, user["orcid"])
+    ):
+        return JSONResponse(status_code=403, content={"error": "Admin privileges required"})
 
     try:
         active = await asyncio.to_thread(find_active_token, project, "self_add")
@@ -625,14 +637,18 @@ async def contributions_access(
             content={"logged_in": False, "is_admin": False, "is_member": False, "can_edit": False}
         )
     member = False
+    proj_admin = False
     if project:
         member = await asyncio.to_thread(is_member, project, user["orcid"])
+        proj_admin = await asyncio.to_thread(is_project_admin, project, user["orcid"])
+    # A project admin gets the same full-editor UI as a global admin.
+    is_admin = bool(user["is_admin"] or proj_admin)
     return JSONResponse(
         content={
             "logged_in": True,
-            "is_admin": user["is_admin"],
+            "is_admin": is_admin,
             "is_member": member,
-            "can_edit": bool(user["is_admin"] or member),
+            "can_edit": bool(is_admin or member),
         }
     )
 
@@ -649,10 +665,13 @@ async def contributions_members(
     user = get_current_user(request)
     if user is None:
         return JSONResponse(status_code=401, content={"error": "Login required"})
-    if not user["is_admin"]:
-        return JSONResponse(status_code=403, content={"error": "Admin privileges required"})
     if not project:
         return JSONResponse(status_code=400, content={"error": "project query parameter is required"})
+    if not (
+        user["is_admin"]
+        or await asyncio.to_thread(is_project_admin, project, user["orcid"])
+    ):
+        return JSONResponse(status_code=403, content={"error": "Admin privileges required"})
     members = await asyncio.to_thread(list_members, project)
     return JSONResponse(content={"project": project, "members": members})
 
