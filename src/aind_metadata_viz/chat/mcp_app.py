@@ -8,8 +8,9 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.datastructures import Headers
 from starlette.responses import JSONResponse
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 # Import side-effect: registers tools on the shared mcp instance and
 # disables the NWB tools that we don't want exposed.
@@ -33,22 +34,43 @@ mcp_rate_limiter = RateLimiter(
 )
 
 
-class _MCPSecurityMiddleware(BaseHTTPMiddleware):
-    """Enforce Origin allow-listing and per-IP rate limiting for MCP."""
+class _MCPSecurityMiddleware:
+    """Enforce Origin allow-listing and per-IP rate limiting for MCP.
 
-    async def dispatch(self, request, call_next):
-        blocked = origin_error(request.headers)
+    Implemented as *pure ASGI* middleware rather than Starlette's
+    ``BaseHTTPMiddleware``. The MCP Streamable HTTP transport keeps
+    responses open as long-lived streams; ``BaseHTTPMiddleware`` buffers
+    the response inside an anyio task and tears the connection down,
+    which the MCP client surfaces as an immediate "Canceled".
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(
+        self, scope: Scope, receive: Receive, send: Send
+    ) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        headers = Headers(scope=scope)
+
+        blocked = origin_error(headers)
         if blocked:
-            return JSONResponse(status_code=403, content={"error": blocked})
+            response = JSONResponse(status_code=403, content={"error": blocked})
+            await response(scope, receive, send)
+            return
 
-        ip = client_ip(
-            request.headers,
-            request.client.host if request.client else None,
-        )
+        client = scope.get("client")
+        ip = client_ip(headers, client[0] if client else None)
         allowed, error = mcp_rate_limiter.check("mcp", ip)
         if not allowed:
-            return JSONResponse(status_code=429, content={"error": error})
-        return await call_next(request)
+            response = JSONResponse(status_code=429, content={"error": error})
+            await response(scope, receive, send)
+            return
+
+        await self.app(scope, receive, send)
 
 
 def mount_mcp_server(app: FastAPI) -> None:
