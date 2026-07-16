@@ -24,13 +24,17 @@ logger = logging.getLogger(__name__)
 
 MCP_MOUNT_PATH = os.environ.get("MCP_MOUNT_PATH", "/mcp")
 
-# 1 request/second sustained. A small burst lets the MCP protocol
-# handshake (initialize -> list tools -> call) proceed without tripping
-# the limiter on the first interaction.
+# 1 request/second sustained. The burst must be large enough to absorb a
+# client's startup sequence in one go: VS Code (and other MCP clients)
+# fire initialize -> notifications/initialized -> logging/setLevel ->
+# tools/list -> resources/list -> prompts/list back-to-back, which is
+# well over half a dozen requests in the same second. A burst of 5 would
+# trip the limiter mid-handshake and surface as a 429 before the
+# connection is even usable, so we give generous headroom here.
 mcp_rate_limiter = RateLimiter(
     per_minute=int(os.environ.get("MCP_RATE_PER_MIN", "60")),
     per_day=int(os.environ.get("MCP_RATE_PER_DAY", "1000")),
-    burst=int(os.environ.get("MCP_RATE_BURST", "5")),
+    burst=int(os.environ.get("MCP_RATE_BURST", "20")),
 )
 
 
@@ -62,13 +66,23 @@ class _MCPSecurityMiddleware:
             await response(scope, receive, send)
             return
 
-        client = scope.get("client")
-        ip = client_ip(headers, client[0] if client else None)
-        allowed, error = mcp_rate_limiter.check("mcp", ip)
-        if not allowed:
-            response = JSONResponse(status_code=429, content={"error": error})
-            await response(scope, receive, send)
-            return
+        # The Streamable HTTP transport opens a single long-lived GET
+        # request to receive the server-to-client SSE stream. That is one
+        # persistent connection, not a per-call action, so counting it
+        # against the rate limit needlessly drains a client's budget (and
+        # can 429 the stream that every subsequent response depends on).
+        # Only rate-limit the POST messages that actually carry JSON-RPC
+        # calls; leave stream setup/teardown (GET/DELETE) unmetered.
+        if scope.get("method") == "POST":
+            client = scope.get("client")
+            ip = client_ip(headers, client[0] if client else None)
+            allowed, error = mcp_rate_limiter.check("mcp", ip)
+            if not allowed:
+                response = JSONResponse(
+                    status_code=429, content={"error": error}
+                )
+                await response(scope, receive, send)
+                return
 
         await self.app(scope, receive, send)
 
