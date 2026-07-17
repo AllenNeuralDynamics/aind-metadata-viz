@@ -93,8 +93,18 @@ class AuthorContribution(BaseModel):
         default=False,
         description="True when an author is listed in the metadata of a data asset",
     )
-    
-    
+    is_admin: bool = Field(
+        default=False,
+        description=(
+            "True when this contributor is a project admin. Admins may edit the "
+            "whole project (every author row) and grant admin to others. The "
+            "creator of a project is made an admin automatically; edit access "
+            "for everyone else is gated by matching their logged-in ORCID iD to "
+            "this contributor's registry_identifier."
+        ),
+    )
+
+
     @model_validator(mode="after")
     def check_from_asset(self):
         if not self.from_asset:

@@ -26,17 +26,12 @@ from . import (
     to_yaml,
 )
 from .store import (
-    add_member,
     consume_token,
     create_token,
-    disable_token,
     find_active_token,
     get_author_image_key,
     get_contributions_by_doi,
-    is_member,
-    is_project_admin,
     is_project_locked,
-    list_members,
     lookup_token,
     set_project_password,
     verify_project_password,
@@ -49,11 +44,11 @@ from ..auth import get_current_user
 contributions_router = APIRouter(tags=["contributions"])
 
 
-def _member_owned_name(existing, orcid, name):
+def _owned_name(existing, orcid, name):
     """Return the name of the contributor that belongs to *orcid*/*name*.
 
     Matches by ORCID (``author.registry_identifier``) first, then by display
-    name. Returns None if the member has no row yet (they are adding it).
+    name. Returns None if the user has no row yet (they are adding it).
     """
     if existing is None:
         return None
@@ -67,18 +62,35 @@ def _member_owned_name(existing, orcid, name):
     return None
 
 
-def _validate_member_scope(project_name, orcid, name, new_contributions):
-    """Return ``(ok, error)`` for a member's save.
+def _is_admin_contributor(contributions, orcid):
+    """Return True if *orcid* owns a contributor row flagged ``is_admin``.
 
-    A member may only add or modify *their own* contributor row (matched by
-    ORCID or name); every other author must be left unchanged.
+    Project admins are recorded directly on the contributor metadata: a row
+    whose ``author.registry_identifier`` matches the logged-in ORCID and whose
+    ``is_admin`` is True. This is the only per-project edit-access state; there
+    is no separate membership store.
+    """
+    if contributions is None or not orcid:
+        return False
+    return any(
+        getattr(c.author, "registry_identifier", None) == orcid and c.is_admin
+        for c in contributions.contributors
+    )
+
+
+def _validate_own_row_scope(project_name, orcid, name, new_contributions):
+    """Return ``(ok, error)`` for a non-admin logged-in user's save.
+
+    A non-admin may only add or modify *their own* contributor row (matched by
+    ORCID or name); every other author must be left unchanged, and they may not
+    grant themselves admin.
     """
     try:
         existing = get_contributions(project_name)
     except FileNotFoundError:
         existing = None
 
-    owned = _member_owned_name(existing, orcid, name)
+    owned = _owned_name(existing, orcid, name)
     existing_by_name = (
         {c.author.name: c for c in existing.contributors} if existing else {}
     )
@@ -98,11 +110,19 @@ def _validate_member_scope(project_name, orcid, name, new_contributions):
     if len(added) > 1:
         return False, "You can only add your own author entry"
 
+    # Non-admins can never introduce or change an is_admin flag: each row's
+    # is_admin must equal its previously stored value (False for new rows).
+    for c in new_contributions.contributors:
+        prev = existing_by_name.get(c.author.name)
+        prev_admin = bool(prev.is_admin) if prev else False
+        if bool(c.is_admin) != prev_admin:
+            return False, "Only a project admin can grant or change admin access"
+
     for c in new_contributions.contributors:
         if c.author.name == owned:
             continue
         if c.author.name in added:
-            # The single new row must be the member's own.
+            # The single new row must be the user's own.
             continue
         old = existing_by_name.get(c.author.name)
         if old and c.model_dump_json() != old.model_dump_json():
@@ -304,22 +324,38 @@ async def contributions_post(
     new_author_name = None
     authed_via_session = False
 
-    # Preferred path: a logged-in ORCID user who is a member (or admin) of the
-    # project. Members may only edit their own author row; admins may edit
-    # anything. This bypasses the legacy password/token checks entirely.
+    # Preferred path: a logged-in ORCID user. Edit access is derived entirely
+    # from the contributor metadata:
+    #   * Global admins (ADMIN_ORCIDS) and project admins (a contributor row
+    #     matching this ORCID with is_admin=True) may edit the whole project.
+    #   * The creator of a brand-new project is made an admin automatically.
+    #   * Any other logged-in user may only add/modify their own author row.
+    # This bypasses the legacy password/token checks entirely.
     session_user = get_current_user(request)
     if session_user:
         orcid = session_user["orcid"]
-        # Global admins and per-project admins may edit the whole project.
-        is_full_admin = session_user["is_admin"] or await asyncio.to_thread(
-            is_project_admin, project, orcid
+        try:
+            existing = await asyncio.to_thread(get_contributions, project)
+        except FileNotFoundError:
+            existing = None
+
+        is_full_admin = bool(session_user["is_admin"]) or _is_admin_contributor(
+            existing, orcid
         )
-        if is_full_admin:
+
+        if existing is None:
+            # Brand-new project: the logged-in creator owns it. Force their own
+            # row to is_admin so they (and only they) can manage it afterwards.
+            for c in new_contributions.contributors:
+                rid = getattr(c.author, "registry_identifier", None)
+                c.is_admin = bool(rid and rid == orcid)
             authed_via_session = True
-        elif await asyncio.to_thread(is_member, project, orcid):
-            # Regular members may only edit their own author row.
+        elif is_full_admin:
+            authed_via_session = True
+        else:
+            # Non-admin: may only add/modify their own author row.
             ok, err = await asyncio.to_thread(
-                _validate_member_scope,
+                _validate_own_row_scope,
                 project,
                 orcid,
                 session_user.get("name"),
@@ -501,130 +537,15 @@ async def contributions_token(
 
 
 @contributions_router.get(
-    "/contributions/invite",
-    summary="Get or create a project's permanent invite link token (admin)",
-    description=(
-        "Admin only. Returns the project's permanent ``self_add`` invite token, "
-        "creating one if none is active. The token never expires; it is revoked "
-        "by calling DELETE on this endpoint. Recipients open "
-        "``/contributions/add?project=<name>&token=<token>``, log in with ORCID, "
-        "and are granted permanent membership to edit their own author entry."
-    ),
-)
-async def contributions_invite_get(
-    request: Request,
-    project: Optional[str] = Query(default=None, description="Project name"),
-):
-    user = get_current_user(request)
-    if user is None:
-        return JSONResponse(status_code=401, content={"error": "Login required"})
-    if not project:
-        return JSONResponse(status_code=400, content={"error": "project query parameter is required"})
-    if not (
-        user["is_admin"]
-        or await asyncio.to_thread(is_project_admin, project, user["orcid"])
-    ):
-        return JSONResponse(status_code=403, content={"error": "Admin privileges required"})
-
-    try:
-        existing = await asyncio.to_thread(find_active_token, project, "self_add")
-        if existing is not None:
-            token_id = existing["token_id"]
-        else:
-            token_id = await asyncio.to_thread(create_token, project, "self_add")
-    except Exception as e:
-        _logger.exception("GET /contributions/invite project=%s", project)
-        return JSONResponse(status_code=500, content={"error": str(e)})
-
-    return JSONResponse(content={"token": token_id, "type": "self_add", "project": project})
-
-
-@contributions_router.delete(
-    "/contributions/invite",
-    summary="Disable a project's invite link token (admin)",
-    description=(
-        "Admin only. Disables the project's active ``self_add`` invite token so "
-        "the link can no longer be used to join. Existing members keep access."
-    ),
-)
-async def contributions_invite_delete(
-    request: Request,
-    project: Optional[str] = Query(default=None, description="Project name"),
-):
-    user = get_current_user(request)
-    if user is None:
-        return JSONResponse(status_code=401, content={"error": "Login required"})
-    if not project:
-        return JSONResponse(status_code=400, content={"error": "project query parameter is required"})
-    if not (
-        user["is_admin"]
-        or await asyncio.to_thread(is_project_admin, project, user["orcid"])
-    ):
-        return JSONResponse(status_code=403, content={"error": "Admin privileges required"})
-
-    try:
-        active = await asyncio.to_thread(find_active_token, project, "self_add")
-        if active is None:
-            return JSONResponse(content={"project": project, "disabled": False})
-        await asyncio.to_thread(disable_token, project, active["token_id"])
-    except Exception as e:
-        _logger.exception("DELETE /contributions/invite project=%s", project)
-        return JSONResponse(status_code=500, content={"error": str(e)})
-
-    return JSONResponse(content={"project": project, "disabled": True})
-
-
-@contributions_router.post(
-    "/contributions/join",
-    summary="Join a project via an invite token (requires login)",
-    description=(
-        "Requires a logged-in ORCID user. Validates the supplied invite "
-        "``token`` for ``project`` and, if valid, grants the user permanent "
-        "membership (edit access to their own author entry). Idempotent."
-    ),
-)
-async def contributions_join(
-    request: Request,
-    project: Optional[str] = Query(default=None, description="Project name"),
-    token: Optional[str] = Query(default=None, description="Invite token"),
-):
-    user = get_current_user(request)
-    if user is None:
-        return JSONResponse(status_code=401, content={"error": "Login required"})
-    if not project or not token:
-        return JSONResponse(
-            status_code=400,
-            content={"error": "project and token query parameters are required"},
-        )
-
-    record = await asyncio.to_thread(lookup_token, project, token)
-    if record is None or record.get("token_type") != "self_add":
-        return JSONResponse(
-            status_code=403, content={"error": "Invalid or disabled invite token"}
-        )
-
-    try:
-        await asyncio.to_thread(
-            add_member,
-            project,
-            user["orcid"],
-            user.get("name"),
-            f"invite:{record['token_id']}",
-        )
-    except Exception as e:
-        _logger.exception("POST /contributions/join project=%s", project)
-        return JSONResponse(status_code=500, content={"error": str(e)})
-
-    return JSONResponse(content={"project": project, "orcid": user["orcid"], "joined": True})
-
-
-@contributions_router.get(
     "/contributions/access",
     summary="Whether the current user can edit a project",
     description=(
-        "Returns ``{can_edit, is_admin, is_member, logged_in}`` for the current "
-        "session user relative to ``project``. Used by the edit page to decide "
-        "whether to show the editor or a login / no-access prompt."
+        "Returns ``{logged_in, is_admin, can_edit}`` for the current session "
+        "user relative to ``project``. ``is_admin`` is true for global admins "
+        "and for a user whose ORCID matches a contributor row flagged "
+        "``is_admin``; those users get the full editor. ``can_edit`` is true "
+        "for any logged-in user, since anyone may add or edit their own author "
+        "row via the add wizard."
     ),
 )
 async def contributions_access(
@@ -634,46 +555,28 @@ async def contributions_access(
     user = get_current_user(request)
     if user is None:
         return JSONResponse(
-            content={"logged_in": False, "is_admin": False, "is_member": False, "can_edit": False}
+            content={"logged_in": False, "is_admin": False, "can_edit": False}
         )
-    member = False
-    proj_admin = False
-    if project:
-        member = await asyncio.to_thread(is_member, project, user["orcid"])
-        proj_admin = await asyncio.to_thread(is_project_admin, project, user["orcid"])
-    # A project admin gets the same full-editor UI as a global admin.
-    is_admin = bool(user["is_admin"] or proj_admin)
+
+    is_admin = bool(user["is_admin"])
+    if project and not is_admin:
+        try:
+            existing = await asyncio.to_thread(get_contributions, project)
+        except FileNotFoundError:
+            existing = None
+        except Exception:
+            _logger.exception("GET /contributions/access project=%s", project)
+            existing = None
+        is_admin = _is_admin_contributor(existing, user["orcid"])
+
     return JSONResponse(
         content={
             "logged_in": True,
             "is_admin": is_admin,
-            "is_member": member,
-            "can_edit": bool(is_admin or member),
+            # Any logged-in user may add/edit their own author row.
+            "can_edit": True,
         }
     )
-
-
-@contributions_router.get(
-    "/contributions/members",
-    summary="List members with edit access to a project (admin)",
-    description="Admin only. Returns the list of ORCID members for the project.",
-)
-async def contributions_members(
-    request: Request,
-    project: Optional[str] = Query(default=None, description="Project name"),
-):
-    user = get_current_user(request)
-    if user is None:
-        return JSONResponse(status_code=401, content={"error": "Login required"})
-    if not project:
-        return JSONResponse(status_code=400, content={"error": "project query parameter is required"})
-    if not (
-        user["is_admin"]
-        or await asyncio.to_thread(is_project_admin, project, user["orcid"])
-    ):
-        return JSONResponse(status_code=403, content={"error": "Admin privileges required"})
-    members = await asyncio.to_thread(list_members, project)
-    return JSONResponse(content={"project": project, "members": members})
 
 
 @contributions_router.get(

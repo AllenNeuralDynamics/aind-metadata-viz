@@ -331,10 +331,8 @@ def create_token(
         Name of the target project.
     token_type:
         ``"add_author"`` (one-time use), ``"edit_author"`` (scoped to
-        *author_name*, reusable until expiry), ``"multi_author"``
-        (reusable, lets multiple people each add themselves, capped at 7 days),
-        or ``"self_add"`` (permanent invite token — never expires, disabled
-        manually by an admin; used with the ORCID login / membership flow).
+        *author_name*, reusable until expiry), or ``"multi_author"``
+        (reusable, lets multiple people each add themselves, capped at 7 days).
     author_name:
         Required for ``"edit_author"`` tokens.
     expires_days:
@@ -347,22 +345,17 @@ def create_token(
     str
         The UUID token the recipient presents in place of a password.
     """
-    if token_type not in ("add_author", "edit_author", "multi_author", "self_add"):
+    if token_type not in ("add_author", "edit_author", "multi_author"):
         raise ValueError(
-            "token_type must be 'add_author', 'edit_author', 'multi_author', "
-            f"or 'self_add', got {token_type!r}"
+            "token_type must be 'add_author', 'edit_author', or 'multi_author', "
+            f"got {token_type!r}"
         )
     if token_type == "edit_author" and not author_name:
         raise ValueError("author_name is required for edit_author tokens")
 
-    # ``self_add`` invite tokens are permanent: they never expire and are only
-    # revoked when an admin disables them (see ``disable_token``).
-    if token_type == "self_add":
-        expires_at = None
-    else:
-        max_days = _MAX_MULTI_AUTHOR_DAYS if token_type == "multi_author" else _MAX_TOKEN_DAYS
-        days = min(max(1, expires_days), max_days)
-        expires_at = (datetime.now(timezone.utc) + timedelta(days=days)).isoformat()
+    max_days = _MAX_MULTI_AUTHOR_DAYS if token_type == "multi_author" else _MAX_TOKEN_DAYS
+    days = min(max(1, expires_days), max_days)
+    expires_at = (datetime.now(timezone.utc) + timedelta(days=days)).isoformat()
 
     token_id = uuid.uuid4().hex
     key = _token_key(project_name)
@@ -486,124 +479,3 @@ def disable_token(
     if found:
         _put_json(key, data)
     return found
-
-
-# ---------------------------------------------------------------------------
-# Project membership (ORCID-based edit access)
-#
-# Stored at ``contributions-app/_members/{safe_project}.json`` as::
-#
-#     {"members": [{"orcid", "name", "granted_at", "granted_via"}, ...]}
-#
-# Membership records which authenticated ORCID iDs may edit a project. They are
-# created when a user follows a valid invite link and logs in (see the
-# ``/contributions/join`` endpoint) and are independent of the legacy
-# password/token auth, which continues to work unchanged.
-# ---------------------------------------------------------------------------
-
-
-def _members_key(project_name: str) -> str:
-    return f"{_S3_PREFIX}/_members/{_safe_key(project_name)}.json"
-
-
-def list_members(
-    project_name: str,
-    store_dir=None,  # retained for API compatibility; ignored
-) -> list:
-    """Return the list of member records for *project_name* (possibly empty)."""
-    data = _get_json(_members_key(project_name))
-    if data is None:
-        return []
-    return data.get("members", [])
-
-
-def is_member(
-    project_name: str,
-    orcid: str,
-    store_dir=None,  # retained for API compatibility; ignored
-) -> bool:
-    """Return True if *orcid* is a member of *project_name*."""
-    return any(m.get("orcid") == orcid for m in list_members(project_name))
-
-
-def add_member(
-    project_name: str,
-    orcid: str,
-    name: Optional[str] = None,
-    granted_via: Optional[str] = None,
-    is_admin: Optional[bool] = None,
-    store_dir=None,  # retained for API compatibility; ignored
-) -> dict:
-    """Grant *orcid* edit access to *project_name*. Idempotent.
-
-    Returns the (new or existing) member record. If the member already exists,
-    the stored ``name`` is refreshed when a newer one is supplied, and the
-    ``is_admin`` flag is updated only when *is_admin* is passed explicitly
-    (``None`` leaves it untouched, so the self-add join flow never demotes an
-    existing project admin).
-
-    A member with ``is_admin=True`` is a *project admin*: they may edit the
-    whole project (every author row) and manage its invite link, mirroring the
-    power the old per-project password granted. Regular members may edit only
-    their own author row (see ``is_project_admin`` / ``_validate_member_scope``).
-    """
-    key = _members_key(project_name)
-    data = _get_json(key) or {"members": []}
-    for member in data["members"]:
-        if member.get("orcid") == orcid:
-            changed = False
-            if name and member.get("name") != name:
-                member["name"] = name
-                changed = True
-            if is_admin is not None and bool(member.get("is_admin")) != bool(is_admin):
-                member["is_admin"] = bool(is_admin)
-                changed = True
-            if changed:
-                _put_json(key, data)
-            return member
-    record = {
-        "orcid": orcid,
-        "name": name,
-        "is_admin": bool(is_admin),
-        "granted_at": datetime.now(timezone.utc).isoformat(),
-        "granted_via": granted_via,
-    }
-    data["members"].append(record)
-    _put_json(key, data)
-    return record
-
-
-def is_project_admin(
-    project_name: str,
-    orcid: str,
-    store_dir=None,  # retained for API compatibility; ignored
-) -> bool:
-    """Return True if *orcid* is a project admin of *project_name*.
-
-    Project admins are member records flagged ``is_admin``; they may edit every
-    author row and manage the invite link, exactly like the legacy password
-    holder. This is per-project and independent of the global ``ADMIN_ORCIDS``
-    allowlist.
-    """
-    return any(
-        m.get("orcid") == orcid and m.get("is_admin")
-        for m in list_members(project_name)
-    )
-
-
-def remove_member(
-    project_name: str,
-    orcid: str,
-    store_dir=None,  # retained for API compatibility; ignored
-) -> bool:
-    """Revoke *orcid*'s access to *project_name*. Returns True if removed."""
-    key = _members_key(project_name)
-    data = _get_json(key)
-    if data is None:
-        return False
-    before = len(data.get("members", []))
-    data["members"] = [m for m in data.get("members", []) if m.get("orcid") != orcid]
-    if len(data["members"]) == before:
-        return False
-    _put_json(key, data)
-    return True
