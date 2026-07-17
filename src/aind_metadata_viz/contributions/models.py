@@ -125,6 +125,14 @@ class ProjectContributions(BaseModel):
     doi: Optional[str] = Field(default=None, description="Optional DOI associated with this set of contributions")
     assets: List[str] = Field(default_factory=list, description="List of asset names associated with the project")
     locked: bool = Field(default=False, description="Whether this project is password-protected")
+    edit_locked: bool = Field(
+        default=False,
+        description=(
+            "Admin-controlled edit lock. When True, no contributor may add or "
+            "modify entries; only a project admin (or global admin) can edit, "
+            "and only an admin can toggle this flag off to unlock."
+        ),
+    )
     show_sections: bool = Field(default=False, description="Whether to show section contributions in the interface")
     show_levels: bool = Field(default=True, description="Whether to show CRediT contribution levels in the interface")
     show_timeline: bool = Field(default=False, description="Whether to show author timelines in the interface")

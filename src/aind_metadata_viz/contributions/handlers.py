@@ -110,6 +110,11 @@ def _validate_own_row_scope(project_name, orcid, name, new_contributions):
     if len(added) > 1:
         return False, "You can only add your own author entry"
 
+    # Non-admins can never change the project edit lock.
+    prev_locked = bool(existing.edit_locked) if existing else False
+    if bool(new_contributions.edit_locked) != prev_locked:
+        return False, "Only a project admin can lock or unlock the project"
+
     # Non-admins can never introduce or change an is_admin flag: each row's
     # is_admin must equal its previously stored value (False for new rows).
     for c in new_contributions.contributors:
@@ -324,6 +329,26 @@ async def contributions_post(
     new_author_name = None
     authed_via_session = False
 
+    try:
+        existing = await asyncio.to_thread(get_contributions, project)
+    except FileNotFoundError:
+        existing = None
+
+    # A logged-in ORCID user is a full admin when they are a global admin or a
+    # contributor flagged is_admin on this project.
+    session_user = get_current_user(request)
+    session_admin = bool(
+        session_user
+        and (session_user["is_admin"] or _is_admin_contributor(existing, session_user["orcid"]))
+    )
+
+    # Admin edit lock: when set, only an admin may write (to edit or to unlock).
+    if existing is not None and existing.edit_locked and not session_admin:
+        return JSONResponse(
+            status_code=403,
+            content={"error": "This project is locked; ask an admin to unlock it before editing."},
+        )
+
     # Preferred path: a logged-in ORCID user. Edit access is derived entirely
     # from the contributor metadata:
     #   * Global admins (ADMIN_ORCIDS) and project admins (a contributor row
@@ -331,17 +356,9 @@ async def contributions_post(
     #   * The creator of a brand-new project is made an admin automatically.
     #   * Any other logged-in user may only add/modify their own author row.
     # This bypasses the legacy password/token checks entirely.
-    session_user = get_current_user(request)
     if session_user:
         orcid = session_user["orcid"]
-        try:
-            existing = await asyncio.to_thread(get_contributions, project)
-        except FileNotFoundError:
-            existing = None
-
-        is_full_admin = bool(session_user["is_admin"]) or _is_admin_contributor(
-            existing, orcid
-        )
+        is_full_admin = session_admin
 
         if existing is None:
             # Brand-new project: the logged-in creator owns it. Force their own

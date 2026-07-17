@@ -1892,6 +1892,48 @@ class TestSessionPostAuth(ContributionsHandlerTestCase):
             resp = self._post(body)
         self.assertEqual(resp.status_code, 200)
 
+    def test_admin_can_lock_project(self):
+        self._seed_project()
+        body = self._payload([
+            AuthorContribution(author=_make_author("Bob", orcid=_PROJECT_ADMIN["orcid"]),
+                               credit_levels=[_make_role()], is_admin=True),
+            AuthorContribution(author=_make_author("Alice"), credit_levels=[_make_role()]),
+        ])
+        pc = json.loads(body); pc["edit_locked"] = True; body = json.dumps(pc)
+        with _patch_current_user(_PROJECT_ADMIN):
+            resp = self._post(body)
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(get_contributions("sess-project").edit_locked)
+
+    def test_locked_project_blocks_non_admin(self):
+        pc = self._seed_project()
+        pc.edit_locked = True
+        store_contributions("sess-project", pc)
+        body = self._payload([
+            AuthorContribution(author=_make_author("Bob", orcid=_PROJECT_ADMIN["orcid"]),
+                               credit_levels=[_make_role()], is_admin=True),
+            AuthorContribution(author=_make_author("Alice"), credit_levels=[_make_role()]),
+            AuthorContribution(author=_make_author("Carol", orcid=_MEMBER["orcid"]),
+                               credit_levels=[_make_role()]),
+        ])
+        with _patch_current_user(_MEMBER):
+            resp = self._post(body)
+        self.assertEqual(resp.status_code, 403)
+        self.assertIn("locked", resp.json()["error"].lower())
+
+    def test_admin_can_edit_and_unlock_locked_project(self):
+        pc = self._seed_project()
+        pc.edit_locked = True
+        store_contributions("sess-project", pc)
+        body = self._payload([
+            AuthorContribution(author=_make_author("Bob", orcid=_PROJECT_ADMIN["orcid"]),
+                               credit_levels=[_make_role()], is_admin=True),
+        ])  # edit_locked defaults False -> admin unlocks
+        with _patch_current_user(_PROJECT_ADMIN):
+            resp = self._post(body)
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(get_contributions("sess-project").edit_locked)
+
     def test_creator_of_new_project_is_made_admin(self):
         # Posting to a project that does not exist yet: the creator's own row
         # (matched by ORCID) is forced to is_admin=True.
