@@ -4,33 +4,39 @@
 Background
 ----------
 Contributions auth moved from per-project passwords to ORCID login. This script
-retroactively records, for each existing project, who its administrator is by
+retroactively records, for each *real* project, who its administrator is by
 writing a *project-admin* member record (``is_admin: true`` in
 ``contributions-app/_members/{project}.json``). A project admin has the same
 power the old password granted: full edit access to every author row plus
 management of the invite link.
 
-Mapping (per the migration request)
------------------------------------
-* ``np-opto``      — stays read-only: no admins added; left as-is.
-* ``data-schema``  — project admin ``0000-0003-3748-6289`` (also the sole global
-                     admin, configured separately via ``ADMIN_ORCIDS``).
-* every other project — project admin **Jerome Lecoq**
-                     (``0000-0002-0131-0938``); his author row in the project
-                     data is also stamped with that ORCID if it is missing.
+Mapping (explicit allowlist — anything not listed here is left untouched, so
+test projects never get an admin)::
+
+    np-opto          read-only  -> locked (no admins); only global admins edit
+    data-schema      admin      -> 0000-0003-3748-6289 (Daniel Birman; also global admin)
+    p3_data_release  admin      -> 0000-0002-0131-0938 (Jerome Lecoq)
+    giant-pipeline   admin      -> 0000-0002-4026-9181 (Michael E. Xie)
+
+For each admin that is also an author on the project, their author row's
+``registry_identifier`` is stamped with the correct ORCID (creating it when
+missing, and overwriting a value that isn't a valid ORCID — e.g. a name that was
+mistakenly stored there).
 
 The script is **idempotent** and prints a plan by default. Nothing is written to
-S3 unless ``--apply`` is passed. Requires AWS credentials with read/write access
-to the ``aind-scratch-data`` bucket.
+S3 unless ``--apply`` is passed. Requires AWS credentials for the prod account
+with read/write access to the ``aind-scratch-data`` bucket.
 
 Usage::
 
     python scripts/migrate_orcid_admins.py               # dry run (default)
     python scripts/migrate_orcid_admins.py --apply       # perform the migration
-    python scripts/migrate_orcid_admins.py --apply --unlock   # also remove passwords
+    python scripts/migrate_orcid_admins.py --apply --unlock-admined  # also unlock admined projects
 """
 
 import argparse
+import re
+import secrets
 import sys
 import unicodedata
 from pathlib import Path
@@ -48,22 +54,29 @@ from aind_metadata_viz.contributions.store import (  # noqa: E402
     is_project_locked,
     list_all_projects,
     list_members,
+    set_project_password,
     store_contributions,
 )
 
 # --- configuration -----------------------------------------------------------
 
-GLOBAL_ADMIN_ORCID = "0000-0003-3748-6289"
-JEROME_ORCID = "0000-0002-0131-0938"
-JEROME_NAME = "Jerome Lecoq"
+# Projects to lock (read-only): no admins; only global ADMIN_ORCIDS can edit.
+READONLY_LOCK = {"np-opto"}
 
-READONLY_PROJECTS = {"np-opto"}
+# project name -> (admin ORCID, admin display name or None)
 PROJECT_ADMINS = {
-    # project name -> (orcid, display name)
-    "data-schema": (GLOBAL_ADMIN_ORCID, None),
+    "data-schema": ("0000-0003-3748-6289", "Daniel Birman"),
+    "p3_data_release": ("0000-0002-0131-0938", "Jerome Lecoq"),
+    "giant-pipeline": ("0000-0002-4026-9181", "Michael E. Xie"),
 }
-# Any project not listed above and not read-only is administered by Jerome.
-DEFAULT_ADMIN = (JEROME_ORCID, JEROME_NAME)
+
+MANAGED = READONLY_LOCK | set(PROJECT_ADMINS)
+
+_ORCID_RE = re.compile(r"^\d{4}-\d{4}-\d{4}-\d{3}[\dX]$")
+
+
+def _valid_orcid(s) -> bool:
+    return bool(s) and bool(_ORCID_RE.match(str(s)))
 
 
 def _norm(s: str) -> str:
@@ -76,11 +89,7 @@ def _norm(s: str) -> str:
 
 
 def _find_author(contribs, orcid, name):
-    """Return the contributor whose row belongs to (orcid, name), or None.
-
-    Matches by ORCID (``registry_identifier``) first, then by a tolerant name
-    comparison, then by surname containment as a last resort.
-    """
+    """Return the contributor row belonging to (orcid, name), or None."""
     for c in contribs.contributors:
         if orcid and getattr(c.author, "registry_identifier", None) == orcid:
             return c
@@ -97,7 +106,6 @@ def _find_author(contribs, orcid, name):
 
 
 def _ensure_project_admin(project, orcid, name, apply):
-    """Make (orcid) a project admin of (project). Returns a status string."""
     if is_project_admin(project, orcid):
         return f"already project admin ({orcid})"
     if apply:
@@ -107,99 +115,88 @@ def _ensure_project_admin(project, orcid, name, apply):
 
 
 def _ensure_author_orcid(project, orcid, name, apply):
-    """Stamp (orcid) onto the author's row in the project data if missing."""
+    if not name:
+        return "no admin name to match; ORCID not stamped"
     try:
         contribs = get_contributions(project)
     except FileNotFoundError:
-        return "no contribution data found; skipped ORCID stamp"
+        return "no contribution data; ORCID not stamped"
     author = _find_author(contribs, orcid, name)
     if author is None:
-        return f"WARNING: author '{name}' not found in data; ORCID not stamped"
+        return f"note: '{name}' is not an author on this project; nothing to stamp"
     current = getattr(author.author, "registry_identifier", None)
     if current == orcid:
         return f"author '{author.author.name}' already has ORCID {orcid}"
-    if current:
+    if _valid_orcid(current) and current != orcid:
         return (
-            f"WARNING: author '{author.author.name}' has a different ORCID "
+            f"WARNING: author '{author.author.name}' has a different valid ORCID "
             f"({current}); left unchanged"
         )
+    # current is empty or not a valid ORCID (e.g. a name) -> set/overwrite.
+    verb = "overwrite invalid" if current else "set missing"
     if apply:
         author.author.registry_identifier = orcid
         store_contributions(
             project, contribs, message=f"migration: link {name} ORCID {orcid}"
         )
-        return f"STAMPED ORCID {orcid} onto author '{author.author.name}'"
-    return f"WOULD STAMP ORCID {orcid} onto author '{author.author.name}'"
+        return f"STAMPED ORCID {orcid} onto '{author.author.name}' ({verb} value {current!r})"
+    return f"WOULD STAMP ORCID {orcid} onto '{author.author.name}' ({verb} value {current!r})"
+
+
+def _lock_readonly(project, apply):
+    if is_project_locked(project):
+        return "already locked (read-only)"
+    if apply:
+        # Lock with an unguessable secret nobody uses; edits go through global
+        # admins' ORCID session, and anonymous/non-admin POSTs are rejected.
+        set_project_password(project, secrets.token_hex(32))
+        return "LOCKED (read-only)"
+    return "WOULD LOCK (read-only)"
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--apply",
-        action="store_true",
-        help="perform the migration (default is a dry run that only prints a plan)",
-    )
-    parser.add_argument(
-        "--unlock",
-        action="store_true",
-        help=(
-            "also remove the password from non-read-only projects, making them "
-            "publicly writable (required for the anonymous 'continue without "
-            "logging in' self-add path; ORCID members/admins work either way)"
-        ),
-    )
+    parser.add_argument("--apply", action="store_true",
+                        help="perform the migration (default: dry run)")
+    parser.add_argument("--unlock-admined", action="store_true",
+                        help="also remove passwords from admined projects (enables "
+                             "the anonymous 'continue without logging in' self-add path)")
     args = parser.parse_args()
 
-    mode = "APPLY" if args.apply else "DRY RUN (no writes)"
-    print(f"=== ORCID admin migration — {mode} ===\n")
+    print(f"=== ORCID admin migration — {'APPLY' if args.apply else 'DRY RUN (no writes)'} ===\n")
 
     projects = list_all_projects()
-    print(f"Found {len(projects)} project(s): {', '.join(projects) or '(none)'}\n")
-
-    unexpected = [
-        p
-        for p in projects
-        if p not in READONLY_PROJECTS and p not in PROJECT_ADMINS
-    ]
-    if len(unexpected) != 1:
-        print(
-            "NOTE: expected exactly one 'other' project to tie to Jerome Lecoq, "
-            f"but found {len(unexpected)}: {unexpected}. Each will be tied to "
-            "Jerome. Review before applying.\n"
-        )
+    print(f"Found {len(projects)} project(s).\n")
 
     for project in projects:
-        print(f"- {project}")
-        locked = is_project_locked(project)
-        print(f"    lock: {'password-protected' if locked else 'open'}")
+        if project not in MANAGED:
+            print(f"- {project}\n    not in migration mapping; left untouched\n")
+            continue
 
-        if project in READONLY_PROJECTS:
-            existing = list_members(project)
-            print(f"    read-only: leaving as-is ({len(existing)} member record(s), "
-                  "no admins added)")
+        print(f"- {project}  (locked={is_project_locked(project)}, members={len(list_members(project))})")
+        if project in READONLY_LOCK:
+            print(f"    {_lock_readonly(project, args.apply)}")
             print()
             continue
 
-        orcid, name = PROJECT_ADMINS.get(project, DEFAULT_ADMIN)
+        orcid, name = PROJECT_ADMINS[project]
         print(f"    {_ensure_project_admin(project, orcid, name, args.apply)}")
-
-        # Stamp the ORCID onto the admin's own author row (Jerome / the default
-        # admin); for data-schema the global admin has no author row to stamp.
-        if (orcid, name) == DEFAULT_ADMIN:
             print(f"    {_ensure_author_orcid(project, orcid, name, args.apply)}")
-
-        if args.unlock and locked:
+        print(f"    {_ensure_author_orcid(project, orcid, name, args.apply)}")
+        if args.unlock_admined and is_project_locked(project):
             if args.apply:
-                removed = clear_project_password(project)
-                print(f"    {'UNLOCKED (password removed)' if removed else 'no password to remove'}")
+                clear_project_password(project)
+                print("    UNLOCKED (password removed)")
             else:
-                print("    WOULD UNLOCK (remove password)")
+                print("    WOULD UNLOCK (password removed)")
         print()
 
-    if not args.apply:
-        print("Dry run complete. Re-run with --apply to perform the migration.")
-    else:
-        print("Migration complete.")
+    # Warn about any mapped project that wasn't found in the store.
+    missing = sorted(MANAGED - set(projects))
+    if missing:
+        print(f"NOTE: mapped projects not found in the store: {missing}\n")
+
+    print("Dry run complete — re-run with --apply." if not args.apply else "Migration complete.")
 
 
 if __name__ == "__main__":
