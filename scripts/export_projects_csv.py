@@ -25,7 +25,6 @@ from aind_metadata_viz.contributions.store import (  # noqa: E402
     _S3_BUCKET,
     _S3_PREFIX,
     _get_json,
-    is_project_locked,
 )
 
 
@@ -59,7 +58,7 @@ def _summarize(version_obj: dict) -> dict:
     return {
         "project_name": project_name or data.get("project_name", ""),
         "num_authors": len(contributors),
-        "locked": is_project_locked(project_name),
+        "locked": bool(data.get("edit_locked", False)),
         "doi": doi,
         "num_assets": len(assets),
         "num_sections": len(sections),

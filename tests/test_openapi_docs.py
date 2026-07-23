@@ -48,7 +48,7 @@ class TestOpenApiSchemaContent(unittest.TestCase):
 
     def test_contributions_get_documents_query_params(self):
         params = self._params("/contributions/get", "get")
-        for name in ("project", "doi", "history", "commit", "format", "password"):
+        for name in ("project", "doi", "history", "commit", "format"):
             self.assertIn(name, params)
 
     def test_routes_are_tagged(self):
