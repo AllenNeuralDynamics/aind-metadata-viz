@@ -223,7 +223,7 @@ async def contributions_projects():
         "Returns the latest (or a specific) contribution data for a project. All models are "
         "publicly readable without a password. Lookup by `project` name or by `doi` (falls back "
         "to treating the DOI value as a project name). Pass `history=true` to instead return the "
-        "commit history (newest first) as `[{\"commit\", \"timestamp\", \"message\"}, ...]`, or "
+        "commit history (newest first) as `[{\"commit\", \"timestamp\"}, ...]`, or "
         "`commit=<hash>` to fetch a specific historical version."
     ),
 )

@@ -10,7 +10,8 @@ Object layout::
 
 * ``store_contributions`` uploads a new version object and returns its UUID.
 * ``get_contributions`` returns the latest version or a specific one by UUID.
-* ``list_project_commits`` returns the version history newest-first.
+* ``list_project_commits`` returns the version history newest-first, derived
+  from the version object keys without reading each object.
 * ``set_project_password`` protects a project with a PBKDF2-hashed password.
 * ``verify_project_password`` checks a supplied password against the stored hash.
 * ``get_contributions_by_doi`` finds the latest version of any project by DOI.
@@ -122,13 +123,19 @@ def list_project_commits(
 
     commits = []
     for key in reversed(keys):  # newest first
-        obj = _get_json(key)
-        if obj:
-            commits.append({
-                "commit": obj["id"],
-                "timestamp": obj["timestamp"],
-                "message": obj["message"],
-            })
+        # The commit id and timestamp are both encoded in the key name
+        # ({prefix}{ts}_{version_id}.json), so we can build the history
+        # listing without reading each version object from S3.
+        filename = key.rsplit("/", 1)[-1]
+        if filename.endswith(".json"):
+            filename = filename[: -len(".json")]
+        ts, _, version_id = filename.rpartition("_")
+        if not ts or not version_id:
+            continue
+        commits.append({
+            "commit": version_id,
+            "timestamp": ts,
+        })
     return commits
 
 

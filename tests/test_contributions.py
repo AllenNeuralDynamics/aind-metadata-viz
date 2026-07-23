@@ -469,15 +469,14 @@ class TestStore(unittest.TestCase):
         entry = commits[0]
         self.assertIn("commit", entry)
         self.assertIn("timestamp", entry)
-        self.assertIn("message", entry)
 
     def test_list_project_commits_newest_first(self):
         pc1 = ProjectContributions(project_name="store-test", doi="10.1/v1")
         pc2 = ProjectContributions(project_name="store-test", doi="10.1/v2")
         store_contributions("store-test", pc1, message="first")
-        store_contributions("store-test", pc2, message="second")
+        second_id = store_contributions("store-test", pc2, message="second")
         commits = list_project_commits("store-test")
-        self.assertEqual(commits[0]["message"], "second")
+        self.assertEqual(commits[0]["commit"], second_id)
 
     def test_list_project_commits_missing_raises(self):
         with self.assertRaises(FileNotFoundError):
@@ -487,16 +486,6 @@ class TestStore(unittest.TestCase):
         pc = ProjectContributions(project_name="fresh")
         commit = store_contributions("fresh", pc)
         self.assertIsInstance(commit, str)
-
-    def test_custom_message_stored(self):
-        store_contributions("store-test", self.pc, message="my-msg")
-        commits = list_project_commits("store-test")
-        self.assertEqual(commits[0]["message"], "my-msg")
-
-    def test_default_message_used_when_none(self):
-        store_contributions("store-test", self.pc)
-        commits = list_project_commits("store-test")
-        self.assertIn("store-test", commits[0]["message"])
 
 
 def _make_project_json(name="handler-project"):

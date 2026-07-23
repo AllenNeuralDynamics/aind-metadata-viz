@@ -181,7 +181,6 @@ def main():
 
         orcid, name = PROJECT_ADMINS[project]
         print(f"    {_ensure_project_admin(project, orcid, name, args.apply)}")
-            print(f"    {_ensure_author_orcid(project, orcid, name, args.apply)}")
         print(f"    {_ensure_author_orcid(project, orcid, name, args.apply)}")
         if args.unlock_admined and is_project_locked(project):
             if args.apply:
