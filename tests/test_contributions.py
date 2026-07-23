@@ -598,6 +598,17 @@ class TestContributionsGetHandler(ContributionsHandlerTestCase):
 
 
 class TestContributionsPostHandler(ContributionsHandlerTestCase):
+    def setUp(self):
+        # Creating a new project requires an ORCID login, so these
+        # POST-mechanics tests run as a logged-in global admin.
+        super().setUp()
+        self._user_patch = _patch_current_user(_ADMIN)
+        self._user_patch.start()
+
+    def tearDown(self):
+        self._user_patch.stop()
+        super().tearDown()
+
     def test_post_missing_project_param_returns_400(self):
         body = _make_project_json()
         resp = client.post("/contributions/post", content=body, headers={"Content-Type": "application/json"})
@@ -1067,6 +1078,14 @@ class TestAnonymousPostAuth(ContributionsHandlerTestCase):
             content=body,
             headers={"Content-Type": "application/json"},
         )
+
+    def test_anon_cannot_create_new_project(self):
+        body = self._payload([
+            AuthorContribution(author=_make_author("Alice"), credit_levels=[_make_role()]),
+        ], name="anon-brand-new")
+        with _patch_current_user(None):
+            resp = self._post(body, name="anon-brand-new")
+        self.assertEqual(resp.status_code, 401)
 
     def test_anon_can_add_single_new_row(self):
         self._seed_project()

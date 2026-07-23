@@ -310,8 +310,17 @@ async def contributions_post(
             authed_via_session = True
 
     if not authed_via_session:
-        # Anonymous caller: no ORCID identity to own a row, so they may only
-        # append a single new author entry and may not touch existing rows.
+        # Creating a brand-new project requires an ORCID login: the creator is
+        # recorded as an admin (handled above in the session branch), so an
+        # anonymous caller may only add to a project that already exists.
+        if existing is None:
+            return JSONResponse(
+                status_code=401,
+                content={"error": "Log in with ORCID to create a new project."},
+            )
+        # Anonymous caller on an existing project: no ORCID identity to own a
+        # row, so they may only append a single new author entry and may not
+        # touch existing rows.
         ok, err = await asyncio.to_thread(
             _validate_own_row_scope, project, None, None, new_contributions
         )
