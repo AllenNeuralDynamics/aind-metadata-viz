@@ -957,7 +957,8 @@ class TestSessionPostAuth(ContributionsHandlerTestCase):
 
     def test_non_admin_cannot_grant_admin(self):
         self._seed_project()
-        # Carol tries to flag her own new row as admin — rejected.
+        # Carol adds herself and tries to flag her own new row as admin. The
+        # save succeeds but the admin grant is stripped by the server merge.
         body = self._payload([
             AuthorContribution(author=_make_author("Bob", orcid=_PROJECT_ADMIN["orcid"]),
                                credit_levels=[_make_role()], is_admin=True),
@@ -967,7 +968,10 @@ class TestSessionPostAuth(ContributionsHandlerTestCase):
         ])
         with _patch_current_user(_MEMBER):
             resp = self._post(body)
-        self.assertEqual(resp.status_code, 403)
+        self.assertEqual(resp.status_code, 200)
+        stored = get_contributions("sess-project")
+        carol = next(c for c in stored.contributors if c.author.name == "Carol")
+        self.assertFalse(carol.is_admin)
 
     def test_global_admin_can_edit_everything(self):
         self._seed_project()
@@ -1048,9 +1052,12 @@ class TestSessionPostAuth(ContributionsHandlerTestCase):
 class TestAnonymousPostAuth(ContributionsHandlerTestCase):
     """POST /contributions/post by an anonymous (not logged-in) visitor.
 
-    With passwords removed, an anonymous caller has no identity to own a row,
-    so they may only append a single new author entry to an unlocked project
-    and may not touch existing rows. A locked project rejects them outright.
+    With passwords removed, an anonymous caller has no identity to own a row.
+    They may append a single new author entry to an unlocked project; the
+    server builds the stored result by keeping every existing row from storage
+    and adding just their new one, so any edits they send for existing rows are
+    silently ignored rather than rejected. Removing an existing row, adding
+    more than one, or writing to a locked project is still rejected.
     """
 
     def _seed_project(self, name="anon-project", edit_locked=False):
@@ -1099,9 +1106,10 @@ class TestAnonymousPostAuth(ContributionsHandlerTestCase):
             resp = self._post(body)
         self.assertEqual(resp.status_code, 200)
 
-    def test_anon_cannot_modify_existing_row(self):
+    def test_anon_edit_of_existing_row_is_ignored(self):
         self._seed_project()
-        # Change Alice's affiliation while leaving the author set unchanged.
+        # Anonymous submits a modified Alice (new affiliation) with no new row.
+        # The save succeeds but Alice's stored row is preserved unchanged.
         body = self._payload([
             AuthorContribution(author=_make_author("Bob", orcid=_PROJECT_ADMIN["orcid"]),
                                credit_levels=[_make_role()], is_admin=True),
@@ -1110,7 +1118,47 @@ class TestAnonymousPostAuth(ContributionsHandlerTestCase):
         ])
         with _patch_current_user(None):
             resp = self._post(body)
-        self.assertEqual(resp.status_code, 403)
+        self.assertEqual(resp.status_code, 200)
+        stored = get_contributions("anon-project")
+        alice = next(c for c in stored.contributors if c.author.name == "Alice")
+        self.assertEqual(alice.author.affiliation, ["AIND"])
+
+    def test_anon_add_preserves_other_rows_from_storage(self):
+        # Regression for the "add one author, get 403 / clobbered rows" bug:
+        # the add wizard resubmits every existing row rebuilt from a lossy
+        # in-memory form (dropping affiliation/ORCID, reordering credits). The
+        # server must keep the stored copy of those rows, not the lossy one.
+        pc = ProjectContributions(
+            project_name="anon-project",
+            contributors=[
+                AuthorContribution(
+                    author=_make_author("Bob", affiliation=["AIND", "UW"],
+                                        orcid=_PROJECT_ADMIN["orcid"]),
+                    credit_levels=[_make_role(CreditRole.SOFTWARE, ContributionLevel.LEAD),
+                                   _make_role(CreditRole.INVESTIGATION, ContributionLevel.SUPPORTING)],
+                    is_admin=True,
+                ),
+            ],
+        )
+        store_contributions("anon-project", pc)
+        # Bob comes back stripped (no affiliation, no ORCID, no is_admin) — the
+        # lossy round-trip — plus a brand-new "Test" author.
+        body = self._payload([
+            AuthorContribution(author=_make_author("Bob"), credit_levels=[_make_role()]),
+            AuthorContribution(author=_make_author("Test"), credit_levels=[_make_role()]),
+        ])
+        with _patch_current_user(None):
+            resp = self._post(body)
+        self.assertEqual(resp.status_code, 200)
+        stored = get_contributions("anon-project")
+        names = [c.author.name for c in stored.contributors]
+        self.assertIn("Test", names)
+        bob = next(c for c in stored.contributors if c.author.name == "Bob")
+        # Bob's stored data survived the lossy client payload intact.
+        self.assertEqual(bob.author.affiliation, ["AIND", "UW"])
+        self.assertEqual(bob.author.registry_identifier, _PROJECT_ADMIN["orcid"])
+        self.assertTrue(bob.is_admin)
+        self.assertEqual(len(bob.credit_levels), 2)
 
     def test_anon_cannot_remove_existing_row(self):
         self._seed_project()

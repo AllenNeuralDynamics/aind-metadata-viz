@@ -67,63 +67,69 @@ def _is_admin_contributor(contributions, orcid):
     )
 
 
-def _validate_own_row_scope(project_name, orcid, name, new_contributions):
-    """Return ``(ok, error)`` for a non-admin logged-in user's save.
+def _merge_scoped_contributions(existing, orcid, name, new_contributions):
+    """Return ``(ok, error, merged)`` for a non-admin / anonymous save.
 
-    A non-admin may only add or modify *their own* contributor row (matched by
-    ORCID or name); every other author must be left unchanged, and they may not
-    grant themselves admin.
+    The caller may only add their own new author row, or edit the row they own
+    (matched by ORCID, else by name). Everyone else's rows — plus every row's
+    ``is_admin`` flag and the project ``edit_locked`` flag — are taken
+    authoritatively from *existing*; whatever the client sent for those rows is
+    ignored. The add wizard resubmits the whole contributor list rebuilt from a
+    lossy in-memory form, so comparing the client's copy of untouched rows
+    against storage would spuriously reject a legitimate self-add/edit. Building
+    the result from storage instead makes it impossible to clobber another row
+    (rather than merely rejecting when the round-trip happens to differ).
+
+    ``existing`` must not be None (creating a new project requires an admin
+    session, handled by the caller before this point).
     """
-    try:
-        existing = get_contributions(project_name)
-    except FileNotFoundError:
-        existing = None
+    stored_by_name = {c.author.name: c for c in existing.contributors}
+    existing_names = set(stored_by_name)
+    new_by_name = {c.author.name: c for c in new_contributions.contributors}
+    new_names = set(new_by_name)
 
-    owned = _owned_name(existing, orcid, name)
-    existing_by_name = (
-        {c.author.name: c for c in existing.contributors} if existing else {}
-    )
-    existing_names = set(existing_by_name)
-    new_names = {c.author.name for c in new_contributions.contributors}
+    owned = _owned_name(existing, orcid, name)  # None for an anonymous caller
 
+    # May not remove anyone else's row (removing your own is allowed).
     removed = existing_names - new_names
-    if owned in removed:
-        removed = removed - {owned}
-    if removed:
+    illegal_removed = removed - ({owned} if owned else set())
+    if illegal_removed:
         return False, (
             "You can only edit your own author entry; cannot remove: "
-            + ", ".join(sorted(removed))
-        )
+            + ", ".join(sorted(illegal_removed))
+        ), None
 
+    # May introduce at most one new row (their own).
     added = new_names - existing_names
     if len(added) > 1:
-        return False, "You can only add your own author entry"
+        return False, "You can only add your own author entry", None
 
-    # Non-admins can never change the project edit lock.
-    prev_locked = bool(existing.edit_locked) if existing else False
-    if bool(new_contributions.edit_locked) != prev_locked:
-        return False, "Only a project admin can lock or unlock the project"
+    # Build the final list authoritatively from storage.
+    merged_rows = []
+    for c in existing.contributors:
+        nm = c.author.name
+        if nm == owned:
+            # The caller owns this row and may edit it; keep the stored
+            # is_admin flag (non-admins cannot change admin access).
+            if nm in new_by_name:
+                row = new_by_name[nm].model_copy(deep=True)
+                row.is_admin = c.is_admin
+                merged_rows.append(row)
+            # else: they removed their own row — drop it.
+        else:
+            # Someone else's row: take it verbatim from storage.
+            merged_rows.append(c)
 
-    # Non-admins can never introduce or change an is_admin flag: each row's
-    # is_admin must equal its previously stored value (False for new rows).
-    for c in new_contributions.contributors:
-        prev = existing_by_name.get(c.author.name)
-        prev_admin = bool(prev.is_admin) if prev else False
-        if bool(c.is_admin) != prev_admin:
-            return False, "Only a project admin can grant or change admin access"
+    # Append their new row, if any (never with admin rights).
+    for nm in added:
+        row = new_by_name[nm].model_copy(deep=True)
+        row.is_admin = False
+        merged_rows.append(row)
 
-    for c in new_contributions.contributors:
-        if c.author.name == owned:
-            continue
-        if c.author.name in added:
-            # The single new row must be the user's own.
-            continue
-        old = existing_by_name.get(c.author.name)
-        if old and c.model_dump_json() != old.model_dump_json():
-            return False, (
-                f"You can only edit your own author entry, not '{c.author.name}'"
-            )
-    return True, None
+    merged = new_contributions.model_copy(deep=True)
+    merged.contributors = merged_rows
+    merged.edit_locked = existing.edit_locked  # non-admins cannot change the lock
+    return True, None, merged
 
 
 def _resolve_project(identifier):
@@ -283,52 +289,44 @@ async def contributions_post(
     #     matching this ORCID with is_admin=True) may edit the whole project.
     #   * The creator of a brand-new project is made an admin automatically.
     #   * Any other logged-in user may only add/modify their own author row.
-    if session_user:
-        orcid = session_user["orcid"]
-        is_full_admin = session_admin
+    # What actually gets stored. Admins store their payload verbatim; scoped
+    # (non-admin / anonymous) callers get a server-built merge (see below).
+    to_store = new_contributions
 
-        if existing is None:
-            # Brand-new project: the logged-in creator owns it. Force their own
-            # row to is_admin so they (and only they) can manage it afterwards.
-            for c in new_contributions.contributors:
-                rid = getattr(c.author, "registry_identifier", None)
-                c.is_admin = bool(rid and rid == orcid)
-            authed_via_session = True
-        elif is_full_admin:
-            authed_via_session = True
-        else:
-            # Non-admin: may only add/modify their own author row.
-            ok, err = await asyncio.to_thread(
-                _validate_own_row_scope,
-                project,
-                orcid,
-                session_user.get("name"),
-                new_contributions,
-            )
-            if not ok:
-                return JSONResponse(status_code=403, content={"error": err})
-            authed_via_session = True
+    if session_user and existing is None:
+        # Brand-new project: the logged-in creator owns it. Force their own
+        # row to is_admin so they (and only they) can manage it afterwards.
+        creator_orcid = session_user["orcid"]
+        for c in new_contributions.contributors:
+            rid = getattr(c.author, "registry_identifier", None)
+            c.is_admin = bool(rid and rid == creator_orcid)
+        authed_via_session = True
+    elif session_admin:
+        authed_via_session = True
 
     if not authed_via_session:
         # Creating a brand-new project requires an ORCID login: the creator is
-        # recorded as an admin (handled above in the session branch), so an
-        # anonymous caller may only add to a project that already exists.
+        # recorded as an admin (handled above), so a caller who is neither an
+        # admin nor logged-in may only add to a project that already exists.
         if existing is None:
             return JSONResponse(
                 status_code=401,
                 content={"error": "Log in with ORCID to create a new project."},
             )
-        # Anonymous caller on an existing project: no ORCID identity to own a
-        # row, so they may only append a single new author entry and may not
-        # touch existing rows.
-        ok, err = await asyncio.to_thread(
-            _validate_own_row_scope, project, None, None, new_contributions
+        # Scoped write: a logged-in non-admin (identified by ORCID/name) or an
+        # anonymous visitor (no identity). They may add their own row or edit
+        # the row they own; all other rows come from storage untouched.
+        orcid = session_user["orcid"] if session_user else None
+        name = session_user.get("name") if session_user else None
+        ok, err, merged = await asyncio.to_thread(
+            _merge_scoped_contributions, existing, orcid, name, new_contributions
         )
         if not ok:
             return JSONResponse(status_code=403, content={"error": err})
+        to_store = merged
 
     try:
-        commit_hash = await asyncio.to_thread(store_contributions, project, new_contributions, message=message)
+        commit_hash = await asyncio.to_thread(store_contributions, project, to_store, message=message)
     except Exception as e:
         _logger.exception("POST /contributions/post project=%s", project)
         return JSONResponse(status_code=500, content={"error": str(e)})
