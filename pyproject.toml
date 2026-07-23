@@ -29,7 +29,7 @@ dependencies = [
     'boto3',
     'requests',
     "aind-data-mcp>=0.4.5",
-    "biodata-cache>=0.36.0",
+    "biodata-cache>=0.39.10",
     "pytest>=9.0.3",
     "httpx>=0.28.1",
     "coverage>=7.14.1",
