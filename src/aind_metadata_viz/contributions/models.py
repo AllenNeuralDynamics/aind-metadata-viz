@@ -53,6 +53,27 @@ class RoleContribution(BaseModel):
     linked_assets: Optional[List[str]] = Field(
         default=None,
     )
+    linked_sections: Optional[List[str]] = Field(
+        default=None,
+        description="Optional list of paper sections this role contributed to",
+    )
+    start_date: Optional[date] = Field(
+        default=None,
+        description="Optional date when work on this role started",
+    )
+    end_date: Optional[date] = Field(
+        default=None,
+        description="Optional date when work on this role ended",
+    )
+
+    @model_validator(mode="after")
+    def check_dates(self):
+        if self.end_date is not None:
+            if self.start_date is None:
+                raise ValueError("end_date requires start_date")
+            if self.end_date < self.start_date:
+                raise ValueError("end_date must not be before start_date")
+        return self
 
 
 class SectionContribution(BaseModel):
