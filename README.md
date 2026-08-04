@@ -42,6 +42,18 @@ login. The server must be configured with:
   project).
 - `ORCID_ISSUER` — OIDC issuer base URL. Optional, defaults to `https://orcid.org`.
 
+### Pinpoint endpoints
+
+`POST /pinpoint-post?name=<blob>` and `GET /pinpoint-get?name=<blob>` store and retrieve
+arbitrary JSON blobs for the logged-in ORCID user (`GET /pinpoint-get` with no `name` lists the
+caller's blobs). Both require an ORCID login; a user only ever sees their own blobs, stored under
+`s3://aind-scratch-data/pinpoint/accounts/{orcid}/`. Blobs are always encrypted at rest with
+AES-256-GCM using a key derived from the owner's ORCID iD plus a server secret
+(`PINPOINT_ENCRYPTION_SECRET`, defaulting to `SESSION_SECRET`). Pass an optional `password` to
+`/pinpoint-post` to derive the key from the ORCID iD plus that password instead — then the same
+`password` is required on `/pinpoint-get` and the server cannot read the blob without it. See
+`/docs` for full schemas.
+
 ## CI/CD
 
 There is a `Dockerfile` which includes the entrypoint to launch the app.

@@ -7,6 +7,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from aind_metadata_viz.endpoints import router
 from aind_metadata_viz.contributions.handlers import contributions_router
 from aind_metadata_viz.acquisitions.handlers import acquisitions_router
+from aind_metadata_viz.pinpoint.handlers import pinpoint_router
 from aind_metadata_viz.chat import chat_router, mount_mcp_server, summary_router
 from aind_metadata_viz.auth import auth_router, SESSION_SECRET
 
@@ -20,6 +21,7 @@ _OPENAPI_TAGS = [
     {"name": "summary", "description": "Summarize a metadata asset."},
     {"name": "contributions", "description": "CRediT authorship contribution tracking."},
     {"name": "acquisitions", "description": "Allowed acquisition types and scheduled acquisitions."},
+    {"name": "pinpoint", "description": "Per-ORCID encrypted storage for arbitrary Pinpoint JSON blobs."},
 ]
 
 app = FastAPI(openapi_tags=_OPENAPI_TAGS)
@@ -58,6 +60,7 @@ app.include_router(router)
 app.include_router(auth_router)
 app.include_router(contributions_router)
 app.include_router(acquisitions_router)
+app.include_router(pinpoint_router)
 app.include_router(chat_router)
 app.include_router(summary_router)
 mount_mcp_server(app)

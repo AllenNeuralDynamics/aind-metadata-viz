@@ -36,6 +36,7 @@ dependencies = [
     'authlib',
     'python-jose[cryptography]',
     'itsdangerous',
+    'cryptography',
 ]
 
 [project.optional-dependencies]
