@@ -227,7 +227,8 @@ def get_contributions_by_doi(
         obj = _get_json(key)
         if obj:
             contrib = _from_json(obj["data"])
-            if contrib.doi and doi in contrib.doi:
+            # doi is a list — a project may be published in several venues.
+            if any(d.strip() == doi.strip() for d in contrib.doi):
                 return contrib
 
     raise FileNotFoundError(f"No project found with DOI '{doi}'")

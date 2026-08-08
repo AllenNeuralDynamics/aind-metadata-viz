@@ -53,7 +53,12 @@ def _summarize(version_obj: dict) -> dict:
     contributors = data.get("contributors", []) or []
     sections = data.get("sections", []) or []
     assets = data.get("assets", []) or []
-    doi = data.get("doi") or ""
+    # This script reads the stored JSON directly rather than through
+    # ProjectContributions, so it does not get the model's doi coercion for
+    # free: versions written before doi became a list still hold a bare string.
+    raw_doi = data.get("doi") or []
+    dois = [raw_doi] if isinstance(raw_doi, str) else raw_doi
+    doi = "; ".join(d for d in (str(x).strip() for x in dois) if d)
 
     return {
         "project_name": project_name or data.get("project_name", ""),

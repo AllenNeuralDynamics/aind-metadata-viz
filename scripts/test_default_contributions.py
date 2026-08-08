@@ -80,7 +80,7 @@ assert "Allen Institute for Neural Dynamics, Seattle, WA, USA" in al["author"]["
 print("  Anna Lakunina affiliation correct ✓")
 
 doi = data.get("doi")
-assert doi == "https://doi.org/10.1101/2025.02.04.636286", f"Unexpected DOI: {doi}"
+assert doi == ["https://doi.org/10.1101/2025.02.04.636286"], f"Unexpected DOI: {doi}"
 print("  DOI correct ✓")
 
 assets = data.get("assets", [])

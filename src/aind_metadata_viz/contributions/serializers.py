@@ -68,18 +68,32 @@ def to_yaml(contributions: ProjectContributions) -> str:
     same level under each contributor entry, mirroring the target format
     where the standard contributor schema is extended by the plugin.
     """
+    # The YAML is a byline export, so honour the project's publication order
+    # when one has been set. Authors without an order keep their stored
+    # position, after the ordered ones. Affiliation numbering follows the same
+    # order so the two agree.
+    ordered_contributors = sorted(
+        contributions.contributors,
+        key=lambda c: (
+            c.publication_order is None,
+            c.publication_order if c.publication_order is not None else 0,
+        ),
+    )
+
     # Build a deduplicated affiliation id map: name -> slug id
     _seen_affiliations: dict = {}
-    for c in contributions.contributors:
+    for c in ordered_contributors:
         for name in c.author.affiliation:
             if name not in _seen_affiliations:
                 slug = name.lower().replace(" ", "-").replace(",", "").replace(".", "")
                 _seen_affiliations[name] = slug
 
     contributor_list = []
-    for c in contributions.contributors:
+    for c in ordered_contributors:
         entry = {}
         entry["name"] = c.author.name
+        if c.publication_order is not None:
+            entry["publication_order"] = c.publication_order
         if c.author.registry_identifier:
             entry["orcid"] = c.author.registry_identifier
         if c.author.email:
@@ -140,6 +154,8 @@ def to_yaml(contributions: ProjectContributions) -> str:
     }
     if contributions.sections:
         doc["project"]["sections"] = contributions.sections
+    if contributions.doi:
+        doc["project"]["doi"] = list(contributions.doi)
     if _seen_affiliations:
         doc["project"]["affiliations"] = [
             {"id": slug, "name": name} for name, slug in _seen_affiliations.items()
@@ -197,12 +213,17 @@ def from_yaml(data: str) -> ProjectContributions:
             except ValueError:
                 continue
 
-        contributors.append(AuthorContribution(author=author, credit_levels=credit_levels))
+        contributors.append(AuthorContribution(
+            author=author,
+            credit_levels=credit_levels,
+            publication_order=raw.get("publication_order"),
+        ))
 
     return ProjectContributions(
         project_name=project_name,
         contributors=contributors,
         sections=sections,
+        doi=project.get("doi", []),
     )
 
 

@@ -114,6 +114,12 @@ def _merge_scoped_contributions(existing, orcid, name, new_contributions):
             if nm in new_by_name:
                 row = new_by_name[nm].model_copy(deep=True)
                 row.is_admin = c.is_admin
+                # Byline position and author level are admin-set display
+                # properties that the add wizard does not model — it rebuilds
+                # the row from name + CRediT roles alone. Take them from
+                # storage rather than letting a self-edit silently clear them.
+                row.publication_order = c.publication_order
+                row.author_level = c.author_level
                 merged_rows.append(row)
             # else: they removed their own row — drop it.
         else:
@@ -128,7 +134,16 @@ def _merge_scoped_contributions(existing, orcid, name, new_contributions):
 
     merged = new_contributions.model_copy(deep=True)
     merged.contributors = merged_rows
-    merged.edit_locked = existing.edit_locked  # non-admins cannot change the lock
+    # Project-level settings belong to the admins; a non-admin self-edit
+    # resubmits whatever its page happened to be holding, so pin them all to
+    # storage rather than trusting the client copy.
+    merged.edit_locked = existing.edit_locked
+    merged.show_sections = existing.show_sections
+    merged.show_levels = existing.show_levels
+    merged.show_timeline = existing.show_timeline
+    merged.allow_lead = existing.allow_lead
+    merged.allow_levels = existing.allow_levels
+    merged.doi = list(existing.doi)
     return True, None, merged
 
 

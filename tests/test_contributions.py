@@ -13,6 +13,7 @@ from pydantic import ValidationError
 from aind_metadata_viz.contributions.models import (
     Author,
     AuthorContribution,
+    AuthorLevel,
     ContributionLevel,
     CreditRole,
     ProjectContributions,
@@ -33,7 +34,10 @@ from aind_metadata_viz.contributions.store import (
     list_project_commits,
     store_contributions,
 )
-from aind_metadata_viz.contributions.handlers import contributions_router
+from aind_metadata_viz.contributions.handlers import (
+    contributions_router,
+    _merge_scoped_contributions,
+)
 from fastapi.testclient import TestClient
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -264,7 +268,23 @@ class TestProjectContributions(unittest.TestCase):
             doi="10.1234/test",
         )
         self.assertEqual(pc.sections, ["Intro", "Methods"])
-        self.assertEqual(pc.doi, "10.1234/test")
+        self.assertEqual(pc.doi, ["10.1234/test"])
+
+    def test_doi_is_a_list(self):
+        """A paper may be published in several venues, so doi is a list."""
+        pc = ProjectContributions(
+            project_name="p", doi=["10.1234/preprint", "10.5678/journal"]
+        )
+        self.assertEqual(pc.doi, ["10.1234/preprint", "10.5678/journal"])
+
+    def test_doi_legacy_forms_coerced(self):
+        """Documents written before doi became a list still load."""
+        self.assertEqual(ProjectContributions(project_name="p").doi, [])
+        self.assertEqual(ProjectContributions(project_name="p", doi=None).doi, [])
+        self.assertEqual(ProjectContributions(project_name="p", doi="").doi, [])
+        self.assertEqual(
+            ProjectContributions(project_name="p", doi="10.1/x").doi, ["10.1/x"]
+        )
 
     def test_assets(self):
         pc = ProjectContributions(project_name="p", assets=["asset-001"])
@@ -332,6 +352,25 @@ class TestSerializersYaml(unittest.TestCase):
         restored = from_yaml(y)
         self.assertEqual(restored.project_name, self.pc.project_name)
         self.assertEqual(len(restored.contributors), 1)
+
+    def test_to_yaml_orders_byline_by_publication_order(self):
+        pc = ProjectContributions(
+            project_name="p",
+            doi=["10.1/a", "10.2/b"],
+            contributors=[
+                AuthorContribution(author=_make_author("Zoe"), publication_order=2),
+                AuthorContribution(author=_make_author("Amy"), publication_order=1),
+                AuthorContribution(author=_make_author("Unset")),
+            ],
+        )
+        restored = from_yaml(to_yaml(pc))
+        self.assertEqual(
+            [c.author.name for c in restored.contributors], ["Amy", "Zoe", "Unset"]
+        )
+        self.assertEqual(
+            [c.publication_order for c in restored.contributors], [1, 2, None]
+        )
+        self.assertEqual(restored.doi, ["10.1/a", "10.2/b"])
 
     def test_from_yaml_role_preserved(self):
         y = to_yaml(self.pc)
@@ -436,7 +475,7 @@ class TestStore(unittest.TestCase):
         hash1 = store_contributions("store-test", pc1)
         store_contributions("store-test", pc2)
         old = get_contributions("store-test", commit_hash=hash1)
-        self.assertEqual(old.doi, "10.1/v1")
+        self.assertEqual(old.doi, ["10.1/v1"])
 
     def test_get_contributions_head_is_latest(self):
         pc1 = ProjectContributions(project_name="store-test", doi="10.1/v1")
@@ -444,7 +483,7 @@ class TestStore(unittest.TestCase):
         store_contributions("store-test", pc1)
         store_contributions("store-test", pc2)
         latest = get_contributions("store-test")
-        self.assertEqual(latest.doi, "10.1/v2")
+        self.assertEqual(latest.doi, ["10.1/v2"])
 
     def test_get_contributions_missing_project_raises(self):
         with self.assertRaises(Exception):
@@ -563,7 +602,7 @@ class TestContributionsGetHandler(ContributionsHandlerTestCase):
             resp = client.get(f"/contributions/get?project=handler-project&commit={old_hash}")
             self.assertEqual(resp.status_code, 200)
             body = resp.json()
-            self.assertIsNone(body["doi"])
+            self.assertEqual(body["doi"], [])
 
     def test_get_history(self):
         self._seed_project()
@@ -678,7 +717,17 @@ class TestGetContributionsByDoi(unittest.TestCase):
         store_contributions("doi-project", pc)
         result = get_contributions_by_doi("10.1234/test")
         self.assertEqual(result.project_name, "doi-project")
-        self.assertEqual(result.doi, "10.1234/test")
+        self.assertEqual(result.doi, ["10.1234/test"])
+
+    def test_find_project_by_any_of_several_dois(self):
+        pc = ProjectContributions(
+            project_name="multi-doi", doi=["10.1/preprint", "10.2/journal"]
+        )
+        store_contributions("multi-doi", pc)
+        for doi in ("10.1/preprint", "10.2/journal"):
+            self.assertEqual(
+                get_contributions_by_doi(doi).project_name, "multi-doi"
+            )
 
     def test_missing_doi_raises(self):
         pc = ProjectContributions(project_name="no-doi-project")
@@ -1195,6 +1244,78 @@ class TestAnonymousPostAuth(ContributionsHandlerTestCase):
             resp = self._post(body)
         self.assertEqual(resp.status_code, 403)
         self.assertIn("locked", resp.json()["error"].lower())
+
+
+class TestScopedMergeProtectsAdminState(unittest.TestCase):
+    """A non-admin self-edit must not rewrite admin-owned state.
+
+    The add wizard rebuilds the whole contributor list from a lossy in-memory
+    form, so anything it does not model — publication order, the project
+    display settings, the DOI list — has to be taken from storage.
+    """
+
+    def _existing(self):
+        return ProjectContributions(
+            project_name="p",
+            doi=["10.1/journal"],
+            show_levels=False,
+            allow_lead=False,
+            allow_levels=False,
+            show_sections=True,
+            show_timeline=True,
+            contributors=[
+                AuthorContribution(
+                    author=_make_author("Alice", orcid="0000-0001"),
+                    credit_levels=[_make_role()],
+                    publication_order=2,
+                    author_level=AuthorLevel.FIRST,
+                ),
+                AuthorContribution(
+                    author=_make_author("Bob", orcid="0000-0002"),
+                    credit_levels=[_make_role()],
+                    publication_order=1,
+                    author_level=AuthorLevel.SENIOR,
+                ),
+            ],
+        )
+
+    def test_self_edit_keeps_publication_order_and_author_level(self):
+        existing = self._existing()
+        # Alice resubmits her own row the way the add wizard builds it: name
+        # and CRediT roles only, so both display properties come back blank.
+        incoming = existing.model_copy(deep=True)
+        incoming.contributors[0].publication_order = None
+        incoming.contributors[0].author_level = None
+        ok, err, merged = _merge_scoped_contributions(
+            existing, "0000-0001", "Alice", incoming
+        )
+        self.assertTrue(ok, err)
+        by_name = {c.author.name: c for c in merged.contributors}
+        self.assertEqual(by_name["Alice"].publication_order, 2)
+        self.assertEqual(by_name["Alice"].author_level, AuthorLevel.FIRST)
+        self.assertEqual(by_name["Bob"].publication_order, 1)
+        self.assertEqual(by_name["Bob"].author_level, AuthorLevel.SENIOR)
+
+    def test_self_edit_keeps_project_settings_and_doi(self):
+        existing = self._existing()
+        incoming = existing.model_copy(deep=True)
+        # A stale client page sends back the model defaults.
+        incoming.show_levels = True
+        incoming.allow_lead = True
+        incoming.allow_levels = True
+        incoming.show_sections = False
+        incoming.show_timeline = False
+        incoming.doi = []
+        ok, err, merged = _merge_scoped_contributions(
+            existing, "0000-0001", "Alice", incoming
+        )
+        self.assertTrue(ok, err)
+        self.assertFalse(merged.show_levels)
+        self.assertFalse(merged.allow_lead)
+        self.assertFalse(merged.allow_levels)
+        self.assertTrue(merged.show_sections)
+        self.assertTrue(merged.show_timeline)
+        self.assertEqual(merged.doi, ["10.1/journal"])
 
 
 if __name__ == "__main__":

@@ -112,7 +112,7 @@ def np_opto_contributions() -> ProjectContributions:
     """Return Neuropixels Opto paper contributor data."""
     return ProjectContributions(
         project_name=NP_OPTO_PROJECT_NAME,
-        doi="https://doi.org/10.1101/2025.02.04.636286",
+        doi=["https://doi.org/10.1101/2025.02.04.636286"],
         assets=NP_OPTO_ASSETS,
         contributors=[
             AuthorContribution(

@@ -5,7 +5,7 @@ from typing import List, Optional
 from datetime import date
 
 from aind_data_schema.components.identifiers import Person
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class CreditRole(str, Enum):
@@ -100,6 +100,14 @@ class AuthorContribution(BaseModel):
         default=None,
         description="Optional publication authorship position, used for display purposes (e.g. first, middle, senior)",
     )
+    publication_order: Optional[int] = Field(
+        default=None,
+        description=(
+            "Optional 1-based position of this author in the publication byline. "
+            "When no contributor has a publication_order the ordering is "
+            "considered unset and display paths fall back to their own default."
+        ),
+    )
     start_date: Optional[date] = Field(
         default=None,
         description="Optional date when the author started working on the project",
@@ -143,7 +151,24 @@ class ProjectContributions(BaseModel):
         default_factory=list,
         description="Publication sections that authors may have contributed to (e.g. Introduction, Methods)",
     )
-    doi: Optional[str] = Field(default=None, description="Optional DOI associated with this set of contributions")
+    doi: List[str] = Field(
+        default_factory=list,
+        description=(
+            "DOIs associated with this set of contributions. A project may be "
+            "published in more than one venue, so this is a list. Legacy "
+            "documents storing a single string (or null) are coerced on read."
+        ),
+    )
+
+    @field_validator("doi", mode="before")
+    @classmethod
+    def coerce_doi_list(cls, value):
+        """Accept the legacy scalar/null form and normalise it to a list."""
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [value] if value.strip() else []
+        return value
     assets: List[str] = Field(default_factory=list, description="List of asset names associated with the project")
     edit_locked: bool = Field(
         default=False,
