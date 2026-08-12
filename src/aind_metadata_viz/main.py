@@ -26,34 +26,28 @@ _OPENAPI_TAGS = [
 
 app = FastAPI(openapi_tags=_OPENAPI_TAGS)
 
-# The session cookie (set after ORCID login) must be sent on cross-origin
-# requests from the frontend dev server. Browsers reject credentialed CORS
-# with a wildcard origin, so when explicit origins are configured via
-# ``CORS_ALLOW_ORIGINS`` we enable credentials; otherwise we keep the previous
-# permissive, non-credentialed behavior for the public read endpoints.
-_cors_origins_env = os.environ.get("CORS_ALLOW_ORIGINS", "").strip()
-if _cors_origins_env:
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=[o.strip() for o in _cors_origins_env.split(",") if o.strip()],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-else:
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+# Frontends reach the authenticated endpoints through a same-origin reverse
+# proxy (see the data portal's nginx and Pinpoint's Apache config), so CORS
+# only has to stay permissive for the public, unauthenticated read endpoints.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Signed-cookie session, used to keep ORCID-authenticated users logged in.
+# ``SESSION_COOKIE_DOMAIN`` (e.g. ``.allenneuraldynamics.org``) widens the
+# cookie to the shared parent domain, which a frontend on another subdomain
+# needs: the OAuth callback runs on ``PUBLIC_BASE_URL``'s host, so the login
+# state and the session it sets must be readable from that frontend's host too.
+_session_cookie_domain = os.environ.get("SESSION_COOKIE_DOMAIN", "").strip()
 app.add_middleware(
     SessionMiddleware,
     secret_key=SESSION_SECRET,
     same_site="lax",
     https_only=os.environ.get("SESSION_INSECURE", "").lower() not in ("1", "true"),
+    domain=_session_cookie_domain or None,
 )
 
 app.include_router(router)
