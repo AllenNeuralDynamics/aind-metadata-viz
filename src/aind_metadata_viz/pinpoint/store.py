@@ -1,4 +1,8 @@
-"""S3-backed encrypted storage for arbitrary Pinpoint JSON blobs.
+"""S3-backed encrypted storage for arbitrary Pinpoint files.
+
+A blob's payload is an arbitrary byte string tagged with a content type, so a
+blob can hold a JSON document (``store_blob``/``get_blob``) or any binary file
+such as an experiment zip (``store_file``/``get_file``).
 
 Each blob belongs to exactly one ORCID account and is stored as a single JSON
 object in S3 (bucket: ``aind-scratch-data``, prefix ``pinpoint/accounts/``)::
@@ -11,6 +15,7 @@ The payload is never stored in the clear. The envelope written to S3 is::
       "name": "<blob name>",
       "orcid": "<owner ORCID iD>",
       "timestamp": "<ISO-8601 UTC>",
+      "content_type": "<MIME type of the payload>",
       "cipher": "aes-256-gcm",
       "kdf": "pbkdf2-sha256",
       "iterations": 200000,
@@ -44,7 +49,8 @@ import base64
 import json
 import os
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import List, Optional, Tuple
+from urllib.parse import quote, unquote
 
 import boto3
 from botocore.exceptions import ClientError
@@ -62,7 +68,13 @@ _ITERATIONS = 200_000
 _SALT_BYTES = 16
 _NONCE_BYTES = 12
 
-MAX_BLOB_BYTES = 5 * 1024 * 1024
+MAX_BLOB_BYTES = 250 * 1024 * 1024
+
+JSON_CONTENT_TYPE = "application/json"
+DEFAULT_CONTENT_TYPE = "application/octet-stream"
+
+# Envelope fields `list_blobs` reports, mirrored into S3 object metadata.
+_LISTING_FIELDS = ("name", "timestamp", "content_type", "key_source")
 
 
 class DecryptionError(Exception):
@@ -115,12 +127,16 @@ def _aad(orcid: str, name: str) -> bytes:
     return f"{orcid}\x00{_safe_component(name)}".encode("utf-8")
 
 
-def _put_json(key: str, obj: dict) -> None:
+def _put_json(key: str, obj: dict, listing_metadata: dict) -> None:
+    # The listing fields are duplicated into S3 object metadata so `list_blobs`
+    # can read them with `head_object` instead of downloading whole envelopes,
+    # which may be hundreds of megabytes each.
     _s3().put_object(
         Bucket=_S3_BUCKET,
         Key=key,
         Body=json.dumps(obj).encode(),
         ContentType="application/json",
+        Metadata={k: quote(str(v)) for k, v in listing_metadata.items()},
     )
 
 
@@ -134,19 +150,21 @@ def _get_json(key: str) -> Optional[dict]:
         raise
 
 
-def store_blob(
+def store_file(
     orcid: str,
     name: str,
-    data,
+    payload: bytes,
+    content_type: str = DEFAULT_CONTENT_TYPE,
     password: Optional[str] = None,
 ) -> dict:
-    """Encrypt and store *data* as the blob *name* owned by *orcid*.
+    """Encrypt and store the bytes *payload* as the blob *name* owned by *orcid*.
 
+    *content_type* is recorded alongside the blob and returned by ``get_file``.
     Returns the stored metadata (without the ciphertext).
     """
     if not orcid:
         raise ValueError("orcid is required")
-    plaintext = json.dumps(data, separators=(",", ":")).encode("utf-8")
+    plaintext = payload
     if len(plaintext) > MAX_BLOB_BYTES:
         raise ValueError(
             f"blob is {len(plaintext)} bytes; limit is {MAX_BLOB_BYTES} bytes"
@@ -161,6 +179,7 @@ def store_blob(
         "name": name,
         "orcid": orcid,
         "timestamp": datetime.now(timezone.utc).isoformat(),
+        "content_type": content_type or DEFAULT_CONTENT_TYPE,
         "cipher": _CIPHER,
         "kdf": _KDF,
         "iterations": _ITERATIONS,
@@ -169,12 +188,37 @@ def store_blob(
         "nonce": base64.b64encode(nonce).decode(),
         "ciphertext": base64.b64encode(ciphertext).decode(),
     }
-    _put_json(_blob_key(orcid, name), envelope)
+    _put_json(
+        _blob_key(orcid, name),
+        envelope,
+        {field: envelope[field] for field in _LISTING_FIELDS},
+    )
     return {k: v for k, v in envelope.items() if k not in ("ciphertext", "salt", "nonce")}
 
 
-def get_blob(orcid: str, name: str, password: Optional[str] = None):
-    """Return the decrypted JSON payload of the blob *name* owned by *orcid*.
+def store_blob(
+    orcid: str,
+    name: str,
+    data,
+    password: Optional[str] = None,
+) -> dict:
+    """Encrypt and store the JSON document *data* as the blob *name* owned by *orcid*.
+
+    Returns the stored metadata (without the ciphertext).
+    """
+    return store_file(
+        orcid,
+        name,
+        json.dumps(data, separators=(",", ":")).encode("utf-8"),
+        JSON_CONTENT_TYPE,
+        password,
+    )
+
+
+def get_file(
+    orcid: str, name: str, password: Optional[str] = None
+) -> Tuple[bytes, str]:
+    """Return the decrypted payload and content type of the blob *name* owned by *orcid*.
 
     Raises ``FileNotFoundError`` if the blob does not exist and
     ``DecryptionError`` if the supplied credentials are wrong.
@@ -198,7 +242,20 @@ def get_blob(orcid: str, name: str, password: Optional[str] = None):
         plaintext = AESGCM(key).decrypt(nonce, ciphertext, _aad(orcid, name))
     except InvalidTag:
         raise DecryptionError(f"Failed to decrypt blob '{name}': wrong password") from None
-    return json.loads(plaintext.decode("utf-8"))
+    return plaintext, envelope.get("content_type") or DEFAULT_CONTENT_TYPE
+
+
+def get_blob(orcid: str, name: str, password: Optional[str] = None):
+    """Return the decrypted JSON payload of the blob *name* owned by *orcid*.
+
+    Raises ``FileNotFoundError`` if the blob does not exist, ``DecryptionError``
+    if the supplied credentials are wrong, and ``ValueError`` if the blob does
+    not hold JSON.
+    """
+    payload, content_type = get_file(orcid, name, password)
+    if content_type != JSON_CONTENT_TYPE:
+        raise ValueError(f"Blob '{name}' holds {content_type}, not JSON")
+    return json.loads(payload.decode("utf-8"))
 
 
 def list_blobs(orcid: str) -> List[dict]:
@@ -213,16 +270,29 @@ def list_blobs(orcid: str) -> List[dict]:
             key = obj["Key"]
             if not key.endswith(".json"):
                 continue
-            envelope = _get_json(key)
-            if not envelope:
+            metadata = _head_metadata(key)
+            if metadata is None:
                 continue
             entries.append(
                 {
-                    "name": envelope.get("name", key[len(prefix): -len(".json")]),
-                    "timestamp": envelope.get("timestamp"),
-                    "key_source": envelope.get("key_source"),
+                    "name": metadata.get("name") or key[len(prefix): -len(".json")],
+                    "timestamp": metadata.get("timestamp"),
+                    "content_type": metadata.get("content_type")
+                    or DEFAULT_CONTENT_TYPE,
+                    "key_source": metadata.get("key_source"),
                 }
             )
     return sorted(entries, key=lambda e: e["name"])
+
+
+def _head_metadata(key: str) -> Optional[dict]:
+    """Return a blob's listing metadata from S3 object metadata, or None if it is gone."""
+    try:
+        response = _s3().head_object(Bucket=_S3_BUCKET, Key=key)
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] in ("NoSuchKey", "404", "NotFound"):
+            return None
+        raise
+    return {k: unquote(v) for k, v in (response.get("Metadata") or {}).items()}
 
 
