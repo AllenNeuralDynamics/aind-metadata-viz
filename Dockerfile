@@ -22,4 +22,4 @@ credential_source = EcsContainer
 EOF
 
 EXPOSE 8000
-ENTRYPOINT ["uvicorn", "aind_metadata_viz.main:app", "--host", "0.0.0.0", "--port", "8000"]
+ENTRYPOINT ["uvicorn", "aind_metadata_viz.main:app", "--host", "0.0.0.0", "--port", "8000", "--forwarded-allow-ips", "*"]
