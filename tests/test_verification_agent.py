@@ -3,9 +3,10 @@
 import asyncio
 import json
 import os
+import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from aind_metadata_viz.verification import agent, jobs, sandbox
 
@@ -28,7 +29,7 @@ class JobDirectoryTestCase(unittest.TestCase):
             ["dynamic-routing-data", "graph-schema", "node-authoring", "recursive-verification"],
         )
 
-    def test_each_skill_carries_frontmatter_omp_can_read(self):
+    def test_each_skill_carries_frontmatter_the_sdk_can_read(self):
         path = os.path.join(self.job.dir, ".claude", "skills", "graph-schema", "SKILL.md")
         with open(path, encoding="utf-8") as handle:
             body = handle.read()
@@ -62,26 +63,28 @@ class JobDirectoryTestCase(unittest.TestCase):
         self.assertEqual(result["returncode"], 0)
         self.assertIn("agent output", self.job.transcript())
 
-    def test_the_agent_command_is_configurable(self):
+    def test_the_worker_module_is_run_with_the_jobs_own_interpreter(self):
+        command = self.job.command()
+        self.assertEqual(command[:3], [sys.executable, "-m", agent.AGENT_WORKER_MODULE])
+        self.assertEqual(command[-1], self.job.dir)
+
+    def test_the_prompt_is_handed_over_on_disk_not_on_argv(self):
+        # argv is world-readable via the process table; the prompt carries the
+        # user's request text, so it goes to a file inside the job directory.
+        self.assertNotIn(self.job.prompt(), self.job.command())
+        with open(os.path.join(self.job.dir, "prompt.txt"), encoding="utf-8") as handle:
+            self.assertEqual(handle.read(), self.job.prompt())
+
+    def test_the_model_is_passed_to_the_worker_in_the_environment(self):
         with patch.object(agent, "run_sandboxed", return_value=sandbox.SandboxResult(0, "")) as run:
             self.job.run()
-        self.assertEqual(run.call_args.args[0][: len(agent.AGENT_COMMAND)], agent.AGENT_COMMAND)
-
-    def test_the_model_is_named_on_the_command_line(self):
-        command = self.job.command()
-        self.assertIn("--model", command)
-        self.assertEqual(command[command.index("--model") + 1], agent.AGENT_MODEL)
-
-    def test_the_prompt_is_the_last_argument(self):
-        self.assertEqual(self.job.command()[-1], self.job.prompt())
+        self.assertEqual(run.call_args.kwargs["env"]["VGRAPH_AGENT_MODEL"], agent.AGENT_MODEL)
 
     def test_the_default_model_is_a_cross_region_bedrock_profile(self):
         # Claude Sonnet 5 has no in-Region inference on bedrock-runtime, so a
         # bare `anthropic.claude-sonnet-5` would not resolve; the id must carry
         # one of Bedrock's geo/global CRIS prefixes.
-        provider, _, model_id = agent.AGENT_MODEL.partition("/")
-        self.assertEqual(provider, "amazon-bedrock")
-        self.assertRegex(model_id, r"^(us|eu|au|global)\.anthropic\.")
+        self.assertRegex(agent.AGENT_MODEL, r"^(us|eu|au|global)\.anthropic\.")
 
     def test_each_job_gets_a_private_config_home(self):
         with patch.object(agent, "run_sandboxed", return_value=sandbox.SandboxResult(0, "")) as run:
@@ -95,16 +98,64 @@ class JobDirectoryTestCase(unittest.TestCase):
 
 
 class SandboxCredentialTestCase(unittest.TestCase):
-    def test_the_agent_gets_bedrock_and_nothing_else(self):
-        with patch.dict(os.environ, {"BEDROCK_ROLE_ARN": "arn:x", "AWS_SECRET_ACCESS_KEY": "shh"}):
-            env = sandbox.sandbox_env(agent._bedrock_env())
-        self.assertEqual(env["AWS_PROFILE"], "bedrock-access")
-        self.assertNotIn("AWS_SECRET_ACCESS_KEY", env)
-        self.assertNotIn("BEDROCK_ROLE_ARN", env)
+    """The worker gets Bedrock-scoped, short-lived keys and nothing else."""
 
-    def test_no_bedrock_role_means_no_profile(self):
+    _ASSUMED = {
+        "Credentials": {
+            "AccessKeyId": "ASIA-TEMP",
+            "SecretAccessKey": "temp-secret",
+            "SessionToken": "temp-token",
+        }
+    }
+
+    def _assume(self):
+        """Patch boto3's STS client, returning the mock so calls can be asserted."""
+        sts = MagicMock()
+        sts.assume_role.return_value = self._ASSUMED
+        return patch.object(agent.boto3, "client", return_value=sts), sts
+
+    def test_the_role_is_assumed_in_the_parent_not_delegated_to_the_child(self):
+        patcher, sts = self._assume()
+        with patch.dict(os.environ, {"BEDROCK_ROLE_ARN": "arn:aws:iam::1:role/bedrock"}), patcher:
+            env = agent._bedrock_env()
+        sts.assume_role.assert_called_once()
+        self.assertEqual(sts.assume_role.call_args.kwargs["RoleArn"], "arn:aws:iam::1:role/bedrock")
+        self.assertEqual(env["AWS_ACCESS_KEY_ID"], "ASIA-TEMP")
+        self.assertEqual(env["AWS_SESSION_TOKEN"], "temp-token")
+
+    def test_the_child_never_receives_a_path_to_the_task_role(self):
+        # The ECS credential URI is the task role, which can reach far more
+        # than Bedrock. It must not survive the scrub, and neither may the
+        # portal's own secrets.
+        patcher, _sts = self._assume()
+        hostile = {
+            "BEDROCK_ROLE_ARN": "arn:aws:iam::1:role/bedrock",
+            "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI": "/v2/credentials/task",
+            "AWS_SECRET_ACCESS_KEY": "task-role-secret",
+            "SESSION_SECRET": "cookie-signing-key",
+            "PINPOINT_ENCRYPTION_SECRET": "pinpoint-key",
+        }
+        with patch.dict(os.environ, hostile), patcher:
+            env = sandbox.sandbox_env(agent._bedrock_env())
+
+        self.assertNotIn("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", env)
+        self.assertNotIn("AWS_PROFILE", env)
+        self.assertNotIn("SESSION_SECRET", env)
+        self.assertNotIn("PINPOINT_ENCRYPTION_SECRET", env)
+        self.assertNotIn("BEDROCK_ROLE_ARN", env)
+        # The only secret present is the temporary one we minted.
+        self.assertEqual(env["AWS_SECRET_ACCESS_KEY"], "temp-secret")
+        self.assertNotIn("task-role-secret", env.values())
+
+    def test_bedrock_mode_is_enabled_for_the_sdk(self):
         with patch.dict(os.environ, {}, clear=True):
-            self.assertNotIn("AWS_PROFILE", agent._bedrock_env())
+            self.assertEqual(agent._bedrock_env()["CLAUDE_CODE_USE_BEDROCK"], "1")
+
+    def test_no_role_arn_means_no_credentials_are_minted(self):
+        with patch.dict(os.environ, {}, clear=True):
+            env = agent._bedrock_env()
+        self.assertNotIn("AWS_ACCESS_KEY_ID", env)
+        self.assertEqual(env["AWS_REGION"], "us-west-2")
 
 
 class TranscriptTestCase(unittest.TestCase):

@@ -37,6 +37,9 @@ dependencies = [
     'python-jose[cryptography]',
     'itsdangerous',
     'cryptography',
+    # Verification-graph authoring agent. Bundles the Claude Code CLI in the
+    # wheel, so there is no separate binary to install or find on PATH.
+    'claude-agent-sdk',
 ]
 
 [project.optional-dependencies]

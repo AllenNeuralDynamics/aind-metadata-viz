@@ -522,7 +522,8 @@ async def agent_job_get(job_id: str):
     description=(
         "Requires an ORCID login, rate-limited per user. Body: "
         "`{\"request\": \"Verify that 30% of CA3 units respond to vis1\", \"root_node\": null}`. "
-        "Spawns a sandboxed `omp` job with the graph schema, dataset, node-authoring and "
+        "Spawns a sandboxed Claude Agent SDK session with the graph schema, dataset, "
+        "node-authoring and "
         "recursive-verification skills and a read-only export of the manifest. The agent has no "
         "write access to the graph: it writes into an outbox, and on exit the server validates "
         "everything through the same path as `POST /verification/nodes` and inserts what passes "

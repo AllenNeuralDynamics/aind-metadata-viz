@@ -1,23 +1,30 @@
-"""The authoring agent: a sandboxed ``omp`` job that writes nodes into an outbox.
+"""The authoring agent: a sandboxed Claude Agent SDK session writing to an outbox.
 
 Users build new nodes by asking for a claim from the graph page. The agent is
-`oh-my-pi <https://github.com/can1357/oh-my-pi>`_ (the ``omp`` binary) running
-as a sandboxed subprocess on the portal host - deliberately *not* the
-in-process Bedrock Converse loop in ``chat/agent.py``, which stays untouched.
+the `Claude Agent SDK <https://code.claude.com/docs/en/agent-sdk>`_ - Claude
+Code as a library, with its own agent loop, built-in tools and permission
+system - deliberately *not* the in-process Bedrock Converse loop in
+``chat/agent.py``, which stays untouched.
 
-Two properties make this safe to expose:
+The session runs in a worker process (``agent_worker.py``) launched through
+``sandbox.run_sandboxed`` rather than in the portal process. That is not
+incidental: the SDK merges its ``env`` option over ``os.environ`` instead of
+replacing it, so an in-process session would inherit the portal's whole
+environment - including the ECS task-role URI and the session secret. Behind
+the sandbox the environment is rebuilt from an allowlist.
 
-**The sandbox.** The job runs under ``sandbox.py``'s limits with a scrubbed
-environment. It gets Bedrock credentials and read-only HTTPS access to the
-public data cache; it gets no write credentials to ``aind-scratch-data`` and
-no portal session secret. Killing a job mid-run leaves the graph unchanged,
-because the job never touches the graph.
+Three properties make this safe to expose:
 
-The model is ``AGENT_MODEL`` (Claude Sonnet 5 on Bedrock by default), reached
-through omp's built-in ``amazon-bedrock`` provider. This is the same model
-family ``chat/agent.py`` already calls through the ``bedrock-access`` role, so
-the only IAM change needed is ``bedrock:InvokeModel`` on this inference
-profile in addition to whatever profiles the role already allows.
+**The sandbox.** The worker runs under ``sandbox.py``'s limits with a scrubbed
+environment. Its only credentials are short-lived Bedrock keys this module
+mints (see ``_bedrock_env``); it gets no write credentials to
+``aind-scratch-data``, no portal session secret, and no path to the task role.
+Killing a job mid-run leaves the graph unchanged, because the job never
+touches the graph.
+
+**The tool policy.** ``agent_worker`` gives the session a fixed tool surface
+with ``permission_mode="dontAsk"``, no network-reaching tools, and a
+``PreToolUse`` hook that refuses writes outside the job directory.
 
 **The outbox contract.** The agent writes finished node documents and code
 sidecars into ``outbox/`` in its job directory. When the job exits, the server
@@ -25,6 +32,12 @@ validates everything through the same path as ``POST /verification/nodes`` -
 Pydantic models, triple signature checks, code layout gates - and inserts what
 passes as ``proposed`` nodes. That keeps prompt injection and agent error
 inside a validation boundary instead of trusting the agent's writes.
+
+The model is ``AGENT_MODEL`` (Claude Sonnet 5 on Bedrock by default). This is
+the same model family ``chat/agent.py`` already calls through the
+``bedrock-access`` role, so the only IAM change needed is
+``bedrock:InvokeModel`` on this inference profile in addition to whatever
+profiles the role already allows.
 """
 
 from __future__ import annotations
@@ -33,8 +46,11 @@ import json
 import logging
 import os
 import shutil
+import sys
 import tempfile
 from typing import Dict, List, Optional, Tuple
+
+import boto3
 
 from .graph import now_iso, validate_node
 from .sandbox import DEFAULT_TIMEOUT_SECONDS, run_sandboxed, sandbox_env
@@ -42,24 +58,21 @@ from .skills import SKILLS
 
 logger = logging.getLogger(__name__)
 
-#: Command used to run the agent headlessly. ``omp -p`` answers a single
-#: prompt and exits. Overridable so the binary can be swapped or pinned
-#: without a code change.
-AGENT_COMMAND = os.environ.get("VGRAPH_AGENT_CMD", "omp -p").split()
+#: Worker module run in the sandbox; it drives the Claude Agent SDK session.
+#: The SDK bundles the Claude Code CLI inside its wheel, so there is no binary
+#: to install and nothing to find on PATH.
+AGENT_WORKER_MODULE = os.environ.get(
+    "VGRAPH_AGENT_WORKER", "aind_metadata_viz.verification.agent_worker"
+)
 
-#: Model the agent runs on, as omp's ``provider/modelId`` selector.
+#: Model the session runs on, as a Bedrock model id.
 #:
-#: ``amazon-bedrock`` is one of omp's built-in providers and authenticates from
-#: ``AWS_PROFILE`` or an ECS credential chain - the credentials the portal
-#: already has - so no API key is involved. omp reaches it over the Converse
-#: API, which this model supports on ``bedrock-runtime``.
-#:
-#: The id has to be a cross-Region inference profile: Claude Sonnet 5 has no
+#: It has to be a cross-Region inference profile: Claude Sonnet 5 has no
 #: in-Region inference on ``bedrock-runtime`` in any region, so a plain
 #: ``anthropic.claude-sonnet-5`` will not resolve. ``global.`` routes
 #: worldwide; ``us.`` is the data-residency-constrained alternative, keeping
 #: requests inside US and Canada regions (``eu.`` and ``au.`` also exist).
-AGENT_MODEL = os.environ.get("VGRAPH_AGENT_MODEL", "amazon-bedrock/global.anthropic.claude-sonnet-5")
+AGENT_MODEL = os.environ.get("VGRAPH_AGENT_MODEL", "global.anthropic.claude-sonnet-5")
 
 AGENT_ROOT = os.environ.get("VGRAPH_AGENT_ROOT", "/tmp/vgraph-agent")
 
@@ -121,6 +134,12 @@ class AgentJob:
         with open(os.path.join(self.dir, "request.md"), "w", encoding="utf-8") as handle:
             handle.write(self.request)
 
+        # The worker runs in another process, so the prompt is handed over on
+        # disk rather than on the command line - it is too long for argv and
+        # would otherwise show up in the process table.
+        with open(os.path.join(self.dir, "prompt.txt"), "w", encoding="utf-8") as handle:
+            handle.write(self.prompt())
+
         os.makedirs(os.path.join(self.dir, "outbox", "nodes"), exist_ok=True)
         os.makedirs(os.path.join(self.dir, "outbox", "code"), exist_ok=True)
 
@@ -129,15 +148,17 @@ class AgentJob:
         return PROMPT_TEMPLATE.format(request=self.request)
 
     def command(self) -> List[str]:
-        """Return the full argv for this job's agent run."""
-        return AGENT_COMMAND + ["--model", AGENT_MODEL, self.prompt()]
+        """Return the full argv for this job's worker process."""
+        return [sys.executable, "-m", AGENT_WORKER_MODULE, self.dir]
 
     def run(self, timeout: int = AGENT_TIMEOUT_SECONDS) -> dict:
-        """Run the agent to completion and return its sandbox result as a dict."""
+        """Run the session to completion and return its sandbox result as a dict."""
         env = sandbox_env(_bedrock_env())
-        # omp reads its config from ``$HOME/.omp``. Point HOME at the job
-        # directory so each job gets a private, writable config root instead of
-        # sharing one under /tmp, and so nothing it writes outlives the job.
+        env["VGRAPH_AGENT_MODEL"] = AGENT_MODEL
+        # The SDK and the CLI it bundles both read config from ``$HOME``. Point
+        # HOME at the job directory so each job gets a private, writable config
+        # root instead of sharing one under /tmp, and so nothing written there
+        # outlives the job.
         env["HOME"] = self.dir
         result = run_sandboxed(
             self.command(),
@@ -145,8 +166,12 @@ class AgentJob:
             env=env,
             timeout=timeout,
         )
-        with open(self.transcript_path, "w", encoding="utf-8") as handle:
-            handle.write(result.output)
+        # The worker streams the session transcript to disk as it goes; the
+        # sandbox output is the worker's own stdout/stderr, which matters when
+        # the session never got far enough to write a transcript.
+        if not os.path.exists(self.transcript_path):
+            with open(self.transcript_path, "w", encoding="utf-8") as handle:
+                handle.write(result.output)
         return result.to_dict()
 
     def transcript(self) -> str:
@@ -159,21 +184,36 @@ class AgentJob:
 
 
 def _bedrock_env() -> Dict[str, str]:
-    """Return the only credentials the agent is entitled to: Bedrock, read-only.
+    """Return the only credentials the session is entitled to: Bedrock, short-lived.
 
-    The portal assumes ``BEDROCK_ROLE_ARN`` through the ECS container
-    credential source, exactly as the Dockerfile's ``bedrock-access`` profile
-    does. The agent inherits the profile name and region, never the portal's
-    own S3 write credentials.
+    The portal holds an ECS task role that can reach far more than Bedrock, so
+    the worker is never given a path to it. Instead this assumes
+    ``BEDROCK_ROLE_ARN`` *here*, in the parent, exactly as ``chat/agent.py``
+    does, and passes the resulting temporary keys down. The worker therefore
+    holds credentials scoped to the Bedrock role and expiring on their own.
+
+    Passing the profile down instead would not work anyway: the profile's
+    ``credential_source = EcsContainer`` needs
+    ``AWS_CONTAINER_CREDENTIALS_RELATIVE_URI``, which the sandbox strips - and
+    un-stripping it would hand the worker the task role itself.
     """
-    env = {}
+    env = {
+        "AWS_REGION": os.environ.get("AWS_REGION", "us-west-2"),
+        "CLAUDE_CODE_USE_BEDROCK": "1",
+    }
     role_arn = os.environ.get("BEDROCK_ROLE_ARN")
-    if role_arn:
-        env["AWS_PROFILE"] = os.environ.get("VGRAPH_AGENT_AWS_PROFILE", "bedrock-access")
-        # Not /root/.aws/config: the sandboxed child runs as an unprivileged
-        # user that cannot read it. The Dockerfile drops a readable copy here.
-        env["AWS_CONFIG_FILE"] = os.environ.get("VGRAPH_AGENT_AWS_CONFIG", "/etc/vgraph/aws-config")
-    env["AWS_REGION"] = os.environ.get("AWS_REGION", "us-west-2")
+    if not role_arn:
+        return env
+
+    assumed = boto3.client("sts").assume_role(
+        RoleArn=role_arn,
+        RoleSessionName="verification-graph-agent",
+        DurationSeconds=int(os.environ.get("VGRAPH_AGENT_CREDENTIAL_TTL", "3600")),
+    )
+    credentials = assumed["Credentials"]
+    env["AWS_ACCESS_KEY_ID"] = credentials["AccessKeyId"]
+    env["AWS_SECRET_ACCESS_KEY"] = credentials["SecretAccessKey"]
+    env["AWS_SESSION_TOKEN"] = credentials["SessionToken"]
     return env
 
 

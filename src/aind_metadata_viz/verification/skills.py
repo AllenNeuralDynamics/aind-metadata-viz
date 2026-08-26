@@ -1,8 +1,9 @@
 """Skill documents written into every agent job directory.
 
-``omp`` inherits rules, skills and MCP servers from ``.claude`` on disk, so
-the job directory gets a ``.claude/skills/<name>/SKILL.md`` for each of the
-four skills the plan calls for. They are Python string constants rather than
+The Claude Agent SDK discovers skills from ``.claude/skills/`` on disk when
+``setting_sources`` includes ``"project"``, so the job directory gets a
+``.claude/skills/<name>/SKILL.md`` for each of the four skills the plan calls
+for. They are Python string constants rather than
 package data files so no packaging configuration has to change, and so the
 schema documentation cannot drift away from ``models.py`` unnoticed.
 """
