@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 MCP_MOUNT_PATH = os.environ.get("MCP_MOUNT_PATH", "/mcp")
 
-# 1 request/second sustained. The burst must be large enough to absorb a
+# 10 requests/second sustained. The burst must be large enough to absorb a
 # client's startup sequence in one go: VS Code (and other MCP clients)
 # fire initialize -> notifications/initialized -> logging/setLevel ->
 # tools/list -> resources/list -> prompts/list back-to-back, which is
@@ -32,9 +32,9 @@ MCP_MOUNT_PATH = os.environ.get("MCP_MOUNT_PATH", "/mcp")
 # trip the limiter mid-handshake and surface as a 429 before the
 # connection is even usable, so we give generous headroom here.
 mcp_rate_limiter = RateLimiter(
-    per_minute=int(os.environ.get("MCP_RATE_PER_MIN", "60")),
-    per_day=int(os.environ.get("MCP_RATE_PER_DAY", "1000")),
-    burst=int(os.environ.get("MCP_RATE_BURST", "20")),
+    per_minute=int(os.environ.get("MCP_RATE_PER_MIN", "600")),
+    per_day=int(os.environ.get("MCP_RATE_PER_DAY", "10000")),
+    burst=int(os.environ.get("MCP_RATE_BURST", "200")),
 )
 
 
