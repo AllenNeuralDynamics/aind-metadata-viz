@@ -31,7 +31,7 @@ import os
 import sys
 from typing import Any, Dict, List
 
-from claude_agent_sdk import ClaudeAgentOptions, HookMatcher, query
+from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, HookMatcher
 
 #: Built-in tools the session may use at all. Everything else - notably
 #: WebFetch and WebSearch - is left out of the request entirely, so the model
@@ -47,6 +47,13 @@ _WRITE_TOOLS = ("Write", "Edit", "NotebookEdit", "MultiEdit")
 MAX_TURNS = int(os.environ.get("VGRAPH_AGENT_MAX_TURNS", "120"))
 
 TRANSCRIPT_NAME = "transcript.txt"
+
+#: Mirrors ``agent.CONTROL_DIRNAME`` / ``STEER_FILENAME`` / ``STOP_FILENAME``.
+#: Duplicated rather than imported because this module deliberately does not
+#: import the ``aind_metadata_viz`` package (see ``agent.AGENT_WORKER_PATH``).
+CONTROL_DIRNAME = "control"
+STEER_FILENAME = "steer.jsonl"
+STOP_FILENAME = "stop"
 
 
 def _escapes(job_dir: str, path: str) -> bool:
@@ -131,21 +138,86 @@ def render(message) -> str:
     return "\n".join(lines)
 
 
+def stop_requested(job_dir: str) -> bool:
+    """True once the portal has asked this session to stop."""
+    return os.path.exists(os.path.join(job_dir, CONTROL_DIRNAME, STOP_FILENAME))
+
+
+def drain_steering(job_dir: str, consumed: int) -> List[str]:
+    """Return steering messages queued after the first *consumed* of them."""
+    path = os.path.join(job_dir, CONTROL_DIRNAME, STEER_FILENAME)
+    try:
+        with open(path, encoding="utf-8") as handle:
+            lines = [line for line in handle.read().splitlines() if line.strip()]
+    except OSError:
+        return []
+    messages = []
+    for line in lines[consumed:]:
+        try:
+            messages.append(str(json.loads(line)["message"]))
+        except (ValueError, KeyError, TypeError):
+            continue
+    return messages
+
+
+#: Wrapper around a steering message, so a live instruction reads as an
+#: operator note rather than as data the agent should treat as a claim.
+STEER_TEMPLATE = """The person who asked for this work has sent a live instruction:
+
+{message}
+
+Take it into account and carry on. It does not replace the outbox contract."""
+
+
 async def run_session(job_dir: str, prompt: str, model: str) -> dict:
-    """Run the session to completion, streaming the transcript to disk."""
+    """Run the session to completion, streaming the transcript to disk.
+
+    The session is bidirectional rather than one-shot so it can be steered:
+    between turns the worker drains any instructions the portal has queued and
+    sends them as the next turn. A stop request ends the loop, leaving whatever
+    is already in the outbox to be harvested and validated as usual.
+    """
     transcript_path = os.path.join(job_dir, TRANSCRIPT_NAME)
     turns = 0
+    steers = 0
     summary = ""
+    stopped = False
+
     with open(transcript_path, "w", encoding="utf-8") as transcript:
-        async for message in query(prompt=prompt, options=build_options(job_dir, model)):
-            turns += 1
-            rendered = render(message)
-            if rendered:
-                transcript.write(rendered + "\n")
+
+        def write(text: str) -> None:
+            """Append *text* to the transcript and flush, so polling sees it live."""
+            if text:
+                transcript.write(text + "\n")
                 transcript.flush()
-            if getattr(message, "result", None):
-                summary = str(message.result)
-    return {"turns": turns, "summary": summary}
+
+        async with ClaudeSDKClient(options=build_options(job_dir, model)) as client:
+            await client.query(prompt)
+            while True:
+                async for message in client.receive_response():
+                    turns += 1
+                    write(render(message))
+                    if getattr(message, "result", None):
+                        summary = str(message.result)
+                    if stop_requested(job_dir):
+                        await client.interrupt()
+                        stopped = True
+                        break
+
+                if stopped or stop_requested(job_dir):
+                    stopped = True
+                    write("[stopped at the operator's request]")
+                    break
+
+                queued = drain_steering(job_dir, steers)
+                if not queued:
+                    break
+                steers += len(queued)
+                for message_text in queued:
+                    write(f"[steering: {message_text}]")
+                await client.query(STEER_TEMPLATE.format(message="\n".join(queued)))
+
+    return {"turns": turns, "steers": steers, "summary": summary, "stopped": stopped}
 
 
 def main(argv: List[str]) -> int:

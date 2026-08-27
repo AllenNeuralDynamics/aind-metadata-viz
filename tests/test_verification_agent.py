@@ -63,10 +63,14 @@ class JobDirectoryTestCase(unittest.TestCase):
         self.assertEqual(result["returncode"], 0)
         self.assertIn("agent output", self.job.transcript())
 
-    def test_the_worker_module_is_run_with_the_jobs_own_interpreter(self):
+    def test_the_worker_is_run_by_path_not_as_a_package_module(self):
+        # `python -m` would import the verification package first, and its
+        # __init__ pulls in the whole portal app -- which the worker does not
+        # need and which cannot even be imported inside the sandbox.
         command = self.job.command()
-        self.assertEqual(command[:3], [sys.executable, "-m", agent.AGENT_WORKER_MODULE])
-        self.assertEqual(command[-1], self.job.dir)
+        self.assertEqual(command, [sys.executable, agent.AGENT_WORKER_PATH, self.job.dir])
+        self.assertNotIn("-m", command)
+        self.assertTrue(agent.AGENT_WORKER_PATH.endswith("agent_worker.py"))
 
     def test_the_prompt_is_handed_over_on_disk_not_on_argv(self):
         # argv is world-readable via the process table; the prompt carries the
@@ -95,6 +99,90 @@ class JobDirectoryTestCase(unittest.TestCase):
         job_dir = self.job.dir
         self.job.cleanup()
         self.assertFalse(os.path.exists(job_dir))
+
+
+class LiveControlTestCase(unittest.TestCase):
+    """Cancelling and steering a session that is already running."""
+
+    def setUp(self):
+        self.root = tempfile.TemporaryDirectory()
+        self.addCleanup(self.root.cleanup)
+        self.job = agent.AgentJob("agent-live", "Verify CA3 units", [], root=self.root.name)
+
+    def _steer_lines(self):
+        path = os.path.join(self.job.control_dir, agent.STEER_FILENAME)
+        with open(path, encoding="utf-8") as handle:
+            return [json.loads(line) for line in handle if line.strip()]
+
+    def test_the_control_directory_is_scaffolded(self):
+        self.assertTrue(os.path.isdir(self.job.control_dir))
+
+    def test_a_steering_message_is_queued_for_the_worker(self):
+        self.job.steer("focus on CA3")
+        self.assertEqual(self._steer_lines(), [{"message": "focus on CA3"}])
+
+    def test_steering_messages_accumulate_in_order(self):
+        self.job.steer("first")
+        self.job.steer("second")
+        self.assertEqual([e["message"] for e in self._steer_lines()], ["first", "second"])
+
+    def test_an_empty_steering_message_is_refused(self):
+        with self.assertRaises(ValueError):
+            self.job.steer("   ")
+
+    def test_an_oversized_steering_message_is_refused(self):
+        with self.assertRaises(ValueError):
+            self.job.steer("x" * (agent.MAX_STEER_BYTES + 1))
+
+    def test_cancelling_writes_the_stop_file(self):
+        self.job.cancel()
+        self.assertTrue(os.path.exists(os.path.join(self.job.control_dir, agent.STOP_FILENAME)))
+        self.assertTrue(self.job.cancelled)
+
+    def test_cancelling_before_the_process_starts_reports_nothing_signalled(self):
+        self.assertFalse(self.job.cancel())
+
+    def test_cancelling_kills_the_live_process_group(self):
+        process = MagicMock()
+        process.poll.return_value = None
+        self.job._register_process(process)
+        with patch.object(agent, "kill_group") as kill:
+            self.assertTrue(self.job.cancel())
+        kill.assert_called_once_with(process)
+
+    def test_cancelling_an_already_finished_process_signals_nothing(self):
+        process = MagicMock()
+        process.poll.return_value = 0
+        self.job._register_process(process)
+        with patch.object(agent, "kill_group") as kill:
+            self.assertFalse(self.job.cancel())
+        kill.assert_not_called()
+
+    def test_a_job_cancelled_before_spawning_is_killed_on_arrival(self):
+        # Cancel can land between queueing and the process actually starting;
+        # the session must not run on regardless.
+        self.job.cancel()
+        process = MagicMock()
+        process.poll.return_value = None
+        with patch.object(agent, "kill_group") as kill:
+            self.job._register_process(process)
+        kill.assert_called_once_with(process)
+
+    def test_the_run_registers_its_process_for_cancellation(self):
+        # Assert the wiring by exercising it: whatever the run hands to
+        # on_start must become the process cancel() then signals.
+        process = MagicMock()
+        process.poll.return_value = None
+
+        def fake_run(command, cwd, env, timeout, on_start=None):
+            on_start(process)
+            return sandbox.SandboxResult(0, "")
+
+        with patch.object(agent, "run_sandboxed", fake_run):
+            self.job.run()
+        with patch.object(agent, "kill_group") as kill:
+            self.assertTrue(self.job.cancel())
+        kill.assert_called_once_with(process)
 
 
 class SandboxCredentialTestCase(unittest.TestCase):
@@ -245,6 +333,59 @@ class OutboxReadTestCase(unittest.TestCase):
     def test_a_missing_outbox_directory_reads_as_empty(self):
         with tempfile.TemporaryDirectory() as empty:
             self.assertEqual(agent.read_outbox(empty)[0], [])
+
+    def test_an_id_that_escapes_the_job_tree_is_rejected_before_any_read(self):
+        # The id becomes a path component of the code directory, so a walk
+        # must never be started for it. Plant a file where the traversal would
+        # land and assert it is not picked up.
+        outside = os.path.join(self.job_dir, "secret.txt")
+        with open(outside, "w", encoding="utf-8") as handle:
+            handle.write("do not read me")
+        self._write_node({"id": "../..", "kind": "entity", "entity_type": "unit", "label": "x"},
+                         name="escape.json")
+
+        documents, code, rejected = agent.read_outbox(self.job_dir)
+        self.assertEqual(documents, [])
+        self.assertEqual(code, {})
+        self.assertIn("unsafe node id", rejected[0]["reason"])
+
+    def test_a_document_with_no_id_still_reaches_validation(self):
+        self._write_node({"kind": "entity", "entity_type": "unit", "label": "x"}, name="anon.json")
+        documents, _code, rejected = agent.read_outbox(self.job_dir)
+        self.assertEqual(len(documents), 1)
+        self.assertEqual(rejected, [])
+
+    def test_a_symlinked_code_file_is_not_followed(self):
+        # A symlink in the outbox could otherwise copy any file the sandbox
+        # user can read straight into the graph's code sidecars.
+        self._write_node(_statement("stmt-a"))
+        code_dir = os.path.join(self.job_dir, "outbox", "code", "stmt-a")
+        os.makedirs(code_dir, exist_ok=True)
+        os.symlink("/etc/hosts", os.path.join(code_dir, "analysis.py"))
+        self._write_code("stmt-a", "environment.lock", b"numpy==1.26.4\n")
+
+        _documents, code, _rejected = agent.read_outbox(self.job_dir)
+        self.assertNotIn("analysis.py", code["stmt-a"])
+        self.assertIn("environment.lock", code["stmt-a"])
+
+    def test_a_code_file_with_an_unsafe_relative_path_is_skipped(self):
+        self._write_node(_statement("stmt-a"))
+        code_dir = os.path.join(self.job_dir, "outbox", "code", "stmt-a")
+        os.makedirs(code_dir, exist_ok=True)
+        # A name the S3 key rules refuse (leading dot) sits next to a good one.
+        with open(os.path.join(code_dir, ".hidden"), "wb") as handle:
+            handle.write(b"x")
+        self._write_code("stmt-a", "analysis.py", b"y")
+
+        _documents, code, _rejected = agent.read_outbox(self.job_dir)
+        self.assertEqual(sorted(code["stmt-a"]), ["analysis.py"])
+
+    def test_an_oversized_code_sidecar_is_capped(self):
+        self._write_node(_statement("stmt-a"))
+        with patch.object(agent, "MAX_OUTBOX_CODE_BYTES", 8):
+            self._write_code("stmt-a", "analysis.py", b"x" * 64)
+            _documents, code, _rejected = agent.read_outbox(self.job_dir)
+        self.assertEqual(code["stmt-a"], {})
 
     def test_an_oversized_outbox_is_capped_and_reported(self):
         with patch.object(agent, "MAX_OUTBOX_NODES", 1):

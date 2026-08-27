@@ -53,16 +53,29 @@ from typing import Dict, List, Optional, Tuple
 import boto3
 
 from .graph import now_iso, validate_node
-from .sandbox import DEFAULT_TIMEOUT_SECONDS, run_sandboxed, sandbox_env
+from .sandbox import (
+    DEFAULT_TIMEOUT_SECONDS,
+    grant_to_sandbox_user,
+    kill_group,
+    run_sandboxed,
+    sandbox_env,
+)
 from .skills import SKILLS
+from .store import InvalidId, safe_code_path, safe_id
 
 logger = logging.getLogger(__name__)
 
-#: Worker module run in the sandbox; it drives the Claude Agent SDK session.
+#: Worker script run in the sandbox; it drives the Claude Agent SDK session.
 #: The SDK bundles the Claude Code CLI inside its wheel, so there is no binary
 #: to install and nothing to find on PATH.
-AGENT_WORKER_MODULE = os.environ.get(
-    "VGRAPH_AGENT_WORKER", "aind_metadata_viz.verification.agent_worker"
+#:
+#: Run by *path*, not with ``python -m``. ``-m`` imports the parent package
+#: first, and ``verification/__init__`` pulls in the whole portal app - the
+#: chat router, the MCP server, fastmcp - none of which the worker needs, and
+#: some of which cannot even be imported inside the sandbox (fastmcp probes for
+#: a ``.env`` file at import time and raises on a directory it cannot read).
+AGENT_WORKER_PATH = os.environ.get(
+    "VGRAPH_AGENT_WORKER", os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent_worker.py")
 )
 
 #: Model the session runs on, as a Bedrock model id.
@@ -82,7 +95,25 @@ MAX_REQUEST_BYTES = 4096
 
 MAX_OUTBOX_NODES = int(os.environ.get("VGRAPH_MAX_OUTBOX_NODES", "200"))
 
+#: Ceiling on one node's code sidecar, so a job cannot exhaust memory by
+#: writing an enormous tree into its outbox.
+MAX_OUTBOX_CODE_BYTES = int(os.environ.get("VGRAPH_MAX_OUTBOX_CODE_BYTES", str(8 * 1024 * 1024)))
+
 TRANSCRIPT_TAIL_BYTES = 20_000
+
+#: Where the portal drops live instructions for a running session, and where
+#: it asks one to stop. The worker drains the steer file between turns.
+CONTROL_DIRNAME = "control"
+STEER_FILENAME = "steer.jsonl"
+STOP_FILENAME = "stop"
+
+MAX_STEER_BYTES = 4096
+
+#: Sessions currently running, by job id, so the cancel and steer endpoints can
+#: reach one mid-flight. The queue runs jobs one at a time, so this holds at
+#: most a single entry, but keying it means a stale request cannot cancel an
+#: unrelated job that started since.
+ACTIVE_JOBS: "Dict[str, AgentJob]" = {}
 
 
 PROMPT_TEMPLATE = """You are authoring nodes for a verification graph.
@@ -118,6 +149,8 @@ class AgentJob:
         self.request = request
         self.dir = tempfile.mkdtemp(prefix=f"{job_id}-", dir=base)
         self.transcript_path = os.path.join(self.dir, "transcript.txt")
+        self._process = None
+        self.cancelled = False
         self._write_scaffold(manifest)
 
     def _write_scaffold(self, manifest: List[dict]) -> None:
@@ -142,6 +175,10 @@ class AgentJob:
 
         os.makedirs(os.path.join(self.dir, "outbox", "nodes"), exist_ok=True)
         os.makedirs(os.path.join(self.dir, "outbox", "code"), exist_ok=True)
+        os.makedirs(os.path.join(self.dir, CONTROL_DIRNAME), exist_ok=True)
+
+        # Created by the portal (root in the container); run by `vgraph`.
+        grant_to_sandbox_user(self.dir)
 
     def prompt(self) -> str:
         """Return the prompt handed to the agent."""
@@ -149,7 +186,44 @@ class AgentJob:
 
     def command(self) -> List[str]:
         """Return the full argv for this job's worker process."""
-        return [sys.executable, "-m", AGENT_WORKER_MODULE, self.dir]
+        return [sys.executable, AGENT_WORKER_PATH, self.dir]
+
+    @property
+    def control_dir(self) -> str:
+        """Directory holding this job's steer and stop files."""
+        return os.path.join(self.dir, CONTROL_DIRNAME)
+
+    def steer(self, message: str) -> None:
+        """Queue a live instruction the session picks up at its next turn."""
+        text = (message or "").strip()
+        if not text:
+            raise ValueError("steering message is empty")
+        if len(text.encode("utf-8")) > MAX_STEER_BYTES:
+            raise ValueError(f"steering message exceeds {MAX_STEER_BYTES} bytes")
+        path = os.path.join(self.control_dir, STEER_FILENAME)
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps({"message": text}) + "\n")
+        grant_to_sandbox_user(self.control_dir)
+
+    def cancel(self) -> bool:
+        """Stop the session now. Returns True if a live process was signalled.
+
+        The stop file is written first so a worker between turns exits cleanly,
+        then the process group is killed so one mid-turn stops anyway. Either
+        way the outbox is still on disk and is still harvested and validated -
+        cancelling loses the session, not the work it already finished.
+        """
+        self.cancelled = True
+        try:
+            with open(os.path.join(self.control_dir, STOP_FILENAME), "w", encoding="utf-8") as handle:
+                handle.write("stop\n")
+        except OSError:  # pragma: no cover - the job directory is ours
+            pass
+        process = self._process
+        if process is None or process.poll() is not None:
+            return False
+        kill_group(process)
+        return True
 
     def run(self, timeout: int = AGENT_TIMEOUT_SECONDS) -> dict:
         """Run the session to completion and return its sandbox result as a dict."""
@@ -165,6 +239,7 @@ class AgentJob:
             cwd=self.dir,
             env=env,
             timeout=timeout,
+            on_start=self._register_process,
         )
         # The worker streams the session transcript to disk as it goes; the
         # sandbox output is the worker's own stdout/stderr, which matters when
@@ -173,6 +248,13 @@ class AgentJob:
             with open(self.transcript_path, "w", encoding="utf-8") as handle:
                 handle.write(result.output)
         return result.to_dict()
+
+    def _register_process(self, process) -> None:
+        """Record the live worker process so ``cancel`` can reach it."""
+        self._process = process
+        if self.cancelled:
+            # Cancelled between queueing and spawning; do not let it run on.
+            kill_group(process)
 
     def transcript(self) -> str:
         """Return the tail of the agent's transcript, for progress polling."""
@@ -261,25 +343,72 @@ def read_outbox(job_dir: str) -> Tuple[List[dict], Dict[str, Dict[str, bytes]], 
         )
         documents = documents[:MAX_OUTBOX_NODES]
 
+    # Ids are checked *before* any code directory is opened. A node id becomes
+    # a path component below, so an id like "../.." would otherwise send the
+    # walk outside the job tree - and the later `safe_id` call at write time
+    # would be far too late, the files having already been read.
+    documents = _with_safe_ids(documents, rejected)
+
     code = {doc["id"]: _read_code_dir(job_dir, doc["id"]) for doc in documents if doc.get("id")}
     return documents, code, rejected
 
 
+def _with_safe_ids(documents: List[dict], rejected: List[dict]) -> List[dict]:
+    """Drop documents whose id is not safe to use as a path component.
+
+    Documents with no id at all are kept: ``validate_outbox`` rejects those
+    with a clearer reason, and a missing id is never used as a path.
+    """
+    kept: List[dict] = []
+    for doc in documents:
+        node_id = doc.get("id")
+        if node_id is None:
+            kept.append(doc)
+            continue
+        try:
+            safe_id(str(node_id))
+        except InvalidId as exc:
+            rejected.append({"file": str(node_id)[:80], "reason": f"unsafe node id: {exc}"})
+            continue
+        kept.append(doc)
+    return kept
+
+
 def _read_code_dir(job_dir: str, node_id: str) -> Dict[str, bytes]:
-    """Return one node's code sidecar from the outbox as ``{relpath: bytes}``."""
-    root = os.path.join(job_dir, "outbox", "code", node_id)
+    """Return one node's code sidecar from the outbox as ``{relpath: bytes}``.
+
+    Hardened against a job that plants symlinks in its own outbox: the root is
+    resolved and confirmed to sit inside the job directory, symlinked entries
+    are skipped rather than followed, and the total is capped.
+    """
+    job_root = os.path.realpath(job_dir)
+    root = os.path.realpath(os.path.join(job_dir, "outbox", "code", node_id))
     files: Dict[str, bytes] = {}
-    if not os.path.isdir(root):
+    if not root.startswith(job_root + os.sep) or not os.path.isdir(root):
         return files
-    for dirpath, _dirnames, filenames in os.walk(root):
+
+    budget = MAX_OUTBOX_CODE_BYTES
+    for dirpath, _dirnames, filenames in os.walk(root, followlinks=False):
         for filename in filenames:
             full = os.path.join(dirpath, filename)
+            # A symlink here could point at any file the sandbox user can read,
+            # which would copy it into the graph's code sidecars.
+            if os.path.islink(full):
+                continue
             relpath = os.path.relpath(full, root)
             try:
+                safe_code_path(relpath)
+            except InvalidId:
+                continue
+            try:
                 with open(full, "rb") as handle:
-                    files[relpath] = handle.read()
+                    data = handle.read(budget + 1)
             except OSError:  # pragma: no cover - unreadable file in our own tmpdir
                 continue
+            if len(data) > budget:
+                return files
+            budget -= len(data)
+            files[relpath] = data
     return files
 
 

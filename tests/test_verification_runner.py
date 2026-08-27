@@ -5,8 +5,10 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
-from unittest.mock import patch
+import subprocess
+from unittest.mock import MagicMock, patch
 
 from aind_metadata_viz.verification import runner, sandbox
 
@@ -301,6 +303,70 @@ class SandboxTestCase(unittest.TestCase):
         self.assertTrue(result.timed_out)
         self.assertFalse(result.ok)
 
+    def test_a_timeout_kills_the_whole_process_group(self):
+        # The child spawns children of its own (the Agent SDK launches the
+        # bundled CLI, the runner launches pytest). Killing only the direct
+        # child leaves those running and holding the output pipe, which used
+        # to block the reap past the timeout.
+        marker = os.path.join(tempfile.gettempdir(), "vgraph_group_test_pid")
+        if os.path.exists(marker):
+            os.unlink(marker)
+        grandchild = f"""
+import os, time
+open({marker!r}, 'w').write(str(os.getpid()))
+time.sleep(120)
+"""
+        child = f"""
+import subprocess, sys, time
+subprocess.Popen([sys.executable, '-c', {grandchild!r}])
+time.sleep(120)
+"""
+        started = time.time()
+        result = sandbox.run_sandboxed(
+            [sys.executable, "-c", child],
+            cwd=tempfile.gettempdir(),
+            env=sandbox.sandbox_env({"PATH": os.environ.get("PATH", "")}),
+            timeout=3,
+        )
+        elapsed = time.time() - started
+
+        self.assertTrue(result.timed_out)
+        self.assertLess(elapsed, 20, "run_sandboxed did not return promptly after its timeout")
+
+        time.sleep(0.5)
+        self.assertTrue(os.path.exists(marker), "grandchild never started")
+        pid = int(open(marker).read())
+        os.unlink(marker)
+        with self.assertRaises(ProcessLookupError):
+            os.kill(pid, 0)
+
+    def test_killing_a_group_falls_back_to_the_child_when_the_group_is_gone(self):
+        # os.getpgid raises once the process has already been reaped; the
+        # fallback must not propagate that out of the timeout path.
+        process = MagicMock()
+        process.pid = 424242
+        with patch.object(sandbox.os, "killpg", side_effect=ProcessLookupError):
+            sandbox.kill_group(process)
+        process.kill.assert_called_once()
+
+    def test_a_group_that_outlives_the_grace_period_stops_being_waited_on(self):
+        # A descendant that called setsid escapes the group kill; the job queue
+        # must not block on it forever.
+        process = MagicMock()
+        process.pid = 1
+        process.__enter__ = lambda self_: self_
+        process.__exit__ = lambda self_, *exc: False
+        process.communicate.side_effect = [
+            subprocess.TimeoutExpired("cmd", 1),
+            subprocess.TimeoutExpired("cmd", 1),
+        ]
+        with patch.object(sandbox.subprocess, "Popen", return_value=process), \
+             patch.object(sandbox, "kill_group") as kill:
+            result = sandbox.run_sandboxed(["/bin/true"], cwd=".", timeout=1)
+        self.assertTrue(result.timed_out)
+        self.assertIn("[timed out]", result.output)
+        self.assertEqual(kill.call_count, 2)
+
     def test_a_missing_binary_is_reported_rather_than_raised(self):
         result = sandbox.run_sandboxed(["/definitely/not/here"], cwd=".", timeout=10)
         self.assertFalse(result.ok)
@@ -324,6 +390,38 @@ class SandboxTestCase(unittest.TestCase):
             sandbox.SandboxResult(0, "out").to_dict(),
             {"returncode": 0, "output": "out", "timed_out": False},
         )
+
+    def test_a_job_directory_is_handed_to_the_sandbox_user(self):
+        # In the container the portal creates job directories as root, mode
+        # 0700, and the child runs as `vgraph` -- without this it cannot stat
+        # its own working directory, let alone read the prompt.
+        with tempfile.TemporaryDirectory() as job:
+            os.makedirs(os.path.join(job, "outbox", "nodes"))
+            open(os.path.join(job, "prompt.txt"), "w").close()
+            with patch.object(sandbox, "_sandbox_user_ids", return_value=(4242, 4243)), \
+                 patch.object(sandbox.os, "chown") as chown:
+                sandbox.grant_to_sandbox_user(job)
+        owned = {call.args[0] for call in chown.call_args_list}
+        self.assertIn(job, owned)
+        self.assertIn(os.path.join(job, "prompt.txt"), owned)
+        self.assertIn(os.path.join(job, "outbox", "nodes"), owned)
+        self.assertTrue(all(call.args[1:] == (4242, 4243) for call in chown.call_args_list))
+
+    def test_granting_is_a_no_op_when_privileges_are_not_dropped(self):
+        with tempfile.TemporaryDirectory() as job:
+            with patch.object(sandbox, "_sandbox_user_ids", return_value=None), \
+                 patch.object(sandbox.os, "chown") as chown:
+                sandbox.grant_to_sandbox_user(job)
+        chown.assert_not_called()
+
+    def test_on_start_receives_the_live_process(self):
+        seen = []
+        result = sandbox.run_sandboxed(
+            [sys.executable, "-c", "print('hi')"], cwd=".", timeout=60, on_start=seen.append
+        )
+        self.assertTrue(result.ok)
+        self.assertEqual(len(seen), 1)
+        self.assertIsNotNone(seen[0].pid)
 
     def test_the_sandbox_user_is_skipped_when_it_does_not_exist(self):
         with patch.object(sandbox, "SANDBOX_USER", "definitely-not-a-user"):

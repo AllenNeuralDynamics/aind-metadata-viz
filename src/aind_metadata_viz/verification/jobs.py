@@ -49,13 +49,17 @@ class JobQueue:
         records.reverse()
         return records
 
-    async def submit(self, kind: str, work: Callable[[], dict], **fields) -> dict:
+    async def submit(
+        self, kind: str, work: Callable[[], dict], job_id: Optional[str] = None, **fields
+    ) -> dict:
         """Queue *work* and return the job's initial record.
 
         *work* is a blocking callable run in a worker thread; whatever dict it
-        returns becomes the job's ``result``.
+        returns becomes the job's ``result``. Pass *job_id* when the caller has
+        to know the id up front - an agent job wires it into the work so the
+        cancel and steer endpoints can find the running session.
         """
-        job_id = f"{kind}-{uuid.uuid4().hex[:12]}"
+        job_id = job_id or f"{kind}-{uuid.uuid4().hex[:12]}"
         record = {
             "job_id": job_id,
             "kind": kind,

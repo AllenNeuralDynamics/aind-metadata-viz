@@ -341,10 +341,17 @@ class JobStatus(BaseModel):
     error: Optional[str] = Field(default=None, description="Failure message, when state is 'failed'")
     result: Optional[Dict[str, Any]] = Field(default=None, description="Job outcome payload")
     transcript: Optional[str] = Field(default=None, description="Tail of the agent transcript, for agent jobs")
+    cancelled: bool = Field(default=False, description="Whether the session was stopped on request")
     accepted: List[str] = Field(default_factory=list, description="Node ids accepted from an agent outbox")
     rejected: List[Dict[str, Any]] = Field(
         default_factory=list, description="Outbox entries that failed validation, with reasons"
     )
+
+
+class SteerRequest(BaseModel):
+    """Request body for ``POST /verification/jobs/{job_id}/steer``."""
+
+    message: str = Field(..., description="Live instruction for the running session")
 
 
 class AgentJobRequest(BaseModel):

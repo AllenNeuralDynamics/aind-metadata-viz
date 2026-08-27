@@ -36,7 +36,13 @@ import urllib.request
 from typing import Dict, List, Optional, Tuple
 
 from .graph import now_iso
-from .sandbox import DEFAULT_TIMEOUT_SECONDS, SandboxResult, run_sandboxed, sandbox_env
+from .sandbox import (
+    DEFAULT_TIMEOUT_SECONDS,
+    SandboxResult,
+    grant_to_sandbox_user,
+    run_sandboxed,
+    sandbox_env,
+)
 
 #: Public bucket holding the dynamic routing parquet cache.
 DATA_CACHE_BASE = os.environ.get(
@@ -154,6 +160,8 @@ def materialize_job(node_id: str, files: Dict[str, bytes], root: Optional[str] =
         with open(target, "wb") as handle:
             handle.write(data)
     os.makedirs(os.path.join(job_dir, "data"), exist_ok=True)
+    # Written by the portal (root in the container); run by `vgraph`.
+    grant_to_sandbox_user(job_dir)
     return job_dir
 
 

@@ -11,8 +11,12 @@ The sandbox is three things:
   by inheriting them. The caller adds back only what a given job needs.
 * **Resource limits.** CPU seconds, address space, file size and process
   count are capped with ``setrlimit`` in the child before ``exec``.
-* **A wall-clock timeout.** Enforced by ``subprocess.run``; on expiry the
-  whole process group is killed.
+* **A wall-clock timeout.** The child is started in its own session
+  (``setsid``), so on expiry the whole process *group* is signalled rather
+  than just the direct child. That matters because the child spawns children
+  of its own - the Agent SDK launches the bundled CLI, the runner launches
+  pytest - and killing only the direct child would leave those running and
+  holding the output pipe open, which can block the reap indefinitely.
 
 If in-container isolation proves too weak this moves to a separate ECS task;
 the calling contract does not change.
@@ -22,8 +26,9 @@ from __future__ import annotations
 
 import os
 import resource
+import signal
 import subprocess
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 #: Environment variables that must never reach a sandboxed child.
 _CREDENTIAL_VARS = (
@@ -131,6 +136,31 @@ def _set_limit(which: int, value: int) -> None:  # pragma: no cover - forked chi
         pass
 
 
+def grant_to_sandbox_user(path: str) -> None:
+    """Hand ownership of *path* and everything under it to the sandbox user.
+
+    Job directories are created by the portal process, which runs as root in
+    the container, and ``mkdtemp`` makes them mode 0700. The sandboxed child
+    runs as ``vgraph``, so without this it cannot even stat its own working
+    directory - let alone read the prompt or write the outbox.
+
+    A no-op when privileges are not being dropped (local development), where
+    the child already runs as the user that created the directory.
+    """
+    ids = _sandbox_user_ids()
+    if ids is None:
+        return
+    uid, gid = ids
+    targets = [path]
+    for root, dirnames, filenames in os.walk(path):
+        targets.extend(os.path.join(root, name) for name in dirnames + filenames)
+    for target in targets:
+        try:
+            os.chown(target, uid, gid)
+        except OSError:  # pragma: no cover - best effort, reported by the child
+            pass
+
+
 def _preexec(cpu_seconds: int, memory_bytes: int, file_size_bytes: int, max_processes: int):
     """Build the child-side hook that applies limits and drops privileges."""
 
@@ -139,7 +169,6 @@ def _preexec(cpu_seconds: int, memory_bytes: int, file_size_bytes: int, max_proc
         _set_limit(resource.RLIMIT_CPU, cpu_seconds)
         _set_limit(resource.RLIMIT_AS, memory_bytes)
         _set_limit(resource.RLIMIT_FSIZE, file_size_bytes)
-        _set_limit(resource.RLIMIT_NPROC, max_processes)
         _set_limit(resource.RLIMIT_CORE, 0)
         try:
             os.setpriority(os.PRIO_PROCESS, 0, 10)
@@ -147,10 +176,36 @@ def _preexec(cpu_seconds: int, memory_bytes: int, file_size_bytes: int, max_proc
             pass
         ids = _sandbox_user_ids()
         if ids is not None:
+            # RLIMIT_NPROC counts processes per *user*, not per process tree,
+            # so it is only a meaningful per-job guard once this child is about
+            # to become the dedicated sandbox user. Applied while still running
+            # as a shared login it would count every unrelated process that
+            # user already owns and make legitimate forks fail.
+            _set_limit(resource.RLIMIT_NPROC, max_processes)
             os.setgid(ids[1])
             os.setuid(ids[0])
 
     return apply
+
+
+#: How long to wait for a killed process group to be reaped before giving up
+#: on collecting its output.
+KILL_GRACE_SECONDS = 10
+
+
+def kill_group(process: subprocess.Popen) -> None:
+    """SIGKILL the child's whole process group, falling back to the child.
+
+    ``_preexec`` calls ``setsid``, so the child's process-group id equals its
+    pid and every descendant inherits it unless one calls ``setsid`` itself.
+    """
+    try:
+        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            process.kill()
+        except OSError:  # pragma: no cover - already reaped
+            pass
 
 
 def run_sandboxed(
@@ -160,14 +215,19 @@ def run_sandboxed(
     timeout: int = DEFAULT_TIMEOUT_SECONDS,
     cpu_seconds: int = DEFAULT_CPU_SECONDS,
     memory_bytes: int = DEFAULT_MEMORY_BYTES,
+    on_start: Optional[Callable[[subprocess.Popen], None]] = None,
 ) -> SandboxResult:
     """Run *command* in *cwd* under the sandbox and return its result.
 
     stdout and stderr are combined and truncated to ``MAX_OUTPUT_BYTES`` so a
-    runaway process cannot fill the log store.
+    runaway process cannot fill the log store. On timeout the whole process
+    group is killed, not just the direct child.
+
+    *on_start* is handed the live ``Popen`` as soon as it exists, so a caller
+    can cancel the run from another thread while it is still going.
     """
     try:
-        completed = subprocess.run(
+        process = subprocess.Popen(
             command,
             cwd=cwd,
             env=env if env is not None else sandbox_env(),
@@ -175,20 +235,32 @@ def run_sandboxed(
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            timeout=timeout,
             preexec_fn=_preexec(
                 cpu_seconds, memory_bytes, DEFAULT_FILE_SIZE_BYTES, DEFAULT_MAX_PROCESSES
             ),
         )
-    except subprocess.TimeoutExpired as exc:
-        partial = exc.output or ""
-        if isinstance(partial, bytes):  # pragma: no cover - text=True keeps this str
-            partial = partial.decode("utf-8", "replace")
-        return SandboxResult(-1, _truncate(partial) + "\n[timed out]", timed_out=True)
     except (OSError, ValueError) as exc:
         return SandboxResult(-1, f"[failed to start: {exc}]")
 
-    return SandboxResult(completed.returncode, _truncate(completed.stdout or ""))
+    if on_start is not None:
+        on_start(process)
+
+    with process:
+        try:
+            stdout, _ = process.communicate(timeout=timeout)
+            return SandboxResult(process.returncode, _truncate(stdout or ""))
+        except subprocess.TimeoutExpired:
+            kill_group(process)
+
+        try:
+            stdout, _ = process.communicate(timeout=KILL_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            # A descendant escaped the group (it called setsid itself) and is
+            # still holding the pipe. Stop waiting rather than block the job
+            # queue; `with process` closes our end of the pipe on the way out.
+            kill_group(process)
+            stdout = ""
+        return SandboxResult(-1, _truncate(stdout or "") + "\n[timed out]", timed_out=True)
 
 
 def _truncate(text: str) -> str:

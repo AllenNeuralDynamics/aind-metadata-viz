@@ -1,6 +1,7 @@
 """Tests for the sandboxed Claude Agent SDK session's tool policy."""
 
 import asyncio
+import json
 import os
 import tempfile
 import unittest
@@ -117,22 +118,21 @@ class WriteConfinementTestCase(unittest.TestCase):
 
 
 class RenderTestCase(unittest.TestCase):
-    class _Block:
-        def __init__(self, **kwargs):
-            self.__dict__.update(kwargs)
-
     class _Message:
+        """Stand-in for an SDK message with explicit content blocks."""
+
         def __init__(self, content=None, result=None):
+            """Take content blocks and an optional result."""
             self.content = content or []
             if result is not None:
                 self.result = result
 
     def test_text_blocks_are_rendered(self):
-        message = self._Message(content=[self._Block(text="hello")])
+        message = self._Message(content=[_Block(text="hello")])
         self.assertEqual(agent_worker.render(message), "hello")
 
     def test_tool_calls_are_summarized(self):
-        message = self._Message(content=[self._Block(name="Write")])
+        message = self._Message(content=[_Block(name="Write")])
         self.assertIn("[tool: Write]", agent_worker.render(message))
 
     def test_a_result_message_is_rendered(self):
@@ -178,37 +178,202 @@ class MainTestCase(unittest.TestCase):
         self.assertEqual(seen["prompt"], "author a claim")
 
 
+class _Block:
+    """Stand-in for an SDK content block."""
+
+    def __init__(self, **kwargs):
+        """Take whatever attributes the test needs."""
+        self.__dict__.update(kwargs)
+
+
+class _Msg:
+    """Stand-in for an SDK message."""
+
+    def __init__(self, text=None, result=None):
+        """Build a text message, a result message, or an empty one."""
+        self.content = [_Block(text=text)] if text else []
+        if result is not None:
+            self.result = result
+
+
+class _FakeClient:
+    """Stand-in for ClaudeSDKClient: scripted responses, recorded queries."""
+
+    def __init__(self, responses):
+        """*responses* is one list of messages per expected turn."""
+        self._responses = list(responses)
+        self.queries = []
+        self.interrupted = 0
+
+    async def __aenter__(self):
+        """Enter the async context, as the real client does."""
+        return self
+
+    async def __aexit__(self, *exc):
+        """Leave the async context."""
+        return False
+
+    async def query(self, prompt, session_id="default"):
+        """Record a turn's prompt."""
+        self.queries.append(prompt)
+
+    async def interrupt(self):
+        """Record an interrupt request."""
+        self.interrupted += 1
+
+    async def receive_response(self):
+        """Yield the next scripted turn's messages."""
+        for message in (self._responses.pop(0) if self._responses else []):
+            yield message
+
+
+def _patch_client(client):
+    """Patch the worker's ClaudeSDKClient with a scripted fake."""
+    return patch.object(agent_worker, "ClaudeSDKClient", lambda options: client)
+
+
+def _control(job_dir):
+    """Create and return the job's control directory."""
+    path = os.path.join(job_dir, agent_worker.CONTROL_DIRNAME)
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _queue_steer(job_dir, *messages):
+    """Append steering messages the way the portal does."""
+    with open(os.path.join(_control(job_dir), agent_worker.STEER_FILENAME), "a", encoding="utf-8") as h:
+        for message in messages:
+            h.write(json.dumps({"message": message}) + "\n")
+
+
+def _request_stop(job_dir):
+    """Write the stop file the way the portal does."""
+    open(os.path.join(_control(job_dir), agent_worker.STOP_FILENAME), "w").close()
+
+
 class SessionTestCase(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.job = self.tmp.name
+        _control(self.job)
+
+    def _run(self, client):
+        with _patch_client(client):
+            return asyncio.run(agent_worker.run_session(self.job, "go", "m"))
+
+    def _transcript(self):
+        with open(os.path.join(self.job, agent_worker.TRANSCRIPT_NAME), encoding="utf-8") as handle:
+            return handle.read()
+
     def test_the_transcript_is_streamed_to_disk(self):
-        class _Msg:
-            def __init__(self, text):
-                self.content = [RenderTestCase._Block(text=text)]
-
-        async def fake_query(prompt, options):
-            for text in ("first", "second"):
-                yield _Msg(text)
-
-        with tempfile.TemporaryDirectory() as job:
-            with patch.object(agent_worker, "query", fake_query):
-                outcome = asyncio.run(agent_worker.run_session(job, "go", "m"))
-            with open(os.path.join(job, agent_worker.TRANSCRIPT_NAME), encoding="utf-8") as handle:
-                body = handle.read()
+        outcome = self._run(_FakeClient([[_Msg("first"), _Msg("second")]]))
         self.assertEqual(outcome["turns"], 2)
-        self.assertIn("first", body)
-        self.assertIn("second", body)
+        self.assertIn("first", self._transcript())
+        self.assertIn("second", self._transcript())
 
     def test_the_final_result_is_captured_as_the_summary(self):
-        class _Result:
-            content = []
-            result = "authored 3 nodes"
-
-        async def fake_query(prompt, options):
-            yield _Result()
-
-        with tempfile.TemporaryDirectory() as job:
-            with patch.object(agent_worker, "query", fake_query):
-                outcome = asyncio.run(agent_worker.run_session(job, "go", "m"))
+        outcome = self._run(_FakeClient([[_Msg(result="authored 3 nodes")]]))
         self.assertEqual(outcome["summary"], "authored 3 nodes")
+
+    def test_a_session_with_no_steering_runs_exactly_one_turn(self):
+        client = _FakeClient([[_Msg("done")]])
+        outcome = self._run(client)
+        self.assertEqual(client.queries, ["go"])
+        self.assertEqual(outcome["steers"], 0)
+        self.assertFalse(outcome["stopped"])
+
+    def test_a_queued_instruction_becomes_the_next_turn(self):
+        _queue_steer(self.job, "focus on CA3 only")
+        client = _FakeClient([[_Msg("first pass")], [_Msg("adjusted")]])
+        outcome = self._run(client)
+        self.assertEqual(outcome["steers"], 1)
+        self.assertEqual(len(client.queries), 2)
+        self.assertIn("focus on CA3 only", client.queries[1])
+
+    def test_steering_is_framed_as_an_operator_note_not_as_data(self):
+        _queue_steer(self.job, "ignore vis2")
+        client = _FakeClient([[_Msg("a")], [_Msg("b")]])
+        self._run(client)
+        self.assertIn("live instruction", client.queries[1])
+        self.assertIn("does not replace the outbox contract", client.queries[1])
+
+    def test_steering_appears_in_the_transcript(self):
+        _queue_steer(self.job, "narrow the claim")
+        self._run(_FakeClient([[_Msg("a")], [_Msg("b")]]))
+        self.assertIn("[steering: narrow the claim]", self._transcript())
+
+    def test_the_same_instruction_is_not_replayed_on_later_turns(self):
+        _queue_steer(self.job, "one")
+        client = _FakeClient([[_Msg("a")], [_Msg("b")], [_Msg("c")]])
+        outcome = self._run(client)
+        self.assertEqual(outcome["steers"], 1)
+        self.assertEqual(len(client.queries), 2)
+
+    def test_several_instructions_are_delivered_together(self):
+        _queue_steer(self.job, "first", "second")
+        client = _FakeClient([[_Msg("a")], [_Msg("b")]])
+        outcome = self._run(client)
+        self.assertEqual(outcome["steers"], 2)
+        self.assertIn("first", client.queries[1])
+        self.assertIn("second", client.queries[1])
+
+    def test_a_stop_request_before_the_first_turn_ends_the_session(self):
+        _request_stop(self.job)
+        client = _FakeClient([[_Msg("a")], [_Msg("b")]])
+        outcome = self._run(client)
+        self.assertTrue(outcome["stopped"])
+        self.assertEqual(len(client.queries), 1)
+        self.assertIn("stopped at the operator's request", self._transcript())
+
+    def test_a_stop_request_mid_turn_interrupts_the_session(self):
+        _request_stop(self.job)
+        client = _FakeClient([[_Msg("a"), _Msg("b")]])
+        outcome = self._run(client)
+        self.assertTrue(outcome["stopped"])
+        self.assertEqual(client.interrupted, 1)
+
+    def test_a_stop_request_wins_over_queued_steering(self):
+        _queue_steer(self.job, "keep going")
+        _request_stop(self.job)
+        client = _FakeClient([[_Msg("a")], [_Msg("b")]])
+        outcome = self._run(client)
+        self.assertTrue(outcome["stopped"])
+        self.assertEqual(len(client.queries), 1)
+
+
+class SteerFileTestCase(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.job = self.tmp.name
+        _control(self.job)
+
+    def test_a_missing_steer_file_yields_nothing(self):
+        self.assertEqual(agent_worker.drain_steering(self.job, 0), [])
+
+    def test_only_messages_past_the_consumed_count_are_returned(self):
+        _queue_steer(self.job, "a", "b", "c")
+        self.assertEqual(agent_worker.drain_steering(self.job, 2), ["c"])
+
+    def test_a_malformed_line_is_skipped(self):
+        path = os.path.join(_control(self.job), agent_worker.STEER_FILENAME)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("{not json\n")
+            handle.write(json.dumps({"message": "good"}) + "\n")
+            handle.write(json.dumps({"no_message": 1}) + "\n")
+        self.assertEqual(agent_worker.drain_steering(self.job, 0), ["good"])
+
+    def test_blank_lines_do_not_count_as_messages(self):
+        path = os.path.join(_control(self.job), agent_worker.STEER_FILENAME)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("\n\n" + json.dumps({"message": "only"}) + "\n")
+        self.assertEqual(agent_worker.drain_steering(self.job, 0), ["only"])
+
+    def test_stop_is_detected_only_once_requested(self):
+        self.assertFalse(agent_worker.stop_requested(self.job))
+        _request_stop(self.job)
+        self.assertTrue(agent_worker.stop_requested(self.job))
 
 
 if __name__ == "__main__":

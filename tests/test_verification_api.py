@@ -1,9 +1,10 @@
 """Tests for the verification graph's REST endpoints."""
 
+import asyncio
 import json
 import unittest
 from io import BytesIO
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from botocore.exceptions import ClientError
 from fastapi import FastAPI
@@ -507,7 +508,7 @@ class AgentEndpointTestCase(ApiTestCase):
             return {"returncode": 0, "timed_out": False}
 
         with patch.object(handlers.agent_mod.AgentJob, "run", fake_run):
-            result = handlers._run_agent_job("Verify CA3 units", _ALICE["orcid"])
+            result = handlers._run_agent_job("Verify CA3 units", _ALICE["orcid"], "agent-test")
 
         self.assertEqual(result["accepted"], ["stmt-new"])
         self.assertEqual(len(result["rejected"]), 1)
@@ -518,14 +519,126 @@ class AgentEndpointTestCase(ApiTestCase):
         self.assertEqual(store.get_code_file("stmt-new", "analysis.py"), CODE_FILES["analysis.py"])
         self.assertIsNone(store.get_node("stmt-bad"))
 
+    def test_one_unstorable_node_does_not_discard_the_rest_of_the_batch(self):
+        self._seed()
+
+        def fake_run(job_self):
+            for node_id in ("stmt-good", "stmt-doomed"):
+                with open(f"{job_self.dir}/outbox/nodes/{node_id}.json", "w", encoding="utf-8") as h:
+                    json.dump({
+                        "id": node_id, "kind": "statement", "subject": "ent-unit",
+                        "relation": "rel-r", "object": "ent-stim", "depends_on": [],
+                    }, h)
+            return {"returncode": 0, "timed_out": False}
+
+        real_put_node = store.put_node
+
+        def flaky_put_node(doc, *args, **kwargs):
+            if doc["id"] == "stmt-doomed":
+                raise RuntimeError("S3 rejected the write")
+            return real_put_node(doc, *args, **kwargs)
+
+        with patch.object(handlers.agent_mod.AgentJob, "run", fake_run), \
+             patch.object(store, "put_node", flaky_put_node):
+            result = handlers._run_agent_job("Verify CA3 units", _ALICE["orcid"], "agent-test")
+
+        self.assertEqual(result["accepted"], ["stmt-good"])
+        self.assertIn("could not be stored", result["rejected"][0]["reason"])
+        self.assertIsNotNone(store.get_node("stmt-good"))
+
     def test_a_job_that_writes_nothing_leaves_the_graph_unchanged(self):
         self._seed()
         before = len(store.list_nodes())
         with patch.object(handlers.agent_mod.AgentJob, "run",
                           lambda self: {"returncode": 1, "timed_out": True}):
-            result = handlers._run_agent_job("Verify CA3 units", _ALICE["orcid"])
+            result = handlers._run_agent_job("Verify CA3 units", _ALICE["orcid"], "agent-test")
         self.assertEqual(result["accepted"], [])
         self.assertEqual(len(store.list_nodes()), before)
+
+
+class LiveJobControlTestCase(ApiTestCase):
+    """Cancel and steer endpoints against a registered running job."""
+
+    def setUp(self):
+        super().setUp()
+        self.live = MagicMock()
+        self.live.cancel.return_value = True
+        self.live.cancelled = False
+        self.live.transcript.return_value = "working..."
+        handlers.agent_mod.ACTIVE_JOBS.clear()
+        self.addCleanup(handlers.agent_mod.ACTIVE_JOBS.clear)
+
+    async def _register(self, job_id="agent-live"):
+        await queue.submit("agent", lambda: {}, job_id=job_id)
+        handlers.agent_mod.ACTIVE_JOBS[job_id] = self.live
+        return job_id
+
+    def _with_job(self, job_id="agent-live"):
+        asyncio.get_event_loop_policy().new_event_loop().run_until_complete(self._register(job_id))
+        return job_id
+
+    def test_cancelling_requires_a_login(self):
+        job_id = self._with_job()
+        with _patch_user(None):
+            self.assertEqual(client.post(f"/verification/jobs/{job_id}/cancel").status_code, 401)
+
+    def test_cancelling_signals_the_running_session(self):
+        job_id = self._with_job()
+        with _patch_user(_ALICE):
+            response = client.post(f"/verification/jobs/{job_id}/cancel")
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["signalled"])
+        self.live.cancel.assert_called_once()
+
+    def test_cancelling_an_unknown_job_is_404(self):
+        with _patch_user(_ALICE):
+            self.assertEqual(client.post("/verification/jobs/nope/cancel").status_code, 404)
+
+    def test_cancelling_a_job_that_is_not_running_is_409(self):
+        job_id = self._with_job()
+        handlers.agent_mod.ACTIVE_JOBS.clear()
+        with _patch_user(_ALICE):
+            response = client.post(f"/verification/jobs/{job_id}/cancel")
+        self.assertEqual(response.status_code, 409)
+
+    def test_steering_requires_a_login(self):
+        job_id = self._with_job()
+        with _patch_user(None):
+            response = client.post(f"/verification/jobs/{job_id}/steer", json={"message": "hi"})
+        self.assertEqual(response.status_code, 401)
+
+    def test_steering_queues_the_message(self):
+        job_id = self._with_job()
+        with _patch_user(_ALICE):
+            response = client.post(f"/verification/jobs/{job_id}/steer",
+                                   json={"message": "focus on CA3"})
+        self.assertEqual(response.status_code, 200)
+        self.live.steer.assert_called_once_with("focus on CA3")
+
+    def test_an_invalid_steering_message_is_400(self):
+        job_id = self._with_job()
+        self.live.steer.side_effect = ValueError("steering message is empty")
+        with _patch_user(_ALICE):
+            response = client.post(f"/verification/jobs/{job_id}/steer", json={"message": " "})
+        self.assertEqual(response.status_code, 400)
+
+    def test_steering_an_unknown_job_is_404(self):
+        with _patch_user(_ALICE):
+            response = client.post("/verification/jobs/nope/steer", json={"message": "x"})
+        self.assertEqual(response.status_code, 404)
+
+    def test_steering_a_finished_job_is_409(self):
+        job_id = self._with_job()
+        handlers.agent_mod.ACTIVE_JOBS.clear()
+        with _patch_user(_ALICE):
+            response = client.post(f"/verification/jobs/{job_id}/steer", json={"message": "x"})
+        self.assertEqual(response.status_code, 409)
+
+    def test_polling_a_running_job_returns_the_live_transcript(self):
+        job_id = self._with_job()
+        body = client.get(f"/verification/jobs/{job_id}").json()
+        self.assertEqual(body["transcript"], "working...")
+        self.assertFalse(body["cancelled"])
 
 
 class IdGenerationTestCase(unittest.TestCase):

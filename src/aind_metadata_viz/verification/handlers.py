@@ -43,6 +43,7 @@ from .models import (
     CodeListing,
     GraphSnapshot,
     JobStatus,
+    SteerRequest,
     VerifyRequest,
 )
 
@@ -500,6 +501,12 @@ async def job_get(job_id: str):
     record = queue.get(job_id)
     if record is None:
         return _error(404, f"no job '{job_id}'")
+    live = agent_mod.ACTIVE_JOBS.get(job_id)
+    if live is not None:
+        # Read the transcript off disk so the panel can watch a session as it
+        # works, rather than seeing nothing until the job ends.
+        record["transcript"] = live.transcript()
+        record["cancelled"] = live.cancelled
     return record
 
 
@@ -513,6 +520,58 @@ async def job_get(job_id: str):
 async def agent_job_get(job_id: str):
     """Return one agent job's status record."""
     return await job_get(job_id)
+
+
+@verification_router.post(
+    "/jobs/{job_id}/cancel",
+    summary="Stop a running agent session",
+    description=(
+        "Requires an ORCID login. Asks a running session to stop and kills its process group "
+        "if it does not exit on its own. Whatever the agent already wrote to its outbox is "
+        "still harvested and validated, so cancelling loses the session, not the finished work. "
+        "404 if the job is unknown; 409 if it has already finished."
+    ),
+)
+async def job_cancel_post(request: Request, job_id: str):
+    """Stop a running agent session."""
+    require_user(request)
+    record = queue.get(job_id)
+    if record is None:
+        return _error(404, f"no job '{job_id}'")
+    live = agent_mod.ACTIVE_JOBS.get(job_id)
+    if live is None:
+        return _error(409, f"job '{job_id}' is not running (state: {record.get('state')})")
+
+    signalled = await asyncio.to_thread(live.cancel)
+    queue.update(job_id, cancelled=True)
+    return JSONResponse(content={"job_id": job_id, "cancelled": True, "signalled": signalled})
+
+
+@verification_router.post(
+    "/jobs/{job_id}/steer",
+    summary="Send a live instruction to a running agent session",
+    description=(
+        "Requires an ORCID login. Body: `{\"message\": \"...\"}`. The instruction is queued and "
+        "picked up at the session's next turn, then appears in the transcript. Steering guides "
+        "the session; it does not widen what the agent may do - the tool policy and the outbox "
+        "contract are unchanged. 404 if the job is unknown; 409 if it is not running."
+    ),
+)
+async def job_steer_post(request: Request, job_id: str, body: SteerRequest):
+    """Queue a live instruction for a running agent session."""
+    require_user(request)
+    record = queue.get(job_id)
+    if record is None:
+        return _error(404, f"no job '{job_id}'")
+    live = agent_mod.ACTIVE_JOBS.get(job_id)
+    if live is None:
+        return _error(409, f"job '{job_id}' is not running (state: {record.get('state')})")
+
+    try:
+        await asyncio.to_thread(live.steer, body.message)
+    except ValueError as exc:
+        return _error(400, str(exc))
+    return JSONResponse(content={"job_id": job_id, "queued": True})
 
 
 @verification_router.post(
@@ -543,17 +602,20 @@ async def agent_job_post(request: Request, body: AgentJobRequest):
     if not allowed:
         return _error(429, message)
 
+    job_id = f"agent-{uuid.uuid4().hex[:12]}"
     record = await queue.submit(
         "agent",
-        lambda: _run_agent_job(text, user["orcid"]),
+        lambda: _run_agent_job(text, user["orcid"], job_id),
+        job_id=job_id,
     )
     return record
 
 
-def _run_agent_job(text: str, orcid: str) -> dict:
+def _run_agent_job(text: str, orcid: str, job_id: str) -> dict:
     """Blocking body of an agent job: run sandboxed, then validate the outbox."""
     manifest = compile_manifest(store.list_nodes())
-    job = agent_mod.AgentJob(f"agent-{uuid.uuid4().hex[:12]}", text, manifest)
+    job = agent_mod.AgentJob(job_id, text, manifest)
+    agent_mod.ACTIVE_JOBS[job_id] = job
     try:
         sandbox_result = job.run()
         documents, code, rejected = agent_mod.read_outbox(job.dir)
@@ -563,10 +625,19 @@ def _run_agent_job(text: str, orcid: str) -> dict:
 
         accepted_ids: List[str] = []
         for doc in accepted:
-            agent_mod.attribute(doc, orcid, job.job_id)
-            store.put_node(doc)
-            for relpath, data in (code.get(doc["id"]) or {}).items():
-                store.put_code_file(doc["id"], relpath, data)
+            # Each node is stored independently: one that cannot be written
+            # must not abort the loop and leave the rest of a validated batch
+            # silently dropped. Code goes down first, so a failure part-way
+            # leaves no node pointing at a half-written sidecar.
+            try:
+                agent_mod.attribute(doc, orcid, job.job_id)
+                for relpath, data in (code.get(doc["id"]) or {}).items():
+                    store.put_code_file(doc["id"], relpath, data)
+                store.put_node(doc)
+            except Exception as exc:  # noqa: BLE001 - reported, not raised
+                _logger.exception("agent outbox node %s could not be stored", doc.get("id"))
+                rejected.append({"file": f"{doc.get('id')}.json", "reason": f"could not be stored: {exc}"})
+                continue
             accepted_ids.append(doc["id"])
 
         if accepted_ids:
@@ -576,7 +647,9 @@ def _run_agent_job(text: str, orcid: str) -> dict:
             "accepted": accepted_ids,
             "rejected": rejected,
             "transcript": job.transcript(),
+            "cancelled": job.cancelled,
             "sandbox": {k: v for k, v in sandbox_result.items() if k != "output"},
         }
     finally:
+        agent_mod.ACTIVE_JOBS.pop(job_id, None)
         job.cleanup()
