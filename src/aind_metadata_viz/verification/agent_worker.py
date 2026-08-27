@@ -121,21 +121,105 @@ def build_options(job_dir: str, model: str) -> ClaudeAgentOptions:
     )
 
 
+MAX_TOOL_INPUT_CHARS = 300
+MAX_TOOL_RESULT_CHARS = 500
+MAX_THINKING_CHARS = 500
+
+#: The input field(s) carrying the salient detail for each built-in tool. A
+#: bare tool name says nothing useful - the whole point of the transcript is
+#: that someone watching can see *what* is being run and step in.
+_TOOL_SUMMARY_FIELDS = {
+    "Bash": ("command",),
+    "Read": ("file_path",),
+    "Write": ("file_path",),
+    "Edit": ("file_path",),
+    "MultiEdit": ("file_path",),
+    "NotebookEdit": ("notebook_path", "file_path"),
+    "Glob": ("pattern", "path"),
+    "Grep": ("pattern", "path"),
+}
+
+
+def clip(value, limit: int) -> str:
+    """Collapse *value* to one line and truncate it to *limit* characters."""
+    text = " ".join(str(value).split())
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}... (+{len(text) - limit} more chars)"
+
+
+def summarize_tool_input(name: str, tool_input) -> str:
+    """Render the part of a tool's input a person watching would want to see."""
+    if not isinstance(tool_input, dict):
+        return clip(tool_input, MAX_TOOL_INPUT_CHARS)
+
+    fields = _TOOL_SUMMARY_FIELDS.get(name)
+    if fields:
+        parts = [str(tool_input[field]) for field in fields if tool_input.get(field)]
+        if parts:
+            summary = "  ".join(parts)
+            # A Write's content is elided, so say how much of it there is.
+            content = tool_input.get("content")
+            if content:
+                summary += f"  ({len(str(content))} chars)"
+            return clip(summary, MAX_TOOL_INPUT_CHARS)
+
+    return clip(json.dumps(tool_input, sort_keys=True, default=str), MAX_TOOL_INPUT_CHARS)
+
+
+def summarize_tool_result(content) -> str:
+    """Render a tool result, flattening the block list form the SDK may use."""
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict):
+                parts.append(str(item.get("text") or item.get("content") or ""))
+            else:
+                parts.append(str(getattr(item, "text", item)))
+        content = "\n".join(part for part in parts if part)
+    return clip(content, MAX_TOOL_RESULT_CHARS)
+
+
+def render_block(block) -> List[str]:
+    """Render one content block as transcript lines."""
+    thinking = getattr(block, "thinking", None)
+    if thinking:
+        return [f"  [thinking] {clip(thinking, MAX_THINKING_CHARS)}"]
+
+    text = getattr(block, "text", None)
+    if text:
+        return [str(text).rstrip()]
+
+    name = getattr(block, "name", None)
+    if name:
+        return [f"* {name}  {summarize_tool_input(name, getattr(block, 'input', None))}".rstrip()]
+
+    if getattr(block, "tool_use_id", None) is not None:
+        marker = "!!" if getattr(block, "is_error", False) else "->"
+        return [f"    {marker} {summarize_tool_result(getattr(block, 'content', ''))}"]
+
+    return []
+
+
 def render(message) -> str:
     """Render one SDK message as transcript text."""
     lines: List[str] = []
     for block in getattr(message, "content", None) or []:
-        text = getattr(block, "text", None)
-        if text:
-            lines.append(text)
-            continue
-        name = getattr(block, "name", None)
-        if name:
-            lines.append(f"[tool: {name}]")
+        lines.extend(render_block(block))
+
+    # A denial is the single most useful thing to surface: it means the tool
+    # policy stopped the agent, and whoever is watching may want to steer
+    # rather than wait for it to flail.
+    for denial in getattr(message, "permission_denials", None) or []:
+        tool = getattr(denial, "tool_name", None) or (
+            denial.get("tool_name") if isinstance(denial, dict) else None
+        )
+        lines.append(f"    !! denied: {tool or clip(denial, MAX_TOOL_INPUT_CHARS)}")
+
     result = getattr(message, "result", None)
     if result:
-        lines.append(str(result))
-    return "\n".join(lines)
+        lines.append(str(result).rstrip())
+    return "\n".join(line for line in lines if line.strip())
 
 
 def stop_requested(job_dir: str) -> bool:

@@ -117,29 +117,143 @@ class WriteConfinementTestCase(unittest.TestCase):
             self.assertTrue(_denied(_call(self.guard, tool, {"file_path": "/etc/shadow"})), tool)
 
 
+class ClipTestCase(unittest.TestCase):
+    def test_short_text_is_untouched(self):
+        self.assertEqual(agent_worker.clip("hello", 50), "hello")
+
+    def test_newlines_are_collapsed_to_one_line(self):
+        self.assertEqual(agent_worker.clip("a\n  b\n\tc", 50), "a b c")
+
+    def test_long_text_is_truncated_and_says_how_much_was_dropped(self):
+        clipped = agent_worker.clip("x" * 30, 10)
+        self.assertTrue(clipped.startswith("x" * 10))
+        self.assertIn("+20 more chars", clipped)
+
+
+class ToolSummaryTestCase(unittest.TestCase):
+    def test_a_bash_command_is_shown_in_full(self):
+        summary = agent_worker.summarize_tool_input("Bash", {"command": "pytest -q", "description": "run tests"})
+        self.assertEqual(summary, "pytest -q")
+
+    def test_a_file_tool_shows_its_path(self):
+        for tool in ("Read", "Edit", "MultiEdit"):
+            self.assertEqual(
+                agent_worker.summarize_tool_input(tool, {"file_path": "outbox/nodes/a.json"}),
+                "outbox/nodes/a.json", tool)
+
+    def test_a_write_says_how_much_it_is_writing(self):
+        summary = agent_worker.summarize_tool_input("Write", {"file_path": "a.py", "content": "y" * 40})
+        # clip() collapses runs of whitespace, so the separator is one space.
+        self.assertEqual(summary, "a.py (40 chars)")
+
+    def test_a_search_shows_pattern_and_path(self):
+        summary = agent_worker.summarize_tool_input("Grep", {"pattern": "responds_to", "path": "outbox/"})
+        self.assertEqual(summary, "responds_to outbox/")
+
+    def test_an_unknown_tool_falls_back_to_its_whole_input(self):
+        summary = agent_worker.summarize_tool_input("Mystery", {"b": 2, "a": 1})
+        self.assertEqual(summary, '{"a": 1, "b": 2}')
+
+    def test_a_known_tool_with_none_of_its_fields_falls_back(self):
+        self.assertIn("other", agent_worker.summarize_tool_input("Bash", {"other": "x"}))
+
+    def test_a_non_dict_input_is_stringified(self):
+        self.assertEqual(agent_worker.summarize_tool_input("Bash", "raw"), "raw")
+
+    def test_a_long_command_is_truncated(self):
+        summary = agent_worker.summarize_tool_input("Bash", {"command": "x" * 900})
+        self.assertLess(len(summary), 400)
+        self.assertIn("more chars", summary)
+
+
+class ToolResultSummaryTestCase(unittest.TestCase):
+    def test_a_plain_string_result(self):
+        self.assertEqual(agent_worker.summarize_tool_result("3 passed"), "3 passed")
+
+    def test_a_block_list_result_is_flattened(self):
+        blocks = [{"type": "text", "text": "first"}, {"type": "text", "text": "second"}]
+        self.assertEqual(agent_worker.summarize_tool_result(blocks), "first second")
+
+    def test_a_block_list_of_objects_is_flattened(self):
+        self.assertEqual(agent_worker.summarize_tool_result([_Block(text="only")]), "only")
+
+    def test_a_block_with_content_instead_of_text(self):
+        self.assertEqual(agent_worker.summarize_tool_result([{"content": "body"}]), "body")
+
+    def test_a_long_result_is_truncated(self):
+        self.assertIn("more chars", agent_worker.summarize_tool_result("z" * 2000))
+
+
+class RenderBlockTestCase(unittest.TestCase):
+    def test_a_text_block_renders_verbatim(self):
+        self.assertEqual(agent_worker.render_block(_Block(text="hello")), ["hello"])
+
+    def test_a_thinking_block_is_labelled(self):
+        rendered = agent_worker.render_block(_Block(thinking="planning the decomposition"))
+        self.assertIn("[thinking] planning the decomposition", rendered[0])
+
+    def test_a_tool_use_block_shows_the_tool_and_its_input(self):
+        block = _Block(name="Bash", input={"command": "pytest -q"})
+        self.assertEqual(agent_worker.render_block(block), ["* Bash  pytest -q"])
+
+    def test_a_tool_result_block_is_indented_under_its_call(self):
+        block = _Block(tool_use_id="t1", content="3 passed", is_error=False)
+        self.assertEqual(agent_worker.render_block(block), ["    -> 3 passed"])
+
+    def test_a_failed_tool_result_is_marked(self):
+        block = _Block(tool_use_id="t1", content="permission denied", is_error=True)
+        self.assertEqual(agent_worker.render_block(block), ["    !! permission denied"])
+
+    def test_an_unrecognized_block_renders_nothing(self):
+        self.assertEqual(agent_worker.render_block(_Block(other="x")), [])
+
+
 class RenderTestCase(unittest.TestCase):
     class _Message:
         """Stand-in for an SDK message with explicit content blocks."""
 
-        def __init__(self, content=None, result=None):
-            """Take content blocks and an optional result."""
+        def __init__(self, content=None, result=None, permission_denials=None):
+            """Take content blocks, an optional result, and optional denials."""
             self.content = content or []
             if result is not None:
                 self.result = result
+            if permission_denials is not None:
+                self.permission_denials = permission_denials
 
     def test_text_blocks_are_rendered(self):
         message = self._Message(content=[_Block(text="hello")])
         self.assertEqual(agent_worker.render(message), "hello")
 
-    def test_tool_calls_are_summarized(self):
-        message = self._Message(content=[_Block(name="Write")])
-        self.assertIn("[tool: Write]", agent_worker.render(message))
+    def test_a_tool_call_shows_what_it_is_doing(self):
+        message = self._Message(content=[_Block(name="Write", input={"file_path": "a.py"})])
+        self.assertEqual(agent_worker.render(message), "* Write  a.py")
+
+    def test_a_call_and_its_result_read_as_a_pair(self):
+        message = self._Message(content=[
+            _Block(name="Bash", input={"command": "ls"}),
+            _Block(tool_use_id="t", content="a.py", is_error=False),
+        ])
+        self.assertEqual(agent_worker.render(message), "* Bash  ls\n    -> a.py")
 
     def test_a_result_message_is_rendered(self):
         self.assertIn("done", agent_worker.render(self._Message(result="done")))
 
+    def test_a_permission_denial_is_surfaced(self):
+        # The most important thing to see: the policy stopped the agent, and
+        # whoever is watching may want to steer instead of waiting.
+        message = self._Message(permission_denials=[{"tool_name": "WebFetch"}])
+        self.assertIn("!! denied: WebFetch", agent_worker.render(message))
+
+    def test_a_denial_without_a_tool_name_still_renders(self):
+        message = self._Message(permission_denials=["something odd"])
+        self.assertIn("denied:", agent_worker.render(message))
+
     def test_an_empty_message_renders_empty(self):
         self.assertEqual(agent_worker.render(self._Message()), "")
+
+    def test_blank_lines_are_dropped(self):
+        message = self._Message(content=[_Block(text="   "), _Block(text="kept")])
+        self.assertEqual(agent_worker.render(message), "kept")
 
 
 class MainTestCase(unittest.TestCase):
