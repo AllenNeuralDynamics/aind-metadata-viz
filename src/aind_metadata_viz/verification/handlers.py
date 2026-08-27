@@ -6,9 +6,15 @@ logs behind it. Write endpoints require an ORCID login, reached from the data
 portal through its same-origin ``/metadata-viz`` nginx proxy - the portal's
 wildcard CORS cannot carry cookies, so cross-origin writes are not an option.
 
+Nodes are authored by agents running on the *client's* machine (see the
+``skills/verification-graph`` folder in the data portal's repo), which reach
+these endpoints like any other client. The server owns storage, validation and
+verification; it does not run an LLM.
+
 Promotion out of ``proposed`` is deliberately narrow: an admin can approve a
-node only once its code gates and its reproducibility run have passed. See
-/docs (Swagger UI) for full schemas.
+node only once its code gates and its reproducibility run have passed, and the
+reproducibility run is executed *here*, in a sandbox, not taken on trust from
+whoever submitted the node. See /docs (Swagger UI) for full schemas.
 """
 
 from __future__ import annotations
@@ -17,18 +23,15 @@ import asyncio
 import logging
 import re
 import uuid
-from typing import List, Optional
+from typing import Optional
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse, Response
 
 from ..auth import require_admin, require_user
-from ..chat.ratelimit import RateLimiter
-from . import agent as agent_mod
 from . import runner as runner_mod
 from . import store
 from .graph import (
-    compile_manifest,
     filter_by_status,
     mark_descendants_stale,
     now_iso,
@@ -38,21 +41,16 @@ from .graph import (
 from .jobs import queue
 from .models import (
     AXIS_NAMES,
-    AgentJobRequest,
     AnyNodeCreate,
     CodeListing,
     GraphSnapshot,
     JobStatus,
-    SteerRequest,
     VerifyRequest,
 )
 
 _logger = logging.getLogger(__name__)
 
 verification_router = APIRouter(prefix="/verification", tags=["verification"])
-
-#: Agent jobs are expensive; one per user per minute, twenty a day.
-agent_rate_limiter = RateLimiter(per_minute=1, per_day=20, burst=1)
 
 MAX_CODE_UPLOAD_BYTES = store.MAX_CODE_FILE_BYTES
 
@@ -117,7 +115,7 @@ async def graph_get(
     "/manifest",
     summary="Get the compact node index",
     description="Returns `[{id, kind, label, status, updated}, ...]` for every node - the index "
-    "the agent searches for reusable nodes before authoring new ones.",
+    "a locally-run authoring agent searches for reusable nodes before writing new ones.",
 )
 async def manifest_get():
     """Return the compact id -> summary index."""
@@ -491,193 +489,15 @@ async def node_approve_post(request: Request, node_id: str):
 
 
 @verification_router.get(
-    "/jobs",
-    response_model=List[JobStatus],
-    summary="List the caller's jobs",
-    description=(
-        "Requires an ORCID login. Returns the caller's own verification and agent jobs, newest "
-        "first; admins see everyone's. `kind` narrows to `verify` or `agent`, and `active=true` "
-        "to jobs still queued or running. This is how a reloaded page finds a session that is "
-        "still going, since job ids are held in memory and not otherwise discoverable."
-    ),
-)
-async def jobs_get(
-    request: Request,
-    kind: Optional[str] = Query(default=None, description="Narrow to 'verify' or 'agent'"),
-    active: bool = Query(default=False, description="Only jobs still queued or running"),
-):
-    """Return the caller's jobs, newest first."""
-    user = require_user(request)
-    records = queue.list_jobs(kind)
-    if not user.get("is_admin"):
-        records = [r for r in records if r.get("orcid") == user["orcid"]]
-    if active:
-        records = [r for r in records if r.get("state") in ("queued", "running")]
-    return records
-
-
-@verification_router.get(
     "/jobs/{job_id}",
     response_model=JobStatus,
     summary="Get a job's status",
-    description="Returns the lifecycle state of a verification or agent job, plus its result "
-    "once it finishes. Agent jobs also carry a tail of the agent's transcript.",
+    description="Returns the lifecycle state of a queued verification run, plus its result "
+    "once it finishes. Poll this after POSTing to /nodes/{node_id}/verify.",
 )
 async def job_get(job_id: str):
     """Return one job's status record."""
     record = queue.get(job_id)
     if record is None:
         return _error(404, f"no job '{job_id}'")
-    live = agent_mod.ACTIVE_JOBS.get(job_id)
-    if live is not None:
-        # Read the transcript off disk so the panel can watch a session as it
-        # works, rather than seeing nothing until the job ends.
-        record["transcript"] = live.transcript()
-        record["cancelled"] = live.cancelled
     return record
-
-
-@verification_router.get(
-    "/agent/jobs/{job_id}",
-    response_model=JobStatus,
-    summary="Get an agent job's status and transcript tail",
-    description="Same record as `GET /verification/jobs/{job_id}`; kept as a separate path "
-    "because the graph page polls it while an authoring job runs.",
-)
-async def agent_job_get(job_id: str):
-    """Return one agent job's status record."""
-    return await job_get(job_id)
-
-
-@verification_router.post(
-    "/jobs/{job_id}/cancel",
-    summary="Stop a running agent session",
-    description=(
-        "Requires an ORCID login. Asks a running session to stop and kills its process group "
-        "if it does not exit on its own. Whatever the agent already wrote to its outbox is "
-        "still harvested and validated, so cancelling loses the session, not the finished work. "
-        "404 if the job is unknown; 409 if it has already finished."
-    ),
-)
-async def job_cancel_post(request: Request, job_id: str):
-    """Stop a running agent session."""
-    require_user(request)
-    record = queue.get(job_id)
-    if record is None:
-        return _error(404, f"no job '{job_id}'")
-    live = agent_mod.ACTIVE_JOBS.get(job_id)
-    if live is None:
-        return _error(409, f"job '{job_id}' is not running (state: {record.get('state')})")
-
-    signalled = await asyncio.to_thread(live.cancel)
-    queue.update(job_id, cancelled=True)
-    return JSONResponse(content={"job_id": job_id, "cancelled": True, "signalled": signalled})
-
-
-@verification_router.post(
-    "/jobs/{job_id}/steer",
-    summary="Send a live instruction to a running agent session",
-    description=(
-        "Requires an ORCID login. Body: `{\"message\": \"...\"}`. The instruction is queued and "
-        "picked up at the session's next turn, then appears in the transcript. Steering guides "
-        "the session; it does not widen what the agent may do - the tool policy and the outbox "
-        "contract are unchanged. 404 if the job is unknown; 409 if it is not running."
-    ),
-)
-async def job_steer_post(request: Request, job_id: str, body: SteerRequest):
-    """Queue a live instruction for a running agent session."""
-    require_user(request)
-    record = queue.get(job_id)
-    if record is None:
-        return _error(404, f"no job '{job_id}'")
-    live = agent_mod.ACTIVE_JOBS.get(job_id)
-    if live is None:
-        return _error(409, f"job '{job_id}' is not running (state: {record.get('state')})")
-
-    try:
-        await asyncio.to_thread(live.steer, body.message)
-    except ValueError as exc:
-        return _error(400, str(exc))
-    return JSONResponse(content={"job_id": job_id, "queued": True})
-
-
-@verification_router.post(
-    "/agent/jobs",
-    response_model=JobStatus,
-    summary="Ask the agent to author nodes for a claim",
-    description=(
-        "Requires an ORCID login, rate-limited per user. Body: "
-        "`{\"request\": \"Verify that 30% of CA3 units respond to vis1\", \"root_node\": null}`. "
-        "Spawns a sandboxed Claude Agent SDK session with the graph schema, dataset, "
-        "node-authoring and "
-        "recursive-verification skills and a read-only export of the manifest. The agent has no "
-        "write access to the graph: it writes into an outbox, and on exit the server validates "
-        "everything through the same path as `POST /verification/nodes` and inserts what passes "
-        "as `proposed` nodes attributed to `<orcid> via agent job <id>`."
-    ),
-)
-async def agent_job_post(request: Request, body: AgentJobRequest):
-    """Queue a sandboxed agent job to author nodes for a claim."""
-    user = require_user(request)
-    text = (body.request or "").strip()
-    if not text:
-        return _error(400, "'request' is required")
-    if len(text.encode("utf-8")) > agent_mod.MAX_REQUEST_BYTES:
-        return _error(400, f"'request' exceeds {agent_mod.MAX_REQUEST_BYTES} bytes")
-
-    allowed, message = agent_rate_limiter.check("verification-agent", user["orcid"])
-    if not allowed:
-        return _error(429, message)
-
-    job_id = f"agent-{uuid.uuid4().hex[:12]}"
-    record = await queue.submit(
-        "agent",
-        lambda: _run_agent_job(text, user["orcid"], job_id),
-        job_id=job_id,
-        orcid=user["orcid"],
-    )
-    return record
-
-
-def _run_agent_job(text: str, orcid: str, job_id: str) -> dict:
-    """Blocking body of an agent job: run sandboxed, then validate the outbox."""
-    manifest = compile_manifest(store.list_nodes())
-    job = agent_mod.AgentJob(job_id, text, manifest)
-    agent_mod.ACTIVE_JOBS[job_id] = job
-    try:
-        sandbox_result = job.run()
-        documents, code, rejected = agent_mod.read_outbox(job.dir)
-        existing = store.nodes_by_id()
-        accepted, more_rejected = agent_mod.validate_outbox(documents, existing)
-        rejected.extend(more_rejected)
-
-        accepted_ids: List[str] = []
-        for doc in accepted:
-            # Each node is stored independently: one that cannot be written
-            # must not abort the loop and leave the rest of a validated batch
-            # silently dropped. Code goes down first, so a failure part-way
-            # leaves no node pointing at a half-written sidecar.
-            try:
-                agent_mod.attribute(doc, orcid, job.job_id)
-                for relpath, data in (code.get(doc["id"]) or {}).items():
-                    store.put_code_file(doc["id"], relpath, data)
-                store.put_node(doc)
-            except Exception as exc:  # noqa: BLE001 - reported, not raised
-                _logger.exception("agent outbox node %s could not be stored", doc.get("id"))
-                rejected.append({"file": f"{doc.get('id')}.json", "reason": f"could not be stored: {exc}"})
-                continue
-            accepted_ids.append(doc["id"])
-
-        if accepted_ids:
-            store.recompile()
-
-        return {
-            "accepted": accepted_ids,
-            "rejected": rejected,
-            "transcript": job.transcript(),
-            "cancelled": job.cancelled,
-            "sandbox": {k: v for k, v in sandbox_result.items() if k != "output"},
-        }
-    finally:
-        agent_mod.ACTIVE_JOBS.pop(job_id, None)
-        job.cleanup()

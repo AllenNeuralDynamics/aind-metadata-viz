@@ -332,7 +332,7 @@ class JobStatus(BaseModel):
     """Status of a queued runner or agent job."""
 
     job_id: str = Field(..., description="Job identifier")
-    kind: Literal["verify", "agent"] = Field(..., description="What sort of job this is")
+    kind: Literal["verify"] = Field(..., description="What sort of job this is")
     state: Literal["queued", "running", "done", "failed"] = Field(..., description="Lifecycle state")
     node_id: Optional[str] = Field(default=None, description="Node the job targets, for verify jobs")
     axis: Optional[AxisName] = Field(default=None, description="Axis the job runs, for verify jobs")
@@ -340,28 +340,6 @@ class JobStatus(BaseModel):
     finished: Optional[str] = Field(default=None, description="ISO-8601 UTC timestamp the job ended")
     error: Optional[str] = Field(default=None, description="Failure message, when state is 'failed'")
     result: Optional[Dict[str, Any]] = Field(default=None, description="Job outcome payload")
-    transcript: Optional[str] = Field(default=None, description="Tail of the agent transcript, for agent jobs")
-    cancelled: bool = Field(default=False, description="Whether the session was stopped on request")
-    accepted: List[str] = Field(default_factory=list, description="Node ids accepted from an agent outbox")
-    rejected: List[Dict[str, Any]] = Field(
-        default_factory=list, description="Outbox entries that failed validation, with reasons"
-    )
-
-
-class SteerRequest(BaseModel):
-    """Request body for ``POST /verification/jobs/{job_id}/steer``."""
-
-    message: str = Field(..., description="Live instruction for the running session")
-
-
-class AgentJobRequest(BaseModel):
-    """Request body for ``POST /verification/agent/jobs``."""
-
-    request: str = Field(
-        ...,
-        description="Plain-English claim to author, e.g. 'Verify that 30% of CA3 units respond to vis1'",
-    )
-    root_node: Optional[str] = Field(default=None, description="Optional node id to start from")
 
 
 class CodeFile(BaseModel):

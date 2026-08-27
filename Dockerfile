@@ -18,8 +18,8 @@ RUN apt-get install -y postgresql
 # verification/sandbox.py). `coreutils` supplies timeout/nice.
 RUN apt-get install -y python3-venv coreutils curl
 RUN useradd --system --create-home --shell /usr/sbin/nologin vgraph
-RUN mkdir -p /tmp/vgraph-jobs /tmp/vgraph-venvs /tmp/vgraph-agent && \
-    chown vgraph:vgraph /tmp/vgraph-jobs /tmp/vgraph-venvs /tmp/vgraph-agent
+RUN mkdir -p /tmp/vgraph-jobs /tmp/vgraph-venvs && \
+    chown vgraph:vgraph /tmp/vgraph-jobs /tmp/vgraph-venvs
 RUN pip install . --no-cache-dir
 RUN mkdir /root/.aws && \
     cat <<EOF > /root/.aws/config

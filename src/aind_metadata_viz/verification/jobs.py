@@ -1,14 +1,14 @@
-"""In-process serial job queue for verification runs and agent jobs.
+"""In-process serial job queue for verification runs.
 
-Both kinds of work execute untrusted code under a CPU and memory budget, so
-they run **one at a time**: a single worker task pulls from an ``asyncio``
-queue and awaits each job in a thread. The portal is a single uvicorn process
-today - the same constraint the in-memory chat rate limiter already accepts -
-so an in-process queue is the right size for the demo. Moving the work to a
-separate ECS task later changes this module and nothing else.
+A verification run executes untrusted node code under a CPU and memory budget,
+so runs happen **one at a time**: a single worker task pulls from an
+``asyncio`` queue and awaits each job in a thread. The portal is a single
+uvicorn process today - the same constraint the in-memory chat rate limiter
+already accepts - so an in-process queue is the right size for this. Moving
+the work to a separate ECS task later changes this module and nothing else.
 
 Job records are kept in memory, newest ``MAX_JOBS`` retained, and are what
-``GET /verification/agent/jobs/{job_id}`` polls.
+``GET /verification/jobs/{job_id}`` polls.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ import asyncio
 import logging
 import uuid
 from collections import OrderedDict
-from typing import Callable, Dict, Optional
+from typing import Callable, Optional
 
 from .graph import now_iso
 
@@ -40,14 +40,6 @@ class JobQueue:
         """Return a copy of a job's record, or None when it is unknown."""
         record = self._jobs.get(job_id)
         return dict(record) if record else None
-
-    def list_jobs(self, kind: Optional[str] = None) -> list:
-        """Return every retained job record, newest first."""
-        records = [dict(r) for r in self._jobs.values()]
-        if kind:
-            records = [r for r in records if r.get("kind") == kind]
-        records.reverse()
-        return records
 
     async def submit(
         self, kind: str, work: Callable[[], dict], job_id: Optional[str] = None, **fields
@@ -83,13 +75,24 @@ class JobQueue:
         return dict(record)
 
     async def _run_worker(self) -> None:
-        """Drain the queue one job at a time until it is empty."""
+        """Drain the queue one job at a time until it is empty.
+
+        Retiring is done under the lock, and only after re-checking that the
+        queue really is empty. Without that there is a window where a
+        ``submit`` sees a worker that has decided to stop but has not finished
+        stopping, declines to start a replacement, and leaves its job sitting
+        in ``queued`` for ever.
+        """
         assert self._queue is not None
         while True:
             try:
                 job_id, work = self._queue.get_nowait()
             except asyncio.QueueEmpty:
-                return
+                async with self._lock:
+                    if self._queue.empty():
+                        self._worker = None
+                        return
+                continue
             await self._run_one(job_id, work)
 
     async def _run_one(self, job_id: str, work: Callable[[], dict]) -> None:
@@ -122,12 +125,3 @@ class JobQueue:
 #: The process-wide queue. Verification runs and agent jobs share it, so heavy
 #: work never overlaps.
 queue = JobQueue()
-
-
-def job_counts() -> Dict[str, int]:
-    """Return how many retained jobs sit in each lifecycle state."""
-    counts: Dict[str, int] = {}
-    for record in queue.list_jobs():
-        state = record.get("state", "unknown")
-        counts[state] = counts.get(state, 0) + 1
-    return counts
