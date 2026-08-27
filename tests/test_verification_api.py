@@ -20,6 +20,7 @@ client = TestClient(_app)
 
 _ALICE = {"orcid": "0000-0001-2345-6789", "name": "Alice", "is_admin": False}
 _ADMIN = {"orcid": "0000-0002-0000-0000", "name": "Root", "is_admin": True}
+_BOB = {"orcid": "0000-0003-1111-2222", "name": "Bob", "is_admin": False}
 
 
 class _FakePaginator:
@@ -639,6 +640,75 @@ class LiveJobControlTestCase(ApiTestCase):
         body = client.get(f"/verification/jobs/{job_id}").json()
         self.assertEqual(body["transcript"], "working...")
         self.assertFalse(body["cancelled"])
+
+
+class JobListingTestCase(ApiTestCase):
+    """Listing jobs, which is how a reloaded page finds a live session."""
+
+    def setUp(self):
+        super().setUp()
+        queue.reset()
+        self.addCleanup(queue.reset)
+
+    def _submit(self, kind, job_id, orcid, state="running", **fields):
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(
+                queue.submit(kind, lambda: {}, job_id=job_id, orcid=orcid, **fields)
+            )
+        finally:
+            loop.close()
+        queue.update(job_id, state=state)
+
+    def test_listing_requires_a_login(self):
+        with _patch_user(None):
+            self.assertEqual(client.get("/verification/jobs").status_code, 401)
+
+    def test_a_user_sees_only_their_own_jobs(self):
+        self._submit("agent", "agent-alice", _ALICE["orcid"])
+        self._submit("agent", "agent-bob", _BOB["orcid"])
+        with _patch_user(_ALICE):
+            body = client.get("/verification/jobs").json()
+        self.assertEqual([j["job_id"] for j in body], ["agent-alice"])
+
+    def test_an_admin_sees_every_job(self):
+        self._submit("agent", "agent-alice", _ALICE["orcid"])
+        self._submit("agent", "agent-bob", _BOB["orcid"])
+        with _patch_user(_ADMIN):
+            body = client.get("/verification/jobs").json()
+        self.assertEqual({j["job_id"] for j in body}, {"agent-alice", "agent-bob"})
+
+    def test_the_kind_filter_narrows_to_agent_jobs(self):
+        self._submit("agent", "agent-1", _ALICE["orcid"])
+        self._submit("verify", "verify-1", _ALICE["orcid"], node_id="stmt-a", axis="reproducible")
+        with _patch_user(_ALICE):
+            body = client.get("/verification/jobs?kind=agent").json()
+        self.assertEqual([j["job_id"] for j in body], ["agent-1"])
+
+    def test_the_active_filter_drops_finished_jobs(self):
+        self._submit("agent", "agent-live", _ALICE["orcid"], state="running")
+        self._submit("agent", "agent-done", _ALICE["orcid"], state="done")
+        with _patch_user(_ALICE):
+            body = client.get("/verification/jobs?active=true").json()
+        self.assertEqual([j["job_id"] for j in body], ["agent-live"])
+
+    def test_a_queued_job_still_counts_as_active(self):
+        self._submit("agent", "agent-queued", _ALICE["orcid"], state="queued")
+        with _patch_user(_ALICE):
+            body = client.get("/verification/jobs?active=true").json()
+        self.assertEqual([j["job_id"] for j in body], ["agent-queued"])
+
+    def test_the_owner_is_not_exposed_in_the_response(self):
+        self._submit("agent", "agent-1", _ALICE["orcid"])
+        with _patch_user(_ALICE):
+            body = client.get("/verification/jobs").json()
+        self.assertNotIn("orcid", body[0])
+
+    def test_an_agent_job_records_its_owner(self):
+        with _patch_user(_ALICE), patch.object(handlers, "_run_agent_job", return_value={}):
+            response = client.post("/verification/agent/jobs", json={"request": "Verify CA3"})
+        job_id = response.json()["job_id"]
+        self.assertEqual(queue.get(job_id)["orcid"], _ALICE["orcid"])
 
 
 class IdGenerationTestCase(unittest.TestCase):

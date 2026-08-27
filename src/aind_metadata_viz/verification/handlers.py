@@ -398,6 +398,7 @@ async def node_verify_post(request: Request, node_id: str, body: VerifyRequest):
         lambda: _run_verification(node_id, body.axis, user["orcid"]),
         node_id=node_id,
         axis=body.axis,
+        orcid=user["orcid"],
     )
     return record
 
@@ -487,6 +488,32 @@ async def node_approve_post(request: Request, node_id: str):
 # --------------------------------------------------------------------------
 # Jobs
 # --------------------------------------------------------------------------
+
+
+@verification_router.get(
+    "/jobs",
+    response_model=List[JobStatus],
+    summary="List the caller's jobs",
+    description=(
+        "Requires an ORCID login. Returns the caller's own verification and agent jobs, newest "
+        "first; admins see everyone's. `kind` narrows to `verify` or `agent`, and `active=true` "
+        "to jobs still queued or running. This is how a reloaded page finds a session that is "
+        "still going, since job ids are held in memory and not otherwise discoverable."
+    ),
+)
+async def jobs_get(
+    request: Request,
+    kind: Optional[str] = Query(default=None, description="Narrow to 'verify' or 'agent'"),
+    active: bool = Query(default=False, description="Only jobs still queued or running"),
+):
+    """Return the caller's jobs, newest first."""
+    user = require_user(request)
+    records = queue.list_jobs(kind)
+    if not user.get("is_admin"):
+        records = [r for r in records if r.get("orcid") == user["orcid"]]
+    if active:
+        records = [r for r in records if r.get("state") in ("queued", "running")]
+    return records
 
 
 @verification_router.get(
@@ -607,6 +634,7 @@ async def agent_job_post(request: Request, body: AgentJobRequest):
         "agent",
         lambda: _run_agent_job(text, user["orcid"], job_id),
         job_id=job_id,
+        orcid=user["orcid"],
     )
     return record
 
