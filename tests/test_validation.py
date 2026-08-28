@@ -254,31 +254,31 @@ class TestUpgradeEndpoint(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("No recognized metadata fields", response.json()["error"])
 
-    @patch("aind_metadata_viz.endpoints.retrieve_records")
-    def test_upgrade_by_asset_name(self, mock_retrieve):
-        mock_result = Mock()
-        mock_result.records = [{"name": "test-asset", "subject": self._minimal_subject()}]
-        mock_retrieve.return_value = mock_result
+    @patch("aind_metadata_viz.endpoints.MetadataDbClient")
+    def test_upgrade_by_asset_name(self, mock_client_cls):
+        mock_client_cls.return_value.retrieve_docdb_records.return_value = [
+            {"name": "test-asset", "subject": self._minimal_subject()}
+        ]
 
         response = client.post("/upgrade?asset_name=test-asset")
         self.assertEqual(response.status_code, 200)
         body = response.json()
         self.assertIn("files_tested", body)
-        mock_retrieve.assert_called_once_with({"name": "test-asset"}, limit=1)
+        mock_client_cls.return_value.retrieve_docdb_records.assert_called_once_with(
+            filter_query={"name": "test-asset"}
+        )
 
-    @patch("aind_metadata_viz.endpoints.retrieve_records")
-    def test_upgrade_by_asset_name_not_found(self, mock_retrieve):
-        mock_result = Mock()
-        mock_result.records = []
-        mock_retrieve.return_value = mock_result
+    @patch("aind_metadata_viz.endpoints.MetadataDbClient")
+    def test_upgrade_by_asset_name_not_found(self, mock_client_cls):
+        mock_client_cls.return_value.retrieve_docdb_records.return_value = []
 
         response = client.post("/upgrade?asset_name=nonexistent")
         self.assertEqual(response.status_code, 404)
         self.assertIn("not found", response.json()["error"])
 
-    @patch("aind_metadata_viz.endpoints.retrieve_records")
-    def test_upgrade_by_asset_name_fetch_error(self, mock_retrieve):
-        mock_retrieve.side_effect = Exception("connection error")
+    @patch("aind_metadata_viz.endpoints.MetadataDbClient")
+    def test_upgrade_by_asset_name_fetch_error(self, mock_client_cls):
+        mock_client_cls.return_value.retrieve_docdb_records.side_effect = Exception("connection error")
 
         response = client.post("/upgrade?asset_name=test-asset")
         self.assertEqual(response.status_code, 500)
