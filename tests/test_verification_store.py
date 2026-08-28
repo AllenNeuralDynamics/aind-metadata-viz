@@ -167,9 +167,15 @@ class RunStorageTestCase(StoreTestCase):
         runs = store.list_runs("stmt-a")
         self.assertEqual([r["ran_at"] for r in runs], ["2026-08-27T00:00:00", "2026-08-26T00:00:00"])
 
-    def test_each_listed_run_names_its_log_prefix(self):
-        store.put_run("stmt-a", "2026-08-26T00-00-00", {"ran_at": "t"})
-        self.assertTrue(store.list_runs("stmt-a")[0]["log"].endswith("2026-08-26T00-00-00"))
+    def test_each_listed_run_omits_its_full_log_text(self):
+        store.put_run(
+            "stmt-a", "2026-08-26T00-00-00",
+            {"ran_at": "t", "stamp": "2026-08-26T00-00-00", "log": "big"}, "big",
+        )
+        listed = store.list_runs("stmt-a")[0]
+        self.assertNotIn("log", listed)
+        self.assertEqual(listed["stamp"], "2026-08-26T00-00-00")
+        self.assertEqual(store.get_run_log("stmt-a", listed["stamp"]), "big")
 
 
 class DerivedDocumentTestCase(StoreTestCase):

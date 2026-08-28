@@ -207,6 +207,26 @@ async def node_runs_get(node_id: str):
 
 
 @verification_router.get(
+    "/nodes/{node_id}/runs/{stamp}/log",
+    summary="Get one run's full log text",
+    description="Returns the raw stdout/stderr captured during one verification run, keyed by "
+    "the `stamp` from that run's entry in `GET .../runs`. 404 if no such run is stored.",
+)
+async def node_run_log_get(node_id: str, stamp: str):
+    """Return the full log text for one run."""
+    try:
+        log = await asyncio.to_thread(store.get_run_log, node_id, stamp)
+    except store.InvalidId as exc:
+        return _error(400, str(exc))
+    except Exception as exc:  # noqa: BLE001
+        _logger.exception("GET /verification/nodes/%s/runs/%s/log", node_id, stamp)
+        return _error(500, str(exc))
+    if log is None:
+        return _error(404, f"no log for run '{stamp}'")
+    return Response(content=log, media_type="text/plain; charset=utf-8")
+
+
+@verification_router.get(
     "/nodes/{node_id}/history",
     summary="Get a node document's version history",
     description="Returns previous versions of the node document, newest first. Each write "

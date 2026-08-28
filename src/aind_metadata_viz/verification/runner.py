@@ -28,7 +28,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import re
 import shutil
 import sys
 import tempfile
@@ -391,11 +390,7 @@ def verify_node(
     that could not even start comes back with ``passed: False`` and a reason,
     never as a silent skip.
     """
-    # now_iso() includes a UTC offset like "+00:00"; store.safe_code_path (which
-    # this stamp is later validated against, since it becomes an S3 key
-    # component under runs/<node-id>/<stamp>/) only allows
-    # [A-Za-z0-9._-], so every other character - not just ":" - must go.
-    stamp = re.sub(r"[^A-Za-z0-9._-]", "-", now_iso())
+    stamp = now_iso().replace(":", "-")
     record = {
         "node_id": node.get("id"),
         "axis": axis,

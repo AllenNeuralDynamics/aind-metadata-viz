@@ -174,6 +174,36 @@ class ReadEndpointTestCase(ApiTestCase):
         body = client.get("/verification/nodes/stmt-a/runs").json()
         self.assertEqual(body[0]["axis"], "reproducible")
 
+    def test_a_runs_entry_carries_its_stamp_for_fetching_the_log(self):
+        self._seed()
+        store.put_run(
+            "stmt-a", "2026-08-26T00-00-00",
+            {"axis": "reproducible", "ran_at": "t", "passed": True, "stamp": "2026-08-26T00-00-00"}, "the log body",
+        )
+        body = client.get("/verification/nodes/stmt-a/runs").json()
+        self.assertNotIn("log", body[0])
+        self.assertEqual(body[0]["stamp"], "2026-08-26T00-00-00")
+
+    def test_a_runs_log_is_fetched_by_stamp(self):
+        self._seed()
+        store.put_run(
+            "stmt-a", "2026-08-26T00-00-00",
+            {"axis": "reproducible", "ran_at": "t", "stamp": "2026-08-26T00-00-00"}, "the log body",
+        )
+        response = client.get("/verification/nodes/stmt-a/runs/2026-08-26T00-00-00/log")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.text, "the log body")
+
+    def test_an_unknown_run_log_is_404(self):
+        self._seed()
+        response = client.get("/verification/nodes/stmt-a/runs/2026-08-26T00-00-00/log")
+        self.assertEqual(response.status_code, 404)
+
+    def test_a_traversing_run_stamp_is_400(self):
+        self._seed()
+        response = client.get("/verification/nodes/stmt-a/runs/%2E%2E/log")
+        self.assertEqual(response.status_code, 400)
+
     def test_document_history_is_served(self):
         self._seed()
         doc = store.get_node("stmt-a")

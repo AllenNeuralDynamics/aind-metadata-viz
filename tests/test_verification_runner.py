@@ -505,10 +505,9 @@ class VerifyNodeTestCase(unittest.TestCase):
         self.assertEqual(record["result_hash"], runner.result_hash({"holds": True}))
 
     def test_the_stamp_is_a_valid_store_path(self):
-        # now_iso() includes a "+00:00" UTC offset. store.put_run feeds this
-        # stamp straight into store.safe_code_path to build the run's S3 key,
-        # so a stamp containing "+" makes every run fail with
-        # InvalidId("invalid code path ...") before anything is even stored.
+        # store.put_run feeds this stamp straight into store.safe_code_path to
+        # build the run's S3 key, so anything now_iso() can produce here must
+        # pass that validator or every run fails to record its own result.
         record = runner.verify_node({"id": "stmt-a"}, {}, axis="reproducible")
         store.safe_code_path(record["stamp"])  # raises InvalidId if unsafe
 

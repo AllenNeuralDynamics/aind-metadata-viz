@@ -232,7 +232,13 @@ def put_run(node_id: str, stamp: str, result: dict, log: str = "") -> str:
 
 
 def list_runs(node_id: str) -> List[dict]:
-    """Return every recorded run for *node_id*, newest first."""
+    """Return every recorded run for *node_id*, newest first.
+
+    Each entry's full ``log`` text is dropped here - a node with many runs
+    would otherwise mean fetching every one's complete stdout/stderr just to
+    render a list. Fetch one run's log body with ``get_run_log(node_id,
+    result["stamp"])``.
+    """
     prefix = f"{RUNS_PREFIX}/{safe_id(node_id)}/"
     runs = []
     for key, _size in _list_keys(prefix):
@@ -240,7 +246,7 @@ def list_runs(node_id: str) -> List[dict]:
             continue
         result = _get_json(key)
         if result:
-            result["log"] = key[: -len("/result.json")]
+            result.pop("log", None)
             runs.append(result)
     runs.sort(key=lambda r: r.get("ran_at") or "", reverse=True)
     return runs

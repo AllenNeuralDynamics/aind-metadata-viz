@@ -11,10 +11,20 @@ from aind_metadata_viz.verification.graph import (
     filter_by_status,
     mark_descendants_stale,
     node_label,
+    now_iso,
     statement_sentence,
     subgraph,
     validate_node,
 )
+
+
+class NowIsoTestCase(unittest.TestCase):
+    def test_it_uses_z_rather_than_a_utc_offset(self):
+        # A '+' in the timestamp breaks callers that fold it into an S3 key
+        # (see verify_node's run stamp), so UTC must render as a bare 'Z'.
+        stamp = now_iso()
+        self.assertTrue(stamp.endswith("Z"))
+        self.assertNotIn("+", stamp)
 
 
 def entity(node_id, entity_type="unit", **extra):

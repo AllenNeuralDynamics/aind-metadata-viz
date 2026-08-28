@@ -18,8 +18,14 @@ from .models import AXIS_NAMES, STATUS_SEVERITY
 
 
 def now_iso() -> str:
-    """Return the current UTC time as an ISO-8601 string."""
-    return datetime.now(timezone.utc).isoformat()
+    """Return the current UTC time as an ISO-8601 string, e.g. '...T00:00:00.000000Z'.
+
+    Always UTC, so the '+00:00' offset isoformat() would otherwise append is
+    fixed and known - swapped for 'Z' rather than left in, since a few callers
+    (verify_node's run stamp) turn this straight into an S3 key component and
+    '+' is not a safe character there.
+    """
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _worst(*statuses: str) -> str:
