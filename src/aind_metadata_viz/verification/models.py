@@ -342,6 +342,37 @@ class JobStatus(BaseModel):
     result: Optional[Dict[str, Any]] = Field(default=None, description="Job outcome payload")
 
 
+class VerifyBatchRequest(BaseModel):
+    """Request body for ``POST /verification/verify-batch``.
+
+    Either name the nodes explicitly, or omit ``node_ids`` to target every
+    node in the graph that has a code sidecar (optionally narrowed further by
+    ``status``, e.g. ``"proposed"`` to skip anything already verified).
+    """
+
+    node_ids: Optional[List[str]] = Field(
+        default=None, description="Node ids to verify; omit to target every eligible node"
+    )
+    axis: AxisName = Field(default="reproducible", description="Which verification axis to run")
+    status: Optional[str] = Field(
+        default=None, description="When node_ids is omitted, restrict to nodes at this status"
+    )
+
+
+class SkippedNode(BaseModel):
+    """One node a batch verify request declined to queue."""
+
+    node_id: str = Field(..., description="The node that was skipped")
+    reason: str = Field(..., description="Why it was skipped, e.g. 'no code sidecar' or 'already queued'")
+
+
+class VerifyBatchResult(BaseModel):
+    """Response body for ``POST /verification/verify-batch``."""
+
+    queued: List[JobStatus] = Field(..., description="Jobs newly queued by this request")
+    skipped: List[SkippedNode] = Field(..., description="Eligible-looking nodes that were not queued, and why")
+
+
 class CodeFile(BaseModel):
     """One file in a node's code sidecar."""
 

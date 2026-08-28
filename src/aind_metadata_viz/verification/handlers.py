@@ -23,7 +23,7 @@ import asyncio
 import logging
 import re
 import uuid
-from typing import Optional
+from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse, Response
@@ -45,6 +45,8 @@ from .models import (
     CodeListing,
     GraphSnapshot,
     JobStatus,
+    VerifyBatchRequest,
+    VerifyBatchResult,
     VerifyRequest,
 )
 
@@ -53,6 +55,10 @@ _logger = logging.getLogger(__name__)
 verification_router = APIRouter(prefix="/verification", tags=["verification"])
 
 MAX_CODE_UPLOAD_BYTES = store.MAX_CODE_FILE_BYTES
+
+#: Per-call cap on POST /verify-batch, generous enough for "verify everything"
+#: on a graph with thousands of nodes while still bounding one request's size.
+MAX_VERIFY_BATCH = 5000
 
 
 def _slug(text: str) -> str:
@@ -401,6 +407,61 @@ async def node_verify_post(request: Request, node_id: str, body: VerifyRequest):
     return record
 
 
+@verification_router.post(
+    "/verify-batch",
+    response_model=VerifyBatchResult,
+    summary="Queue verification runs for many nodes at once",
+    description=(
+        "Requires an ORCID login. Body: `{\"node_ids\": [...]}`, or omit `node_ids` (optionally with "
+        "`\"status\": \"proposed\"`) to target every eligible node in the graph. A node with no code "
+        "sidecar, or already queued/running for this axis, is skipped rather than queued again - safe "
+        "to call repeatedly. Jobs still run one at a time server-side (see `jobs.py`); this only saves "
+        f"one HTTP round trip per node. Capped at {MAX_VERIFY_BATCH} nodes per call."
+    ),
+)
+async def verify_batch_post(request: Request, body: VerifyBatchRequest):
+    """Queue a verification run for every eligible node matching the request."""
+    user = require_user(request)
+    nodes = await asyncio.to_thread(store.nodes_by_id)
+
+    if body.node_ids is not None:
+        if len(body.node_ids) > MAX_VERIFY_BATCH:
+            return _error(400, f"at most {MAX_VERIFY_BATCH} node_ids per call")
+        targets = [(node_id, nodes.get(node_id)) for node_id in body.node_ids]
+    else:
+        eligible = [doc for doc in nodes.values() if doc.get("code")]
+        if body.status is not None:
+            eligible = [doc for doc in eligible if doc.get("status") == body.status]
+        if len(eligible) > MAX_VERIFY_BATCH:
+            return _error(
+                400,
+                f"{len(eligible)} nodes match; at most {MAX_VERIFY_BATCH} per call "
+                "- narrow with node_ids or status",
+            )
+        targets = [(doc["id"], doc) for doc in eligible]
+
+    queued: List[dict] = []
+    skipped: List[Dict[str, str]] = []
+    for node_id, doc in targets:
+        if doc is None:
+            skipped.append({"node_id": node_id, "reason": "no such node"})
+        elif not doc.get("code"):
+            skipped.append({"node_id": node_id, "reason": "no code sidecar"})
+        elif queue.pending(node_id, body.axis):
+            skipped.append({"node_id": node_id, "reason": "already queued or running"})
+        else:
+            record = await queue.submit(
+                "verify",
+                lambda node_id=node_id: _run_verification(node_id, body.axis, user["orcid"]),
+                node_id=node_id,
+                axis=body.axis,
+                orcid=user["orcid"],
+            )
+            queued.append(record)
+
+    return {"queued": queued, "skipped": skipped}
+
+
 def _run_verification(node_id: str, axis: str, orcid: str) -> dict:
     """Blocking body of a verification job: run, record, propagate, recompile."""
     doc = store.get_node(node_id)
@@ -486,6 +547,24 @@ async def node_approve_post(request: Request, node_id: str):
 # --------------------------------------------------------------------------
 # Jobs
 # --------------------------------------------------------------------------
+
+
+@verification_router.get(
+    "/jobs",
+    response_model=List[JobStatus],
+    summary="List recent verification jobs",
+    description=(
+        "Anonymous read, matching the rest of the graph. Newest first, optionally filtered by "
+        "`state` (queued/running/done/failed). This is the recent-activity window backing the "
+        "jobs panel - the durable per-node history lives at /nodes/{id}/runs."
+    ),
+)
+async def jobs_get(
+    state: Optional[str] = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=200),
+):
+    """Return recent job records, newest first."""
+    return queue.list(state=state, limit=limit)
 
 
 @verification_router.get(

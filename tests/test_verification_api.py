@@ -1,5 +1,7 @@
 """Tests for the verification graph's REST endpoints."""
 
+import asyncio
+import threading
 import unittest
 from io import BytesIO
 from unittest.mock import patch
@@ -387,6 +389,114 @@ class VerifyEndpointTestCase(ApiTestCase):
         snapshot = client.get("/verification/graph").json()
         top = next(n for n in snapshot["nodes"] if n["id"] == "stmt-top")
         self.assertEqual(top["effective_status"], "failed")
+
+
+class JobsListEndpointTestCase(ApiTestCase):
+    def test_lists_jobs_newest_first(self):
+        self._seed()
+        for name, data in CODE_FILES.items():
+            store.put_code_file("stmt-a", name, data)
+        record = {
+            "axis": "reproducible", "passed": True, "note": "ok", "stage": "complete",
+            "code_hash": "h", "env": "environment.lock", "result_hash": "r",
+            "ran_at": "t", "stamp": "2026-08-26T00-00-00", "log": "",
+        }
+        with patch.object(handlers.runner_mod, "verify_node", return_value=record):
+            with _patch_user(_ALICE):
+                client.post("/verification/nodes/stmt-a/verify", json={"axis": "reproducible"})
+
+        response = client.get("/verification/jobs")
+        self.assertEqual(response.status_code, 200)
+        jobs = response.json()
+        self.assertEqual(jobs[0]["node_id"], "stmt-a")
+
+    def test_filters_by_state(self):
+        self.assertEqual(client.get("/verification/jobs?state=running").json(), [])
+
+    def test_respects_limit(self):
+        response = client.get("/verification/jobs?limit=1")
+        self.assertEqual(response.status_code, 200)
+        self.assertLessEqual(len(response.json()), 1)
+
+    def test_rejects_a_limit_above_the_cap(self):
+        self.assertEqual(client.get("/verification/jobs?limit=201").status_code, 422)
+
+
+class VerifyBatchEndpointTestCase(ApiTestCase):
+    _PASSING_RECORD = {
+        "axis": "reproducible", "passed": True, "note": "ok", "stage": "complete",
+        "code_hash": "h", "env": "environment.lock", "result_hash": "r",
+        "ran_at": "t", "stamp": "2026-08-26T00-00-00", "log": "",
+    }
+
+    def test_verifying_batch_requires_a_login(self):
+        self._seed()
+        with _patch_user(None):
+            response = client.post("/verification/verify-batch", json={"node_ids": ["stmt-a"]})
+        self.assertEqual(response.status_code, 401)
+
+    def test_explicit_node_ids_queue_eligible_and_skip_the_rest(self):
+        self._seed()
+        for name, data in CODE_FILES.items():
+            store.put_code_file("stmt-a", name, data)
+        with patch.object(handlers.runner_mod, "verify_node", return_value=self._PASSING_RECORD):
+            with _patch_user(_ALICE):
+                response = client.post(
+                    "/verification/verify-batch",
+                    json={"node_ids": ["stmt-a", "ent-unit", "nope"]},
+                )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual([q["node_id"] for q in body["queued"]], ["stmt-a"])
+        self.assertEqual(
+            {(s["node_id"], s["reason"]) for s in body["skipped"]},
+            {("ent-unit", "no code sidecar"), ("nope", "no such node")},
+        )
+
+    def test_omitting_node_ids_targets_every_node_with_code(self):
+        self._seed()
+        for name, data in CODE_FILES.items():
+            store.put_code_file("stmt-a", name, data)
+        with patch.object(handlers.runner_mod, "verify_node", return_value=self._PASSING_RECORD):
+            with _patch_user(_ALICE):
+                response = client.post("/verification/verify-batch", json={})
+        body = response.json()
+        self.assertEqual([q["node_id"] for q in body["queued"]], ["stmt-a"])
+
+    def test_status_filter_narrows_the_target_set(self):
+        self._seed()  # stmt-a is status "verified"
+        with _patch_user(_ALICE):
+            response = client.post("/verification/verify-batch", json={"status": "proposed"})
+        body = response.json()
+        self.assertEqual(body["queued"], [])
+        self.assertEqual(body["skipped"], [])
+
+    def test_a_node_already_pending_is_skipped_not_requeued(self):
+        self._seed()
+        for name, data in CODE_FILES.items():
+            store.put_code_file("stmt-a", name, data)
+        gate = threading.Event()
+        # Queue a still-pending record for stmt-a directly, so the batch
+        # endpoint sees it as already in flight regardless of how fast a
+        # real request's background worker would otherwise drain it.
+        asyncio.run(queue.submit("verify", lambda: gate.wait(timeout=5) or {}, node_id="stmt-a", axis="reproducible"))
+        try:
+            with _patch_user(_ALICE):
+                response = client.post("/verification/verify-batch", json={"node_ids": ["stmt-a"]})
+            body = response.json()
+            self.assertEqual(body["queued"], [])
+            self.assertEqual(body["skipped"], [{"node_id": "stmt-a", "reason": "already queued or running"}])
+        finally:
+            gate.set()
+
+    def test_explicit_node_ids_over_the_cap_is_rejected(self):
+        with _patch_user(_ALICE):
+            response = client.post(
+                "/verification/verify-batch",
+                json={"node_ids": [f"stmt-{i}" for i in range(handlers.MAX_VERIFY_BATCH + 1)]},
+            )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("at most", response.json()["error"])
 
 
 class ApproveTestCase(ApiTestCase):

@@ -17,13 +17,15 @@ import asyncio
 import logging
 import uuid
 from collections import OrderedDict
-from typing import Callable, Optional
+from typing import Callable, List, Optional
 
 from .graph import now_iso
 
 logger = logging.getLogger(__name__)
 
 MAX_JOBS = 200
+
+_TERMINAL_STATES = {"done", "failed"}
 
 
 class JobQueue:
@@ -40,6 +42,50 @@ class JobQueue:
         """Return a copy of a job's record, or None when it is unknown."""
         record = self._jobs.get(job_id)
         return dict(record) if record else None
+
+    def list(self, state: Optional[str] = None, limit: int = MAX_JOBS) -> List[dict]:
+        """Return job records newest-first, optionally filtered by state.
+
+        A batch verify can enqueue thousands of jobs well past ``MAX_JOBS`` at
+        once (see ``_evict_oldest_terminal``); this still only ever returns at
+        most ``limit`` of them, so a dashboard polling this never has to page
+        through a backlog to see what is currently running.
+        """
+        records = [dict(record) for record in reversed(self._jobs.values())]
+        if state is not None:
+            records = [record for record in records if record["state"] == state]
+        return records[: max(0, limit)]
+
+    def pending(self, node_id: str, axis: str) -> bool:
+        """Return True if a queued or running job already targets this node+axis.
+
+        Used to make re-submitting a batch verify idempotent: a node already
+        in flight is skipped rather than queued a second time.
+        """
+        return any(
+            record["node_id"] == node_id and record.get("axis") == axis and record["state"] in ("queued", "running")
+            for record in self._jobs.values()
+            if record.get("kind") == "verify"
+        )
+
+    def _evict_oldest_terminal(self) -> bool:
+        """Drop the oldest done/failed record, if any exists.
+
+        A job that is still ``queued`` or ``running`` is never evicted just
+        for being old - the whole point of ``MAX_JOBS`` is to bound *history*
+        retention, not to drop work that has not run yet. A mass verify can
+        submit far more than ``MAX_JOBS`` jobs before the single worker drains
+        them; if the oldest were evicted unconditionally, ``_run_one`` would
+        find no record for it, assume it had been evicted mid-flight, and
+        silently skip running it at all (see its own early-return for exactly
+        that case). So the backlog is allowed to temporarily exceed MAX_JOBS
+        rather than lose queued work.
+        """
+        for job_id, record in self._jobs.items():
+            if record["state"] in _TERMINAL_STATES:
+                del self._jobs[job_id]
+                return True
+        return False
 
     async def submit(
         self, kind: str, work: Callable[[], dict], job_id: Optional[str] = None, **fields
@@ -63,8 +109,8 @@ class JobQueue:
             **fields,
         }
         self._jobs[job_id] = record
-        while len(self._jobs) > MAX_JOBS:
-            self._jobs.popitem(last=False)
+        while len(self._jobs) > MAX_JOBS and self._evict_oldest_terminal():
+            pass
 
         async with self._lock:
             if self._queue is None:
