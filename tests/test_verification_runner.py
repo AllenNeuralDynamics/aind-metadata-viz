@@ -10,7 +10,7 @@ import unittest
 import subprocess
 from unittest.mock import MagicMock, patch
 
-from aind_metadata_viz.verification import runner, sandbox
+from aind_metadata_viz.verification import runner, sandbox, store
 
 
 def _lock():
@@ -503,6 +503,14 @@ class VerifyNodeTestCase(unittest.TestCase):
         self.assertTrue(record["passed"])
         self.assertEqual(record["stage"], "complete")
         self.assertEqual(record["result_hash"], runner.result_hash({"holds": True}))
+
+    def test_the_stamp_is_a_valid_store_path(self):
+        # now_iso() includes a "+00:00" UTC offset. store.put_run feeds this
+        # stamp straight into store.safe_code_path to build the run's S3 key,
+        # so a stamp containing "+" makes every run fail with
+        # InvalidId("invalid code path ...") before anything is even stored.
+        record = runner.verify_node({"id": "stmt-a"}, {}, axis="reproducible")
+        store.safe_code_path(record["stamp"])  # raises InvalidId if unsafe
 
     def test_an_analysis_that_crashes_fails_the_run(self):
         def opener(url, timeout=None):
