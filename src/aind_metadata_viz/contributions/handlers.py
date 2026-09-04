@@ -67,6 +67,11 @@ def _is_admin_contributor(contributions, orcid):
     )
 
 
+def _has_admin(contributions):
+    """Return True when a contribution document retains at least one admin."""
+    return bool(contributions and any(c.is_admin for c in contributions.contributors))
+
+
 def _merge_scoped_contributions(existing, orcid, name, new_contributions):
     """Return ``(ok, error, merged)`` for a non-admin / anonymous save.
 
@@ -339,6 +344,12 @@ async def contributions_post(
         if not ok:
             return JSONResponse(status_code=403, content={"error": err})
         to_store = merged
+
+    if not _has_admin(to_store):
+        return JSONResponse(
+            status_code=400,
+            content={"error": "At least one project admin is required."},
+        )
 
     try:
         commit_hash = await asyncio.to_thread(store_contributions, project, to_store, message=message)

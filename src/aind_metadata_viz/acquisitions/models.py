@@ -19,12 +19,12 @@ class AcquisitionTypeEntry(BaseModel):
 
 
 class ScheduledAcquisitionCreate(BaseModel):
-    """Request body for registering a new scheduled acquisition."""
+    """Request body for creating a scheduled acquisition."""
 
     subject_id: str = Field(..., description="Subject ID for this acquisition")
     date: datetime.date = Field(..., description="Scheduled date of the acquisition")
     acquisition_type: str = Field(
-        ..., description="Acquisition type; must already be registered via POST /acquisition-types"
+        ..., description="Acquisition type; must be present in the configured allow-list"
     )
 
 

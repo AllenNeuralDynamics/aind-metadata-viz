@@ -10,16 +10,13 @@ from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
 
 from .models import (
-    AcquisitionTypeEntry,
     ScheduledAcquisition,
     ScheduledAcquisitionCreate,
     ScheduledAcquisitionCreated,
     ScheduledAcquisitionDetail,
 )
 from .store import (
-    add_acquisition_type,
     add_scheduled_acquisition,
-    get_allowed_types,
     get_scheduled_acquisition,
     get_scheduled_acquisitions,
 )
@@ -30,52 +27,13 @@ acquisitions_router = APIRouter(tags=["acquisitions"])
 
 
 @acquisitions_router.post(
-    "/acquisition-types",
-    response_model=AcquisitionTypeEntry,
-    summary="Register an allowed acquisition type",
-    description=(
-        "Adds a new allowed `(platform, acquisition_type)` pair. Deduplicates on the exact pair "
-        "— posting the same pair twice is a no-op. If `ALLOWED_PLATFORMS` has been populated, "
-        "`platform` must be one of those values."
-    ),
-)
-async def acquisition_types_post(body: AcquisitionTypeEntry):
-    try:
-        entry = add_acquisition_type(body.platform, body.acquisition_type)
-    except ValueError as e:
-        return JSONResponse(status_code=400, content={"error": str(e)})
-    except Exception as e:
-        _logger.exception(
-            "POST /acquisition-types platform=%s acquisition_type=%s", body.platform, body.acquisition_type
-        )
-        return JSONResponse(status_code=500, content={"error": str(e)})
-
-    return entry
-
-
-@acquisitions_router.get(
-    "/acquisition-types",
-    response_model=List[AcquisitionTypeEntry],
-    summary="List allowed acquisition types and platforms",
-    description="Returns every allowed `(platform, acquisition_type)` pair registered so far.",
-)
-async def acquisition_types_get():
-    try:
-        entries = get_allowed_types()
-    except Exception as e:
-        _logger.exception("GET /acquisition-types")
-        return JSONResponse(status_code=500, content={"error": str(e)})
-    return entries
-
-
-@acquisitions_router.post(
     "/scheduled-acquisitions",
     response_model=ScheduledAcquisitionCreated,
     summary="Schedule an acquisition",
     description=(
-        "Validates `acquisition_type` against the allowed types registered via "
-        "POST /acquisition-types (resolving `platform` automatically), stores the record, and "
-        "returns a `uuid` that identifies it. 400 if `acquisition_type` isn't an allowed type."
+        "Validates `acquisition_type` against the configured allow-list (resolving `platform` "
+        "automatically), stores the record, and returns a `uuid` that identifies it. 400 if "
+        "`acquisition_type` isn't allowed."
     ),
 )
 async def scheduled_acquisitions_post(body: ScheduledAcquisitionCreate):

@@ -117,34 +117,23 @@ class TestScheduledAcquisitionStore(unittest.TestCase):
         self.assertEqual(future_only[0]["subject_id"], "today-subject")
 
 
-class TestAcquisitionTypeHandlers(unittest.TestCase):
-    def test_post_acquisition_type(self):
-        fake = _FakeS3()
-        with _s3_patch(fake):
-            response = client.post("/acquisition-types", json={"platform": "behavior", "acquisition_type": "training"})
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"platform": "behavior", "acquisition_type": "training"})
-
-    def test_post_acquisition_type_missing_field(self):
-        fake = _FakeS3()
-        with _s3_patch(fake):
-            response = client.post("/acquisition-types", json={"platform": "behavior"})
-        self.assertEqual(response.status_code, 422)
-
-    def test_get_acquisition_types(self):
-        fake = _FakeS3()
-        with _s3_patch(fake):
-            client.post("/acquisition-types", json={"platform": "behavior", "acquisition_type": "training"})
-            response = client.get("/acquisition-types")
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), [{"platform": "behavior", "acquisition_type": "training"}])
+class TestRetiredAcquisitionTypeHandlers(unittest.TestCase):
+    def test_acquisition_type_routes_are_removed(self):
+        self.assertEqual(client.get("/acquisition-types").status_code, 404)
+        self.assertEqual(
+            client.post(
+                "/acquisition-types",
+                json={"platform": "behavior", "acquisition_type": "training"},
+            ).status_code,
+            404,
+        )
 
 
 class TestScheduledAcquisitionHandlers(unittest.TestCase):
     def test_post_scheduled_acquisition(self):
         fake = _FakeS3()
         with _s3_patch(fake):
-            client.post("/acquisition-types", json={"platform": "behavior", "acquisition_type": "training"})
+            add_acquisition_type("behavior", "training")
             response = client.post(
                 "/scheduled-acquisitions",
                 json={"subject_id": "123456", "date": date.today().isoformat(), "acquisition_type": "training"},
@@ -164,7 +153,7 @@ class TestScheduledAcquisitionHandlers(unittest.TestCase):
     def test_get_scheduled_acquisitions(self):
         fake = _FakeS3()
         with _s3_patch(fake):
-            client.post("/acquisition-types", json={"platform": "behavior", "acquisition_type": "training"})
+            add_acquisition_type("behavior", "training")
             client.post(
                 "/scheduled-acquisitions",
                 json={"subject_id": "123456", "date": date.today().isoformat(), "acquisition_type": "training"},
@@ -176,7 +165,7 @@ class TestScheduledAcquisitionHandlers(unittest.TestCase):
     def test_get_scheduled_acquisition_by_uuid(self):
         fake = _FakeS3()
         with _s3_patch(fake):
-            client.post("/acquisition-types", json={"platform": "behavior", "acquisition_type": "training"})
+            add_acquisition_type("behavior", "training")
             post_response = client.post(
                 "/scheduled-acquisitions",
                 json={"subject_id": "123456", "date": date.today().isoformat(), "acquisition_type": "training"},

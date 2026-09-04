@@ -377,6 +377,11 @@ class TestSerializersYaml(unittest.TestCase):
         restored = from_yaml(y)
         self.assertEqual(restored.contributors[0].credit_levels[0].role, CreditRole.SOFTWARE)
 
+    def test_yaml_roundtrip_preserves_admin(self):
+        self.pc.contributors[0].is_admin = True
+        restored = from_yaml(to_yaml(self.pc))
+        self.assertTrue(restored.contributors[0].is_admin)
+
     def test_from_yaml_missing_project_name(self):
         y = "version: 1\nproject:\n  contributors: []\n"
         restored = from_yaml(y)
@@ -522,6 +527,8 @@ class TestStore(unittest.TestCase):
 
 def _make_project_json(name="handler-project"):
     pc = _make_project(name)
+    pc.contributors[0].author.registry_identifier = _ADMIN["orcid"]
+    pc.contributors[0].is_admin = True
     return to_json(pc)
 
 
@@ -672,8 +679,21 @@ class TestContributionsPostHandler(ContributionsHandlerTestCase):
             self.assertIn("commit", data)
             self.assertEqual(data["project"], "handler-project")
 
+    def test_post_without_admin_returns_400(self):
+        body = to_json(_make_project("handler-project"))
+        with self._patch_store():
+            resp = client.post(
+                "/contributions/post?project=handler-project",
+                content=body,
+                headers={"Content-Type": "application/json"},
+            )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("admin", resp.json()["error"].lower())
+
     def test_post_valid_yaml_returns_200(self):
         pc = _make_project("handler-project")
+        pc.contributors[0].author.registry_identifier = _ADMIN["orcid"]
+        pc.contributors[0].is_admin = True
         y = to_yaml(pc)
         with self._patch_store():
             resp = client.post("/contributions/post?project=handler-project", content=y, headers={"Content-Type": "application/json"})
@@ -1025,11 +1045,24 @@ class TestSessionPostAuth(ContributionsHandlerTestCase):
     def test_global_admin_can_edit_everything(self):
         self._seed_project()
         body = self._payload([
+            AuthorContribution(author=_make_author("Bob", orcid=_PROJECT_ADMIN["orcid"]),
+                               credit_levels=[_make_role()], is_admin=True),
             AuthorContribution(author=_make_author("Alice"), credit_levels=[_make_role()]),
         ])
         with _patch_current_user(_ADMIN):
             resp = self._post(body)
         self.assertEqual(resp.status_code, 200)
+
+    def test_admin_cannot_remove_last_project_admin(self):
+        self._seed_project()
+        body = self._payload([
+            AuthorContribution(author=_make_author("Alice"), credit_levels=[_make_role()]),
+        ])
+        with _patch_current_user(_PROJECT_ADMIN):
+            resp = self._post(body)
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("admin", resp.json()["error"].lower())
+        self.assertTrue(get_contributions("sess-project").contributors[0].is_admin)
 
     def test_contributor_admin_can_edit_everything(self):
         self._seed_project()

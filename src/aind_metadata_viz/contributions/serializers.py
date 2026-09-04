@@ -92,6 +92,8 @@ def to_yaml(contributions: ProjectContributions) -> str:
     for c in ordered_contributors:
         entry = {}
         entry["name"] = c.author.name
+        if c.is_admin:
+            entry["is_admin"] = True
         if c.publication_order is not None:
             entry["publication_order"] = c.publication_order
         if c.author.registry_identifier:
@@ -217,6 +219,7 @@ def from_yaml(data: str) -> ProjectContributions:
             author=author,
             credit_levels=credit_levels,
             publication_order=raw.get("publication_order"),
+            is_admin=bool(raw.get("is_admin", False)),
         ))
 
     return ProjectContributions(

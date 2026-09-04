@@ -1,8 +1,7 @@
-"""Verification graph: statements linked to the evidence and code behind them.
+"""Internal verification graph implementation.
 
-Public API
-----------
-    verification_router   FastAPI router for the /verification/* endpoints.
+The verification router is retained for isolated backend tests and future
+reuse, but it is not mounted by the metadata portal application.
 """
 
 from .handlers import verification_router

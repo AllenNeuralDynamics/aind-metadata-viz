@@ -28,6 +28,11 @@ class TestDocsEndpointsReachable(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("paths", response.json())
 
+    def test_retired_endpoint_groups_return_not_found(self):
+        self.assertEqual(client.get("/acquisition-types").status_code, 404)
+        self.assertEqual(client.post("/acquisition-types", json={}).status_code, 404)
+        self.assertEqual(client.get("/verification/graph").status_code, 404)
+
 
 class TestOpenApiSchemaContent(unittest.TestCase):
     def setUp(self):
@@ -42,9 +47,9 @@ class TestOpenApiSchemaContent(unittest.TestCase):
         self.assertIn("include_past", params)
         self.assertEqual(params["include_past"]["schema"]["type"], "boolean")
 
-    def test_acquisition_types_post_documents_request_body(self):
-        operation = self.schema["paths"]["/acquisition-types"]["post"]
-        self.assertIn("requestBody", operation)
+    def test_retired_endpoint_groups_are_not_documented(self):
+        self.assertNotIn("/acquisition-types", self.schema["paths"])
+        self.assertFalse(any(path.startswith("/verification") for path in self.schema["paths"]))
 
     def test_contributions_get_documents_query_params(self):
         params = self._params("/contributions/get", "get")
@@ -54,7 +59,7 @@ class TestOpenApiSchemaContent(unittest.TestCase):
     def test_routes_are_tagged(self):
         gather_tags = self.schema["paths"]["/gather"]["post"]["tags"]
         self.assertIn("gather", gather_tags)
-        acquisitions_tags = self.schema["paths"]["/acquisition-types"]["get"]["tags"]
+        acquisitions_tags = self.schema["paths"]["/scheduled-acquisitions"]["get"]["tags"]
         self.assertIn("acquisitions", acquisitions_tags)
         contributions_tags = self.schema["paths"]["/contributions/get"]["get"]["tags"]
         self.assertIn("contributions", contributions_tags)

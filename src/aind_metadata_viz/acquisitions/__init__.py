@@ -1,4 +1,4 @@
-"""acquisitions — allowed acquisition types and scheduled acquisitions.
+"""acquisitions — scheduled acquisitions and their internal allow-list.
 
 Public API
 ----------
@@ -8,6 +8,9 @@ Models:
 Storage (S3-backed):
     add_acquisition_type, get_allowed_types,
     add_scheduled_acquisition, get_scheduled_acquisitions, get_scheduled_acquisition
+
+The acquisition-type allow-list is used internally when validating scheduled
+acquisitions; its REST endpoints are not exposed by the application.
 """
 
 from .models import ALLOWED_PLATFORMS, AcquisitionTypeEntry, ScheduledAcquisition
