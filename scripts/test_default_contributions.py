@@ -52,7 +52,7 @@ def check(response: requests.Response, expected_status: int) -> dict:
 
 
 sep(f"GET default project: {PROJECT}")
-r = requests.get(f"{BASE_URL}/contributions/get?project={PROJECT}")
+r = requests.get(f"{BASE_URL}/contributions/project?project={PROJECT}")
 data = check(r, 200)
 
 sep("Contributors")

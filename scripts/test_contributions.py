@@ -1,4 +1,4 @@
-"""Integration script: exercise the /contributions/post and /contributions/get endpoints.
+"""Integration script: exercise the /contributions/project endpoint.
 
 Usage
 -----
@@ -100,7 +100,7 @@ YAML_BODY = textwrap.dedent("""\
 
 sep("POST v1 (YAML body)")
 r = requests.post(
-    f"{BASE_URL}/contributions/post?project={PROJECT}&message=initial+version",
+    f"{BASE_URL}/contributions/project?project={PROJECT}&message=initial+version",
     data=YAML_BODY.encode("utf-8"),
     headers={"Content-Type": "text/plain"},
 )
@@ -161,7 +161,7 @@ JSON_BODY = {
 
 sep("POST v2 (JSON body, 3 contributors)")
 r = requests.post(
-    f"{BASE_URL}/contributions/post?project={PROJECT}&message=add+carmen",
+    f"{BASE_URL}/contributions/project?project={PROJECT}&message=add+carmen",
     data=json.dumps(JSON_BODY).encode("utf-8"),
     headers={"Content-Type": "application/json"},
 )
@@ -178,7 +178,7 @@ if args.env != "prod":
 # ---------------------------------------------------------------------------
 
 sep("GET HEAD (latest)")
-r = requests.get(f"{BASE_URL}/contributions/get?project={PROJECT}")
+r = requests.get(f"{BASE_URL}/contributions/project?project={PROJECT}")
 data = check(r, 200)
 print(json.dumps(data, indent=2))
 
@@ -188,7 +188,7 @@ print(json.dumps(data, indent=2))
 
 sep(f"GET commit v1 ({commit_v1[:12]})")
 r = requests.get(
-    f"{BASE_URL}/contributions/get?project={PROJECT}&commit={commit_v1}"
+    f"{BASE_URL}/contributions/project?project={PROJECT}&commit={commit_v1}"
 )
 data = check(r, 200)
 names_v1 = [c["author"]["name"] for c in data.get("contributors", [])]
@@ -201,7 +201,7 @@ print("  assertion passed: v1 has 2 contributors")
 # ---------------------------------------------------------------------------
 
 sep("GET history (all commits for project)")
-r = requests.get(f"{BASE_URL}/contributions/get?project={PROJECT}&history=true")
+r = requests.get(f"{BASE_URL}/contributions/project?project={PROJECT}&history=true")
 history = check(r, 200)
 print(json.dumps(history, indent=2))
 assert len(history) >= 2, f"Expected at least 2 commits in history, got {len(history)}"
@@ -216,11 +216,11 @@ print("  assertion passed: both v1 and v2 commits present in history")
 # ---------------------------------------------------------------------------
 
 sep("GET unknown project (expect 404)")
-r = requests.get(f"{BASE_URL}/contributions/get?project=no-such-project-xyz")
+r = requests.get(f"{BASE_URL}/contributions/project?project=no-such-project-xyz")
 check(r, 404)
 
 sep("GET history for unknown project (expect 404)")
-r = requests.get(f"{BASE_URL}/contributions/get?project=no-such-project-xyz&history=true")
+r = requests.get(f"{BASE_URL}/contributions/project?project=no-such-project-xyz&history=true")
 check(r, 404)
 
 print("\n" + "=" * 60)

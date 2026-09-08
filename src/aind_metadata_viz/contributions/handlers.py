@@ -14,6 +14,7 @@ _logger = logging.getLogger(__name__)
 from typing import Optional
 
 from . import (
+    AuthorContribution,
     from_json,
     from_yaml,
     get_contributions,
@@ -72,83 +73,51 @@ def _has_admin(contributions):
     return bool(contributions and any(c.is_admin for c in contributions.contributors))
 
 
-def _merge_scoped_contributions(existing, orcid, name, new_contributions):
-    """Return ``(ok, error, merged)`` for a non-admin / anonymous save.
+def _merge_author_contribution(existing, orcid, name, incoming):
+    """Merge one author-scoped update into the stored project.
 
-    The caller may only add their own new author row, or edit the row they own
-    (matched by ORCID, else by name). Everyone else's rows — plus every row's
-    ``is_admin`` flag and the project ``edit_locked`` flag — are taken
-    authoritatively from *existing*; whatever the client sent for those rows is
-    ignored. The add wizard resubmits the whole contributor list rebuilt from a
-    lossy in-memory form, so comparing the client's copy of untouched rows
-    against storage would spuriously reject a legitimate self-add/edit. Building
-    the result from storage instead makes it impossible to clobber another row
-    (rather than merely rejecting when the round-trip happens to differ).
-
-    ``existing`` must not be None (creating a new project requires an admin
-    session, handled by the caller before this point).
+    The author endpoint deliberately accepts exactly one contributor, not a
+    client-produced copy of the project. Every project-level field and every
+    contributor other than the caller's own row therefore comes from storage.
+    Admin-owned row fields are also authoritative in storage, so an author
+    update cannot grant admin access or clear byline/provenance metadata.
     """
+    if existing is None:
+        return False, "The project does not exist", None
+
     stored_by_name = {c.author.name: c for c in existing.contributors}
-    existing_names = set(stored_by_name)
-    new_by_name = {c.author.name: c for c in new_contributions.contributors}
-    new_names = set(new_by_name)
+    owned = _owned_name(existing, orcid, name)
+    incoming_name = incoming.author.name
 
-    owned = _owned_name(existing, orcid, name)  # None for an anonymous caller
-
-    # May not remove anyone else's row (removing your own is allowed).
-    removed = existing_names - new_names
-    illegal_removed = removed - ({owned} if owned else set())
-    if illegal_removed:
-        return False, (
-            "You can only edit your own author entry; cannot remove: "
-            + ", ".join(sorted(illegal_removed))
-        ), None
-
-    # May introduce at most one new row (their own).
-    added = new_names - existing_names
-    if len(added) > 1:
-        return False, "You can only add your own author entry", None
-
-    # Build the final list authoritatively from storage.
-    merged_rows = []
-    for c in existing.contributors:
-        nm = c.author.name
-        if nm == owned:
-            # The caller owns this row and may edit it; keep the stored
-            # is_admin flag (non-admins cannot change admin access).
-            if nm in new_by_name:
-                row = new_by_name[nm].model_copy(deep=True)
-                row.is_admin = c.is_admin
-                # Byline position and author level are admin-set display
-                # properties that the add wizard does not model — it rebuilds
-                # the row from name + CRediT roles alone. Take them from
-                # storage rather than letting a self-edit silently clear them.
-                row.publication_order = c.publication_order
-                row.author_level = c.author_level
-                merged_rows.append(row)
-            # else: they removed their own row — drop it.
-        else:
-            # Someone else's row: take it verbatim from storage.
-            merged_rows.append(c)
-
-    # Append their new row, if any (never with admin rights).
-    for nm in added:
-        row = new_by_name[nm].model_copy(deep=True)
+    if owned is None:
+        # Anonymous visitors may append one new author, but cannot overwrite a
+        # stored row merely by choosing the same display name.
+        if incoming_name in stored_by_name:
+            return False, "You can only add a new author entry", None
+        row = incoming.model_copy(deep=True)
         row.is_admin = False
+        merged = existing.model_copy(deep=True)
+        merged.contributors = [*existing.contributors, row]
+        return True, None, merged
+
+    if incoming_name != owned and incoming_name in stored_by_name:
+        return False, "That author name is already used by another contributor", None
+
+    merged_rows = []
+    for stored in existing.contributors:
+        if stored.author.name != owned:
+            merged_rows.append(stored)
+            continue
+
+        row = incoming.model_copy(deep=True)
+        row.is_admin = stored.is_admin
+        row.publication_order = stored.publication_order
+        row.author_level = stored.author_level
+        row.from_asset = stored.from_asset
         merged_rows.append(row)
 
-    merged = new_contributions.model_copy(deep=True)
+    merged = existing.model_copy(deep=True)
     merged.contributors = merged_rows
-    # Project-level settings belong to the admins; a non-admin self-edit
-    # resubmits whatever its page happened to be holding, so pin them all to
-    # storage rather than trusting the client copy.
-    merged.edit_locked = existing.edit_locked
-    merged.show_sections = existing.show_sections
-    merged.show_levels = existing.show_levels
-    merged.show_timeline = existing.show_timeline
-    merged.allow_lead = existing.allow_lead
-    merged.allow_levels = existing.allow_levels
-    merged.doi = list(existing.doi)
     return True, None, merged
 
 
@@ -182,7 +151,7 @@ async def contributions_projects():
 
 
 @contributions_router.get(
-    "/contributions/get",
+    "/contributions/project",
     summary="Fetch contribution data for a project",
     description=(
         "Returns the latest (or a specific) contribution data for a project. All models are "
@@ -192,7 +161,7 @@ async def contributions_projects():
         "`commit=<hash>` to fetch a specific historical version."
     ),
 )
-async def contributions_get(
+async def contributions_project_get(
     project: Optional[str] = Query(default=None, description="Project name to fetch"),
     doi: Optional[str] = Query(default=None, description="Look up a project by DOI instead of name"),
     history: Optional[str] = Query(
@@ -213,7 +182,7 @@ async def contributions_get(
         except FileNotFoundError as e:
             return JSONResponse(status_code=404, content={"error": str(e)})
         except Exception as e:
-            _logger.exception("GET /contributions/get doi=%s", doi)
+            _logger.exception("GET /contributions/project doi=%s", doi)
             return JSONResponse(status_code=500, content={"error": str(e)})
 
         fmt = format.lower()
@@ -227,7 +196,7 @@ async def contributions_get(
         except FileNotFoundError as e:
             return JSONResponse(status_code=404, content={"error": str(e)})
         except Exception as e:
-            _logger.exception("GET /contributions/get history project=%s", project)
+            _logger.exception("GET /contributions/project history project=%s", project)
             return JSONResponse(status_code=500, content={"error": str(e)})
         return JSONResponse(content=commits)
 
@@ -238,7 +207,7 @@ async def contributions_get(
     except FileNotFoundError as e:
         return JSONResponse(status_code=404, content={"error": str(e)})
     except Exception as e:
-        _logger.exception("GET /contributions/get project=%s commit=%s", project, commit)
+        _logger.exception("GET /contributions/project project=%s commit=%s", project, commit)
         return JSONResponse(status_code=500, content={"error": str(e)})
 
     if fmt == "yaml":
@@ -247,17 +216,17 @@ async def contributions_get(
 
 
 @contributions_router.post(
-    "/contributions/post",
-    summary="Store a new version of a project's contribution data",
+    "/contributions/project",
+    summary="Store a full project contribution edit",
     description=(
-        "Body is a JSON or YAML string of contribution data (sniffed automatically). Stores a new "
-        "versioned commit and returns the commit hash. Auth is by ORCID session: global/project "
-        "admins may edit the whole project, while any other caller (logged-in or anonymous) may "
-        "only add or modify their own author row. If the project is `edit_locked`, only an admin "
-        "may write (403 otherwise)."
+        "Body is a complete JSON or YAML ProjectContributions document. Stores a new versioned "
+        "commit and returns the commit hash. This endpoint is reserved for the full editor: an "
+        "existing project requires a global or project-admin ORCID session. A logged-in creator "
+        "may create a new project and is made its first admin. At least one project admin must "
+        "be present in the stored document."
     ),
 )
-async def contributions_post(
+async def contributions_project_post(
     request: Request,
     project: Optional[str] = Query(default=None, description="Project name (required; 400 if missing)"),
     message: Optional[str] = Query(default=None, description="Optional commit message"),
@@ -282,8 +251,6 @@ async def contributions_post(
     except Exception as e:
         return JSONResponse(status_code=400, content={"error": f"Failed to parse body: {e}"})
 
-    authed_via_session = False
-
     try:
         existing = await asyncio.to_thread(get_contributions, project)
     except FileNotFoundError:
@@ -304,46 +271,25 @@ async def contributions_post(
             content={"error": "This project is locked; ask an admin to unlock it before editing."},
         )
 
-    # Edit access is derived entirely from the contributor metadata:
-    #   * Global admins (ADMIN_ORCIDS) and project admins (a contributor row
-    #     matching this ORCID with is_admin=True) may edit the whole project.
-    #   * The creator of a brand-new project is made an admin automatically.
-    #   * Any other logged-in user may only add/modify their own author row.
-    # What actually gets stored. Admins store their payload verbatim; scoped
-    # (non-admin / anonymous) callers get a server-built merge (see below).
-    to_store = new_contributions
-
-    if session_user and existing is None:
+    if existing is None and session_user:
         # Brand-new project: the logged-in creator owns it. Force their own
         # row to is_admin so they (and only they) can manage it afterwards.
         creator_orcid = session_user["orcid"]
         for c in new_contributions.contributors:
             rid = getattr(c.author, "registry_identifier", None)
             c.is_admin = bool(rid and rid == creator_orcid)
-        authed_via_session = True
-    elif session_admin:
-        authed_via_session = True
-
-    if not authed_via_session:
-        # Creating a brand-new project requires an ORCID login: the creator is
-        # recorded as an admin (handled above), so a caller who is neither an
-        # admin nor logged-in may only add to a project that already exists.
-        if existing is None:
-            return JSONResponse(
-                status_code=401,
-                content={"error": "Log in with ORCID to create a new project."},
-            )
-        # Scoped write: a logged-in non-admin (identified by ORCID/name) or an
-        # anonymous visitor (no identity). They may add their own row or edit
-        # the row they own; all other rows come from storage untouched.
-        orcid = session_user["orcid"] if session_user else None
-        name = session_user.get("name") if session_user else None
-        ok, err, merged = await asyncio.to_thread(
-            _merge_scoped_contributions, existing, orcid, name, new_contributions
+    elif existing is None:
+        return JSONResponse(
+            status_code=401,
+            content={"error": "Log in with ORCID to create a new project."},
         )
-        if not ok:
-            return JSONResponse(status_code=403, content={"error": err})
-        to_store = merged
+    elif not session_admin:
+        return JSONResponse(
+            status_code=403,
+            content={"error": "Full project edits require a project admin."},
+        )
+
+    to_store = new_contributions
 
     if not _has_admin(to_store):
         return JSONResponse(
@@ -354,7 +300,81 @@ async def contributions_post(
     try:
         commit_hash = await asyncio.to_thread(store_contributions, project, to_store, message=message)
     except Exception as e:
-        _logger.exception("POST /contributions/post project=%s", project)
+        _logger.exception("POST /contributions/project project=%s", project)
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+    return JSONResponse(content={"commit": commit_hash, "project": project})
+
+
+@contributions_router.post(
+    "/contributions/author",
+    summary="Store one author-scoped contribution update",
+    description=(
+        "Body is one AuthorContribution JSON object. The server merges that author into the "
+        "stored project and ignores client copies of every other author and project-level field. "
+        "A logged-in caller may add or edit only their own row; an anonymous caller may append one "
+        "new row. Project admins are preserved by the server, and a locked project still requires "
+        "an admin session."
+    ),
+)
+async def contributions_author_post(
+    request: Request,
+    project: Optional[str] = Query(default=None, description="Existing project name (required)"),
+    message: Optional[str] = Query(default=None, description="Optional commit message"),
+):
+    if not project:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "project query parameter is required"},
+        )
+
+    body = await request.body()
+    if not body:
+        return JSONResponse(status_code=400, content={"error": "request body is required"})
+
+    try:
+        incoming = AuthorContribution.model_validate_json(body.decode("utf-8"))
+    except Exception as e:
+        return JSONResponse(status_code=400, content={"error": f"Failed to parse author body: {e}"})
+
+    try:
+        existing = await asyncio.to_thread(get_contributions, project)
+    except FileNotFoundError:
+        return JSONResponse(status_code=404, content={"error": f"Project '{project}' not found"})
+    except Exception as e:
+        _logger.exception("POST /contributions/author project=%s", project)
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+    session_user = get_current_user(request)
+    session_admin = bool(
+        session_user
+        and (session_user["is_admin"] or _is_admin_contributor(existing, session_user["orcid"]))
+    )
+
+    if existing.edit_locked and not session_admin:
+        return JSONResponse(
+            status_code=403,
+            content={"error": "This project is locked; ask an admin to unlock it before editing."},
+        )
+
+    orcid = session_user["orcid"] if session_user else None
+    name = session_user.get("name") if session_user else None
+    ok, err, merged = await asyncio.to_thread(
+        _merge_author_contribution, existing, orcid, name, incoming
+    )
+    if not ok:
+        return JSONResponse(status_code=403, content={"error": err})
+
+    if not _has_admin(merged):
+        return JSONResponse(
+            status_code=400,
+            content={"error": "At least one project admin is required."},
+        )
+
+    try:
+        commit_hash = await asyncio.to_thread(store_contributions, project, merged, message=message)
+    except Exception as e:
+        _logger.exception("POST /contributions/author project=%s", project)
         return JSONResponse(status_code=500, content={"error": str(e)})
 
     return JSONResponse(content={"commit": commit_hash, "project": project})

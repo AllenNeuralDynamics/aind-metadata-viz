@@ -30,8 +30,8 @@ import requests
 
 BASE_URL = "https://metadata-portal.allenneuraldynamics.org"
 PROJECT = f"integration-test-lifecycle-{int(time.time())}"
-GET_URL = f"{BASE_URL}/contributions/get"
-POST_URL = f"{BASE_URL}/contributions/post"
+GET_URL = f"{BASE_URL}/contributions/project"
+POST_URL = f"{BASE_URL}/contributions/project"
 AUTHOR_IMAGE_URL = f"{BASE_URL}/contributions/author-image"
 
 print(f"Testing against: {BASE_URL}")

@@ -36,7 +36,7 @@ from aind_metadata_viz.contributions.store import (
 )
 from aind_metadata_viz.contributions.handlers import (
     contributions_router,
-    _merge_scoped_contributions,
+    _merge_author_contribution,
 )
 from fastapi.testclient import TestClient
 from fastapi import FastAPI
@@ -567,20 +567,20 @@ class TestContributionsGetHandler(ContributionsHandlerTestCase):
         return pc
 
     def test_missing_project_param_returns_400(self):
-        resp = client.get("/contributions/get")
+        resp = client.get("/contributions/project")
         self.assertEqual(resp.status_code, 400)
         body = resp.json()
         self.assertIn("error", body)
 
     def test_unknown_project_returns_404(self):
         with self._patch_get():
-            resp = client.get("/contributions/get?project=no-such-project")
+            resp = client.get("/contributions/project?project=no-such-project")
             self.assertEqual(resp.status_code, 404)
 
     def test_get_existing_project_returns_200(self):
         self._seed_project()
         with self._patch_get():
-            resp = client.get("/contributions/get?project=handler-project")
+            resp = client.get("/contributions/project?project=handler-project")
             self.assertEqual(resp.status_code, 200)
             body = resp.json()
             self.assertEqual(body["project_name"], "handler-project")
@@ -588,13 +588,13 @@ class TestContributionsGetHandler(ContributionsHandlerTestCase):
     def test_get_returns_json_content_type(self):
         self._seed_project()
         with self._patch_get():
-            resp = client.get("/contributions/get?project=handler-project")
+            resp = client.get("/contributions/project?project=handler-project")
             self.assertIn("application/json", resp.headers.get("Content-Type", ""))
 
     def test_get_yaml_format(self):
         self._seed_project()
         with self._patch_get():
-            resp = client.get("/contributions/get?project=handler-project&format=yaml")
+            resp = client.get("/contributions/project?project=handler-project&format=yaml")
             self.assertEqual(resp.status_code, 200)
             self.assertIn("text/plain", resp.headers.get("Content-Type", ""))
             self.assertIn("handler-project", resp.text)
@@ -606,7 +606,7 @@ class TestContributionsGetHandler(ContributionsHandlerTestCase):
         commits = list_project_commits("handler-project")
         old_hash = commits[-1]["commit"]
         with self._patch_get():
-            resp = client.get(f"/contributions/get?project=handler-project&commit={old_hash}")
+            resp = client.get(f"/contributions/project?project=handler-project&commit={old_hash}")
             self.assertEqual(resp.status_code, 200)
             body = resp.json()
             self.assertEqual(body["doi"], [])
@@ -618,7 +618,7 @@ class TestContributionsGetHandler(ContributionsHandlerTestCase):
             _make_project("handler-project"),
         )
         with self._patch_list():
-            resp = client.get("/contributions/get?project=handler-project&history=true")
+            resp = client.get("/contributions/project?project=handler-project&history=true")
             self.assertEqual(resp.status_code, 200)
             body = resp.json()
             self.assertIsInstance(body, list)
@@ -626,18 +626,18 @@ class TestContributionsGetHandler(ContributionsHandlerTestCase):
 
     def test_get_history_missing_project_returns_404(self):
         with self._patch_list():
-            resp = client.get("/contributions/get?project=no-such&history=true")
+            resp = client.get("/contributions/project?project=no-such&history=true")
             self.assertEqual(resp.status_code, 404)
 
     def test_options_returns_204(self):
-        resp = client.options("/contributions/get", headers={"Origin": "http://example.com", "Access-Control-Request-Method": "GET"})
+        resp = client.options("/contributions/project", headers={"Origin": "http://example.com", "Access-Control-Request-Method": "GET"})
         self.assertIn(resp.status_code, (200, 204))
 
     def test_cors_headers_present(self):
         self._seed_project()
         with self._patch_get():
             resp = client.get(
-                "/contributions/get?project=handler-project",
+                "/contributions/project?project=handler-project",
                 headers={"Origin": "http://example.com"},
             )
             self.assertEqual(resp.headers.get("Access-Control-Allow-Origin"), "*")
@@ -657,23 +657,23 @@ class TestContributionsPostHandler(ContributionsHandlerTestCase):
 
     def test_post_missing_project_param_returns_400(self):
         body = _make_project_json()
-        resp = client.post("/contributions/post", content=body, headers={"Content-Type": "application/json"})
+        resp = client.post("/contributions/project", content=body, headers={"Content-Type": "application/json"})
         self.assertEqual(resp.status_code, 400)
 
     def test_post_missing_body_returns_400(self):
         with self._patch_store():
-            resp = client.post("/contributions/post?project=handler-project", content="", headers={"Content-Type": "application/json"})
+            resp = client.post("/contributions/project?project=handler-project", content="", headers={"Content-Type": "application/json"})
             self.assertEqual(resp.status_code, 400)
 
     def test_post_invalid_body_returns_400(self):
         with self._patch_store():
-            resp = client.post("/contributions/post?project=handler-project", content="not valid json or yaml", headers={"Content-Type": "application/json"})
+            resp = client.post("/contributions/project?project=handler-project", content="not valid json or yaml", headers={"Content-Type": "application/json"})
             self.assertEqual(resp.status_code, 400)
 
     def test_post_valid_json_returns_200(self):
         body = _make_project_json("handler-project")
         with self._patch_store():
-            resp = client.post("/contributions/post?project=handler-project", content=body, headers={"Content-Type": "application/json"})
+            resp = client.post("/contributions/project?project=handler-project", content=body, headers={"Content-Type": "application/json"})
             self.assertEqual(resp.status_code, 200)
             data = resp.json()
             self.assertIn("commit", data)
@@ -683,7 +683,7 @@ class TestContributionsPostHandler(ContributionsHandlerTestCase):
         body = to_json(_make_project("handler-project"))
         with self._patch_store():
             resp = client.post(
-                "/contributions/post?project=handler-project",
+                "/contributions/project?project=handler-project",
                 content=body,
                 headers={"Content-Type": "application/json"},
             )
@@ -696,30 +696,30 @@ class TestContributionsPostHandler(ContributionsHandlerTestCase):
         pc.contributors[0].is_admin = True
         y = to_yaml(pc)
         with self._patch_store():
-            resp = client.post("/contributions/post?project=handler-project", content=y, headers={"Content-Type": "application/json"})
+            resp = client.post("/contributions/project?project=handler-project", content=y, headers={"Content-Type": "application/json"})
             self.assertEqual(resp.status_code, 200)
 
     def test_post_commit_hash_is_32_chars(self):
         body = _make_project_json("handler-project")
         with self._patch_store():
-            resp = client.post("/contributions/post?project=handler-project", content=body, headers={"Content-Type": "application/json"})
+            resp = client.post("/contributions/project?project=handler-project", content=body, headers={"Content-Type": "application/json"})
             data = resp.json()
             self.assertEqual(len(data["commit"]), 32)
 
     def test_post_options_returns_204(self):
-        resp = client.options("/contributions/post", headers={"Origin": "http://example.com", "Access-Control-Request-Method": "GET"})
+        resp = client.options("/contributions/project", headers={"Origin": "http://example.com", "Access-Control-Request-Method": "GET"})
         self.assertIn(resp.status_code, (200, 204))
 
     def test_post_cors_headers_present(self):
         body = _make_project_json("handler-project")
         with self._patch_store():
-            resp = client.post("/contributions/post?project=handler-project", content=body, headers={"Content-Type": "application/json", "Origin": "http://example.com"})
+            resp = client.post("/contributions/project?project=handler-project", content=body, headers={"Content-Type": "application/json", "Origin": "http://example.com"})
             self.assertEqual(resp.headers.get("Access-Control-Allow-Origin"), "*")
 
     def test_post_with_custom_message(self):
         body = _make_project_json("handler-project")
         with self._patch_store():
-            resp = client.post("/contributions/post?project=handler-project&message=my-commit", content=body, headers={"Content-Type": "application/json"})
+            resp = client.post("/contributions/project?project=handler-project&message=my-commit", content=body, headers={"Content-Type": "application/json"})
             self.assertEqual(resp.status_code, 200)
 
 
@@ -773,7 +773,7 @@ class TestGetContributionsByDoi(unittest.TestCase):
 
 
 class TestGetHandlerPublic(ContributionsHandlerTestCase):
-    """GET /contributions/get is public — no password or auth required."""
+    """GET /contributions/project is public — no password or auth required."""
 
     def _patch_doi(self, contributions):
         return patch(
@@ -789,13 +789,13 @@ class TestGetHandlerPublic(ContributionsHandlerTestCase):
     def test_get_is_public(self):
         self._seed_project()
         with self._patch_get():
-            resp = client.get("/contributions/get?project=pub-handler-project")
+            resp = client.get("/contributions/project?project=pub-handler-project")
             self.assertEqual(resp.status_code, 200)
 
     def test_doi_lookup_returns_200(self):
         pc = _make_project("doi-handler-project")
         with self._patch_doi(pc):
-            resp = client.get("/contributions/get?doi=10.1234/test")
+            resp = client.get("/contributions/project?doi=10.1234/test")
             self.assertEqual(resp.status_code, 200)
             body = resp.json()
             self.assertEqual(body["project_name"], "doi-handler-project")
@@ -809,11 +809,11 @@ class TestGetHandlerPublic(ContributionsHandlerTestCase):
             "aind_metadata_viz.contributions.handlers.get_contributions",
             side_effect=FileNotFoundError("not found"),
         ):
-            resp = client.get("/contributions/get?doi=10.9999/nope")
+            resp = client.get("/contributions/project?doi=10.9999/nope")
             self.assertEqual(resp.status_code, 404)
 
     def test_missing_both_project_and_doi_returns_400(self):
-        resp = client.get("/contributions/get")
+        resp = client.get("/contributions/project")
         self.assertEqual(resp.status_code, 400)
         body = resp.json()
         self.assertIn("error", body)
@@ -973,7 +973,7 @@ class TestAccessHandler(ContributionsHandlerTestCase):
 
 
 class TestSessionPostAuth(ContributionsHandlerTestCase):
-    """POST /contributions/post authenticated by an ORCID session."""
+    """The full-project POST is reserved for global/project admins."""
 
     def _seed_project(self, name="sess-project"):
         pc = ProjectContributions(
@@ -996,7 +996,7 @@ class TestSessionPostAuth(ContributionsHandlerTestCase):
 
     def _post(self, body, name="sess-project"):
         return client.post(
-            f"/contributions/post?project={name}",
+            f"/contributions/project?project={name}",
             content=body,
             headers={"Content-Type": "application/json"},
         )
@@ -1012,7 +1012,8 @@ class TestSessionPostAuth(ContributionsHandlerTestCase):
         ])
         with _patch_current_user(_MEMBER):
             resp = self._post(body)
-        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.status_code, 403)
+        self.assertIn("full project", resp.json()["error"].lower())
 
     def test_non_admin_cannot_remove_other_author(self):
         self._seed_project()
@@ -1024,7 +1025,7 @@ class TestSessionPostAuth(ContributionsHandlerTestCase):
             resp = self._post(body)
         self.assertEqual(resp.status_code, 403)
 
-    def test_non_admin_cannot_grant_admin(self):
+    def test_non_admin_cannot_use_full_post_to_grant_admin(self):
         self._seed_project()
         # Carol adds herself and tries to flag her own new row as admin. The
         # save succeeds but the admin grant is stripped by the server merge.
@@ -1037,10 +1038,7 @@ class TestSessionPostAuth(ContributionsHandlerTestCase):
         ])
         with _patch_current_user(_MEMBER):
             resp = self._post(body)
-        self.assertEqual(resp.status_code, 200)
-        stored = get_contributions("sess-project")
-        carol = next(c for c in stored.contributors if c.author.name == "Carol")
-        self.assertFalse(carol.is_admin)
+        self.assertEqual(resp.status_code, 403)
 
     def test_global_admin_can_edit_everything(self):
         self._seed_project()
@@ -1131,15 +1129,144 @@ class TestSessionPostAuth(ContributionsHandlerTestCase):
         self.assertTrue(carol.is_admin)
 
 
-class TestAnonymousPostAuth(ContributionsHandlerTestCase):
-    """POST /contributions/post by an anonymous (not logged-in) visitor.
+class TestAuthorPostAuth(ContributionsHandlerTestCase):
+    """POST /contributions/author accepts one author row only."""
 
-    With passwords removed, an anonymous caller has no identity to own a row.
-    They may append a single new author entry to an unlocked project; the
-    server builds the stored result by keeping every existing row from storage
-    and adding just their new one, so any edits they send for existing rows are
-    silently ignored rather than rejected. Removing an existing row, adding
-    more than one, or writing to a locked project is still rejected.
+    def _seed_project(self, name="author-project", edit_locked=False):
+        pc = ProjectContributions(
+            project_name=name,
+            doi=["10.1/original"],
+            show_levels=False,
+            edit_locked=edit_locked,
+            contributors=[
+                AuthorContribution(
+                    author=_make_author("Bob", orcid=_PROJECT_ADMIN["orcid"]),
+                    credit_levels=[_make_role()],
+                    is_admin=True,
+                ),
+                AuthorContribution(
+                    author=_make_author("Alice", orcid="0000-0001"),
+                    credit_levels=[_make_role(CreditRole.INVESTIGATION, ContributionLevel.SUPPORTING)],
+                ),
+            ],
+        )
+        store_contributions(name, pc)
+        return pc
+
+    def _post(self, author, name="author-project"):
+        return client.post(
+            f"/contributions/author?project={name}",
+            content=author.model_dump_json(),
+            headers={"Content-Type": "application/json"},
+        )
+
+    def test_add_upload_sends_one_author_and_server_keeps_project_state(self):
+        """The add contract must not depend on a client project copy.
+
+        This is the regression guard for backend validation changes: the
+        request contains only Carol's new row, while the stored admin, DOI,
+        settings, and existing contributors are recovered from storage.
+        """
+        self._seed_project()
+        incoming = AuthorContribution(
+            author=_make_author("Carol", orcid=_MEMBER["orcid"], affiliation=["Elsewhere"]),
+            credit_levels=[_make_role(CreditRole.SOFTWARE, ContributionLevel.EQUAL)],
+            is_admin=True,
+        )
+        with _patch_current_user(_MEMBER):
+            resp = self._post(incoming)
+        self.assertEqual(resp.status_code, 200)
+
+        stored = get_contributions("author-project")
+        self.assertEqual(stored.doi, ["10.1/original"])
+        self.assertFalse(stored.show_levels)
+        self.assertTrue(any(c.author.name == "Bob" and c.is_admin for c in stored.contributors))
+        self.assertEqual(
+            next(c for c in stored.contributors if c.author.name == "Alice").credit_levels[0].role,
+            CreditRole.INVESTIGATION,
+        )
+        carol = next(c for c in stored.contributors if c.author.name == "Carol")
+        self.assertFalse(carol.is_admin)
+        self.assertEqual(carol.author.affiliation, ["Elsewhere"])
+
+    def test_project_admin_can_use_author_endpoint_without_sending_admin_flag(self):
+        """Author updates preserve admin membership in storage."""
+        self._seed_project()
+        incoming = AuthorContribution(
+            author=_make_author("Bob", orcid=_PROJECT_ADMIN["orcid"]),
+            credit_levels=[_make_role(CreditRole.SUPERVISION, ContributionLevel.LEAD)],
+        )
+        with _patch_current_user(_PROJECT_ADMIN):
+            resp = self._post(incoming)
+        self.assertEqual(resp.status_code, 200)
+        bob = next(c for c in get_contributions("author-project").contributors if c.author.name == "Bob")
+        self.assertTrue(bob.is_admin)
+
+    def test_non_admin_can_update_only_their_existing_author_row(self):
+        self._seed_project()
+        incoming = AuthorContribution(
+            author=_make_author("Alice", orcid="0000-0001", affiliation=["Elsewhere"]),
+            credit_levels=[_make_role(CreditRole.VALIDATION, ContributionLevel.EQUAL)],
+        )
+        alice_user = {"orcid": "0000-0001", "name": "Alice", "is_admin": False}
+        with _patch_current_user(alice_user):
+            resp = self._post(incoming)
+        self.assertEqual(resp.status_code, 200)
+        stored = get_contributions("author-project")
+        alice = next(c for c in stored.contributors if c.author.name == "Alice")
+        self.assertEqual(alice.author.affiliation, ["Elsewhere"])
+        self.assertTrue(next(c for c in stored.contributors if c.author.name == "Bob").is_admin)
+
+    def test_author_endpoint_cannot_edit_another_author(self):
+        self._seed_project()
+        incoming = AuthorContribution(
+            author=_make_author("Alice", affiliation=["Elsewhere"]),
+            credit_levels=[_make_role()],
+        )
+        with _patch_current_user(_MEMBER):
+            resp = self._post(incoming)
+        self.assertEqual(resp.status_code, 403)
+
+    def test_author_endpoint_requires_existing_admin(self):
+        pc = self._seed_project()
+        pc.contributors[0].is_admin = False
+        store_contributions("author-project", pc)
+        incoming = AuthorContribution(
+            author=_make_author("Carol", orcid=_MEMBER["orcid"]),
+            credit_levels=[_make_role()],
+        )
+        with _patch_current_user(_MEMBER):
+            resp = self._post(incoming)
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("admin", resp.json()["error"].lower())
+
+    def test_author_endpoint_rejects_full_project_payload(self):
+        self._seed_project()
+        with _patch_current_user(_MEMBER):
+            resp = client.post(
+                "/contributions/author?project=author-project",
+                content=to_json(ProjectContributions(project_name="author-project")),
+                headers={"Content-Type": "application/json"},
+            )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_author_endpoint_respects_lock(self):
+        self._seed_project(edit_locked=True)
+        incoming = AuthorContribution(
+            author=_make_author("Carol", orcid=_MEMBER["orcid"]),
+            credit_levels=[_make_role()],
+        )
+        with _patch_current_user(_MEMBER):
+            resp = self._post(incoming)
+        self.assertEqual(resp.status_code, 403)
+        self.assertIn("locked", resp.json()["error"].lower())
+
+
+class TestAnonymousPostAuth(ContributionsHandlerTestCase):
+    """POST /contributions/author by an anonymous visitor.
+
+    Anonymous visitors may append one new author row to an existing unlocked
+    project. They cannot overwrite a stored row or submit a full project.
     """
 
     def _seed_project(self, name="anon-project", edit_locked=False):
@@ -1158,58 +1285,46 @@ class TestAnonymousPostAuth(ContributionsHandlerTestCase):
         store_contributions(name, pc)
         return pc
 
-    def _payload(self, contributors, name="anon-project"):
-        return to_json(ProjectContributions(project_name=name, contributors=contributors))
+    def _payload(self, author):
+        return author.model_dump_json()
 
-    def _post(self, body, name="anon-project"):
+    def _post(self, author, name="anon-project"):
         return client.post(
-            f"/contributions/post?project={name}",
-            content=body,
+            f"/contributions/author?project={name}",
+            content=self._payload(author),
             headers={"Content-Type": "application/json"},
         )
 
     def test_anon_cannot_create_new_project(self):
-        body = self._payload([
-            AuthorContribution(author=_make_author("Alice"), credit_levels=[_make_role()]),
-        ], name="anon-brand-new")
         with _patch_current_user(None):
-            resp = self._post(body, name="anon-brand-new")
-        self.assertEqual(resp.status_code, 401)
+            resp = self._post(
+                AuthorContribution(author=_make_author("Alice"), credit_levels=[_make_role()]),
+                name="anon-brand-new",
+            )
+        self.assertEqual(resp.status_code, 404)
 
     def test_anon_can_add_single_new_row(self):
         self._seed_project()
-        body = self._payload([
-            AuthorContribution(author=_make_author("Bob", orcid=_PROJECT_ADMIN["orcid"]),
-                               credit_levels=[_make_role()], is_admin=True),
-            AuthorContribution(author=_make_author("Alice"), credit_levels=[_make_role()]),
-            AuthorContribution(author=_make_author("Dave"), credit_levels=[_make_role()]),
-        ])
         with _patch_current_user(None):
-            resp = self._post(body)
+            resp = self._post(AuthorContribution(author=_make_author("Dave"), credit_levels=[_make_role()]))
         self.assertEqual(resp.status_code, 200)
 
     def test_anon_edit_of_existing_row_is_ignored(self):
         self._seed_project()
-        # Anonymous submits a modified Alice (new affiliation) with no new row.
-        # The save succeeds but Alice's stored row is preserved unchanged.
-        body = self._payload([
-            AuthorContribution(author=_make_author("Bob", orcid=_PROJECT_ADMIN["orcid"]),
-                               credit_levels=[_make_role()], is_admin=True),
-            AuthorContribution(author=_make_author("Alice", affiliation=["Elsewhere"]),
-                               credit_levels=[_make_role()]),
-        ])
+        # Anonymous visitors have no identity to own an existing row.
         with _patch_current_user(None):
-            resp = self._post(body)
-        self.assertEqual(resp.status_code, 200)
-        stored = get_contributions("anon-project")
-        alice = next(c for c in stored.contributors if c.author.name == "Alice")
-        self.assertEqual(alice.author.affiliation, ["AIND"])
+            resp = self._post(
+                AuthorContribution(
+                    author=_make_author("Alice", affiliation=["Elsewhere"]),
+                    credit_levels=[_make_role()],
+                )
+            )
+        self.assertEqual(resp.status_code, 403)
 
     def test_anon_add_preserves_other_rows_from_storage(self):
         # Regression for the "add one author, get 403 / clobbered rows" bug:
-        # the add wizard resubmits every existing row rebuilt from a lossy
-        # in-memory form (dropping affiliation/ORCID, reordering credits). The
-        # server must keep the stored copy of those rows, not the lossy one.
+        # the add wizard sends only the new author. The server must keep the
+        # stored copy of every existing row.
         pc = ProjectContributions(
             project_name="anon-project",
             contributors=[
@@ -1223,14 +1338,9 @@ class TestAnonymousPostAuth(ContributionsHandlerTestCase):
             ],
         )
         store_contributions("anon-project", pc)
-        # Bob comes back stripped (no affiliation, no ORCID, no is_admin) — the
-        # lossy round-trip — plus a brand-new "Test" author.
-        body = self._payload([
-            AuthorContribution(author=_make_author("Bob"), credit_levels=[_make_role()]),
-            AuthorContribution(author=_make_author("Test"), credit_levels=[_make_role()]),
-        ])
+        incoming = AuthorContribution(author=_make_author("Test"), credit_levels=[_make_role()])
         with _patch_current_user(None):
-            resp = self._post(body)
+            resp = self._post(incoming)
         self.assertEqual(resp.status_code, 200)
         stored = get_contributions("anon-project")
         names = [c.author.name for c in stored.contributors]
@@ -1244,48 +1354,30 @@ class TestAnonymousPostAuth(ContributionsHandlerTestCase):
 
     def test_anon_cannot_remove_existing_row(self):
         self._seed_project()
-        body = self._payload([
-            AuthorContribution(author=_make_author("Bob", orcid=_PROJECT_ADMIN["orcid"]),
-                               credit_levels=[_make_role()], is_admin=True),
-        ])
         with _patch_current_user(None):
-            resp = self._post(body)
+            resp = self._post(AuthorContribution(author=_make_author("Bob"), credit_levels=[_make_role()]))
         self.assertEqual(resp.status_code, 403)
 
     def test_anon_cannot_add_multiple_rows(self):
         self._seed_project()
-        body = self._payload([
-            AuthorContribution(author=_make_author("Bob", orcid=_PROJECT_ADMIN["orcid"]),
-                               credit_levels=[_make_role()], is_admin=True),
-            AuthorContribution(author=_make_author("Alice"), credit_levels=[_make_role()]),
-            AuthorContribution(author=_make_author("Dave"), credit_levels=[_make_role()]),
-            AuthorContribution(author=_make_author("Erin"), credit_levels=[_make_role()]),
-        ])
         with _patch_current_user(None):
-            resp = self._post(body)
-        self.assertEqual(resp.status_code, 403)
+            resp = client.post(
+                "/contributions/author?project=anon-project",
+                content=json.dumps({"contributors": []}),
+                headers={"Content-Type": "application/json"},
+            )
+        self.assertEqual(resp.status_code, 400)
 
     def test_anon_blocked_on_locked_project(self):
         self._seed_project(edit_locked=True)
-        body = self._payload([
-            AuthorContribution(author=_make_author("Bob", orcid=_PROJECT_ADMIN["orcid"]),
-                               credit_levels=[_make_role()], is_admin=True),
-            AuthorContribution(author=_make_author("Alice"), credit_levels=[_make_role()]),
-            AuthorContribution(author=_make_author("Dave"), credit_levels=[_make_role()]),
-        ])
         with _patch_current_user(None):
-            resp = self._post(body)
+            resp = self._post(AuthorContribution(author=_make_author("Dave"), credit_levels=[_make_role()]))
         self.assertEqual(resp.status_code, 403)
         self.assertIn("locked", resp.json()["error"].lower())
 
 
 class TestScopedMergeProtectsAdminState(unittest.TestCase):
-    """A non-admin self-edit must not rewrite admin-owned state.
-
-    The add wizard rebuilds the whole contributor list from a lossy in-memory
-    form, so anything it does not model — publication order, the project
-    display settings, the DOI list — has to be taken from storage.
-    """
+    """Author-scoped merges must not rewrite admin-owned state."""
 
     def _existing(self):
         return ProjectContributions(
@@ -1314,14 +1406,11 @@ class TestScopedMergeProtectsAdminState(unittest.TestCase):
 
     def test_self_edit_keeps_publication_order_and_author_level(self):
         existing = self._existing()
-        # Alice resubmits her own row the way the add wizard builds it: name
-        # and CRediT roles only, so both display properties come back blank.
-        incoming = existing.model_copy(deep=True)
-        incoming.contributors[0].publication_order = None
-        incoming.contributors[0].author_level = None
-        ok, err, merged = _merge_scoped_contributions(
-            existing, "0000-0001", "Alice", incoming
+        incoming = AuthorContribution(
+            author=_make_author("Alice", orcid="0000-0001"),
+            credit_levels=[_make_role()],
         )
+        ok, err, merged = _merge_author_contribution(existing, "0000-0001", "Alice", incoming)
         self.assertTrue(ok, err)
         by_name = {c.author.name: c for c in merged.contributors}
         self.assertEqual(by_name["Alice"].publication_order, 2)
@@ -1331,17 +1420,11 @@ class TestScopedMergeProtectsAdminState(unittest.TestCase):
 
     def test_self_edit_keeps_project_settings_and_doi(self):
         existing = self._existing()
-        incoming = existing.model_copy(deep=True)
-        # A stale client page sends back the model defaults.
-        incoming.show_levels = True
-        incoming.allow_lead = True
-        incoming.allow_levels = True
-        incoming.show_sections = False
-        incoming.show_timeline = False
-        incoming.doi = []
-        ok, err, merged = _merge_scoped_contributions(
-            existing, "0000-0001", "Alice", incoming
+        incoming = AuthorContribution(
+            author=_make_author("Alice", orcid="0000-0001"),
+            credit_levels=[_make_role()],
         )
+        ok, err, merged = _merge_author_contribution(existing, "0000-0001", "Alice", incoming)
         self.assertTrue(ok, err)
         self.assertFalse(merged.show_levels)
         self.assertFalse(merged.allow_lead)

@@ -33,6 +33,11 @@ class TestDocsEndpointsReachable(unittest.TestCase):
         self.assertEqual(client.post("/acquisition-types", json={}).status_code, 404)
         self.assertEqual(client.get("/verification/graph").status_code, 404)
 
+    def test_contributions_action_routes_are_not_available(self):
+        self.assertEqual(client.get("/contributions/get").status_code, 404)
+        self.assertEqual(client.post("/contributions/post", json={}).status_code, 404)
+        self.assertEqual(client.post("/contributions/post-author", json={}).status_code, 404)
+
 
 class TestOpenApiSchemaContent(unittest.TestCase):
     def setUp(self):
@@ -52,16 +57,30 @@ class TestOpenApiSchemaContent(unittest.TestCase):
         self.assertFalse(any(path.startswith("/verification") for path in self.schema["paths"]))
 
     def test_contributions_get_documents_query_params(self):
-        params = self._params("/contributions/get", "get")
+        params = self._params("/contributions/project", "get")
         for name in ("project", "doi", "history", "commit", "format"):
             self.assertIn(name, params)
+
+    def test_contributions_use_resource_oriented_routes(self):
+        paths = self.schema["paths"]
+        self.assertIn("/contributions/project", paths)
+        self.assertIn("get", paths["/contributions/project"])
+        self.assertIn("post", paths["/contributions/project"])
+        self.assertIn("/contributions/author", paths)
+        self.assertIn("post", paths["/contributions/author"])
+        for action_path in (
+            "/contributions/get",
+            "/contributions/post",
+            "/contributions/post-author",
+        ):
+            self.assertNotIn(action_path, paths)
 
     def test_routes_are_tagged(self):
         gather_tags = self.schema["paths"]["/gather"]["post"]["tags"]
         self.assertIn("gather", gather_tags)
         acquisitions_tags = self.schema["paths"]["/scheduled-acquisitions"]["get"]["tags"]
         self.assertIn("acquisitions", acquisitions_tags)
-        contributions_tags = self.schema["paths"]["/contributions/get"]["get"]["tags"]
+        contributions_tags = self.schema["paths"]["/contributions/project"]["get"]["tags"]
         self.assertIn("contributions", contributions_tags)
 
 
