@@ -1,7 +1,8 @@
 """Pydantic models for CRediT authorship contributions."""
 
 from enum import Enum
-from typing import List, Optional
+import re
+from typing import List, Optional, Union
 from datetime import date
 
 from aind_data_schema.components.identifiers import Person
@@ -28,11 +29,73 @@ class CreditRole(str, Enum):
 
 
 class ContributionLevel(str, Enum):
-    """Degree of contribution for a given CRediT role."""
+    """Legacy degree values retained for callers using the original levels."""
 
     LEAD = "lead"
     SUPPORTING = "supporting"
     EQUAL = "equal"
+
+
+WorkflowLevelValue = Union[ContributionLevel, str]
+
+
+class AuthorWorkflowLevel(BaseModel):
+    """A configurable contribution level offered by the author workflow."""
+
+    value: str = Field(description="Stable value stored on a contribution")
+    label: str = Field(description="Level label shown to contributors")
+    description: str = Field(default="", description="Level definition shown in the add workflow")
+    color: str = Field(default="#818cf8", description="Hex color used to display the level")
+    enabled: bool = Field(default=True, description="Whether contributors may select this level")
+
+    @field_validator("value", "label")
+    @classmethod
+    def require_non_empty_text(cls, value):
+        if not value.strip():
+            raise ValueError("value and label must not be empty")
+        return value.strip()
+
+    @field_validator("value")
+    @classmethod
+    def validate_stable_value(cls, value):
+        if value == "none":
+            raise ValueError("none is reserved for an empty contribution")
+        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", value):
+            raise ValueError("value must be a lowercase identifier")
+        return value
+
+    @field_validator("color")
+    @classmethod
+    def validate_hex_color(cls, value):
+        if len(value) != 7 or not value.startswith("#"):
+            raise ValueError("color must be a six-digit hex color")
+        try:
+            int(value[1:], 16)
+        except ValueError as exc:
+            raise ValueError("color must be a six-digit hex color") from exc
+        return value.lower()
+
+
+DEFAULT_AUTHOR_WORKFLOW_LEVELS = (
+    {
+        "value": "supporting",
+        "label": "+",
+        "description": "indicates a supporting contribution, which may not warrant authorship",
+        "color": "#9ca3af",
+    },
+    {
+        "value": "equal",
+        "label": "++",
+        "description": "indicates a major contribution to a specific CRediT role",
+        "color": "#818cf8",
+    },
+    {
+        "value": "lead",
+        "label": "Lead",
+        "description": "indicates that the author was both a major contributor and the primary coordinator of this CRediT role, not all papers have authors at the lead level",
+        "color": "#4338ca",
+    },
+)
 
 
 class AuthorLevel(str, Enum):
@@ -46,7 +109,7 @@ class RoleContribution(BaseModel):
     """A single CRediT role paired with a contribution level."""
 
     role: CreditRole
-    level: ContributionLevel
+    level: WorkflowLevelValue = Field(description="Configured author workflow level value")
     description: Optional[str] = Field(
         default=None, description="Optional free-text description"
     )
@@ -66,6 +129,28 @@ class RoleContribution(BaseModel):
         description="Optional date when work on this role ended",
     )
 
+    @field_validator("level", mode="before")
+    @classmethod
+    def preserve_builtin_level_enum(cls, value):
+        if isinstance(value, ContributionLevel):
+            return value
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                raise ValueError("level must not be empty")
+            try:
+                return ContributionLevel(stripped)
+            except ValueError:
+                return stripped
+        return value
+
+    @field_validator("level")
+    @classmethod
+    def require_non_empty_level(cls, value):
+        if not str(value).strip():
+            raise ValueError("level must not be empty")
+        return value
+
     @model_validator(mode="after")
     def check_dates(self):
         if self.end_date is not None:
@@ -81,7 +166,29 @@ class SectionContribution(BaseModel):
 
     section: str = Field(description="Name of the paper section (e.g. Introduction, Methods)")
     description: Optional[str] = Field(default=None, description="Optional free-text description of the contribution")
-    level: ContributionLevel
+    level: WorkflowLevelValue = Field(description="Configured author workflow level value")
+
+    @field_validator("level", mode="before")
+    @classmethod
+    def preserve_builtin_level_enum(cls, value):
+        if isinstance(value, ContributionLevel):
+            return value
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                raise ValueError("level must not be empty")
+            try:
+                return ContributionLevel(stripped)
+            except ValueError:
+                return stripped
+        return value
+
+    @field_validator("level")
+    @classmethod
+    def require_non_empty_level(cls, value):
+        if not str(value).strip():
+            raise ValueError("level must not be empty")
+        return value
 
 
 class Author(Person):
@@ -183,3 +290,33 @@ class ProjectContributions(BaseModel):
     show_timeline: bool = Field(default=False, description="Whether to show author timelines in the interface")
     allow_lead: bool = Field(default=True, description="Whether to allow designation of lead authors in the interface")
     allow_levels: bool = Field(default=True, description="Whether to allow designation of CRediT contribution levels in the interface")
+    author_workflow_levels: Optional[List[AuthorWorkflowLevel]] = Field(
+        default=None,
+        description=(
+            "Optional custom author workflow levels. When omitted, the interface "
+            "uses its default +, ++ and Lead definitions; enabled=false keeps an "
+            "option defined but unavailable to contributors."
+        ),
+    )
+
+    @field_validator("author_workflow_levels")
+    @classmethod
+    def require_unique_workflow_level_values(cls, levels):
+        if levels is None:
+            return levels
+        values = [level.value.casefold() for level in levels]
+        if len(values) != len(set(values)):
+            raise ValueError("author workflow level values must be unique")
+        return levels
+
+    @model_validator(mode="after")
+    def fill_default_author_workflow_levels(self):
+        if self.author_workflow_levels is None:
+            self.author_workflow_levels = [
+                AuthorWorkflowLevel(
+                    **definition,
+                    enabled=self.allow_levels and (self.allow_lead or definition["value"] != "lead"),
+                )
+                for definition in DEFAULT_AUTHOR_WORKFLOW_LEVELS
+            ]
+        return self

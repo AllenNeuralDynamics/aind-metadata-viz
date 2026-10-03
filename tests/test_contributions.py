@@ -13,6 +13,7 @@ from pydantic import ValidationError
 from aind_metadata_viz.contributions.models import (
     Author,
     AuthorContribution,
+    AuthorWorkflowLevel,
     AuthorLevel,
     ContributionLevel,
     CreditRole,
@@ -197,9 +198,60 @@ class TestRoleContribution(unittest.TestCase):
         with self.assertRaises(ValidationError):
             RoleContribution(role="not-a-role", level=ContributionLevel.LEAD)
 
-    def test_invalid_level_raises(self):
+    def test_custom_level_is_accepted(self):
+        role = RoleContribution(role=CreditRole.SOFTWARE, level="substantial")
+        self.assertEqual(role.level, "substantial")
+
+
+class TestAuthorWorkflowLevel(unittest.TestCase):
+    def test_project_defaults_to_builtin_author_workflow_levels(self):
+        project = ProjectContributions(project_name="defaults")
+        self.assertEqual(
+            [(level.value, level.label) for level in project.author_workflow_levels],
+            [("supporting", "+"), ("equal", "++"), ("lead", "Lead")],
+        )
+        self.assertTrue(all(level.enabled for level in project.author_workflow_levels))
+
+    def test_legacy_flags_limit_builtin_options(self):
+        project = ProjectContributions(
+            project_name="legacy-settings",
+            allow_lead=False,
+        )
+        self.assertEqual(
+            [level.value for level in project.author_workflow_levels if level.enabled],
+            ["supporting", "equal"],
+        )
+
+    def test_custom_levels_and_contribution_values_round_trip(self):
+        project = ProjectContributions(
+            project_name="custom-levels",
+            author_workflow_levels=[AuthorWorkflowLevel(
+                value="substantial",
+                label="Substantial",
+                description="A substantial contribution",
+                color="#123ABC",
+            )],
+            contributors=[AuthorContribution(
+                author=_make_author(),
+                credit_levels=[_make_role(level="substantial")],
+            )],
+        )
+        restored = from_json(to_json(project))
+        self.assertEqual(restored.author_workflow_levels[0].color, "#123abc")
+        self.assertEqual(restored.contributors[0].credit_levels[0].level, "substantial")
+        yaml_restored = from_yaml(to_yaml(project))
+        self.assertEqual(yaml_restored.author_workflow_levels[0].value, "substantial")
+        self.assertEqual(yaml_restored.contributors[0].credit_levels[0].level, "substantial")
+
+    def test_duplicate_custom_values_are_rejected(self):
         with self.assertRaises(ValidationError):
-            RoleContribution(role=CreditRole.SOFTWARE, level="not-a-level")
+            ProjectContributions(
+                project_name="duplicate-levels",
+                author_workflow_levels=[
+                    AuthorWorkflowLevel(value="custom", label="One"),
+                    AuthorWorkflowLevel(value="custom", label="Two"),
+                ],
+            )
 
 
 class TestAuthor(unittest.TestCase):
@@ -1388,6 +1440,9 @@ class TestScopedMergeProtectsAdminState(unittest.TestCase):
             allow_levels=False,
             show_sections=True,
             show_timeline=True,
+            author_workflow_levels=[AuthorWorkflowLevel(
+                value="custom", label="Custom", description="Custom level", color="#112233"
+            )],
             contributors=[
                 AuthorContribution(
                     author=_make_author("Alice", orcid="0000-0001"),
@@ -1431,6 +1486,9 @@ class TestScopedMergeProtectsAdminState(unittest.TestCase):
         self.assertFalse(merged.allow_levels)
         self.assertTrue(merged.show_sections)
         self.assertTrue(merged.show_timeline)
+        self.assertEqual(merged.author_workflow_levels[0].value, "custom")
+        self.assertEqual(merged.author_workflow_levels[0].description, "Custom level")
+        self.assertEqual(merged.author_workflow_levels[0].color, "#112233")
         self.assertEqual(merged.doi, ["10.1/journal"])
 
 

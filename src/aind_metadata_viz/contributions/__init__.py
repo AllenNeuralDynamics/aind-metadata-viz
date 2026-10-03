@@ -3,7 +3,7 @@
 Public API
 ----------
 Models:
-    CreditRole, ContributionLevel, RoleContribution,
+    CreditRole, ContributionLevel, AuthorWorkflowLevel, RoleContribution,
     AuthorContribution, ProjectContributions
 
 Serialization:
@@ -15,6 +15,7 @@ Storage (S3-backed):
 
 from .models import (
     AuthorContribution,
+    AuthorWorkflowLevel,
     ContributionLevel,
     CreditRole,
     ProjectContributions,
@@ -33,6 +34,7 @@ __all__ = [
     # models
     "CreditRole",
     "ContributionLevel",
+    "AuthorWorkflowLevel",
     "RoleContribution",
     "AuthorContribution",
     "ProjectContributions",

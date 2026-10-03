@@ -1,5 +1,6 @@
 """Serialization helpers: convert ProjectContributions to/from JSON and YAML."""
 
+from enum import Enum
 from typing import Union
 
 import yaml
@@ -38,6 +39,11 @@ _LEVEL_ORDER = {
     ContributionLevel.EQUAL: 1,
     ContributionLevel.SUPPORTING: 0,
 }
+
+
+def _level_value(level):
+    """Return either a legacy enum value or a custom level string."""
+    return level.value if isinstance(level, Enum) else str(level)
 
 
 # ---------------------------------------------------------------------------
@@ -106,7 +112,7 @@ def to_yaml(contributions: ProjectContributions) -> str:
         entry["roles"] = [_ROLE_DISPLAY.get(r.role, r.role.value) for r in c.credit_levels]
 
         entry["credit_levels"] = [
-            {"role": _ROLE_DISPLAY.get(r.role, r.role.value), "level": r.level.value}
+            {"role": _ROLE_DISPLAY.get(r.role, r.role.value), "level": _level_value(r.level)}
             for r in c.credit_levels
         ]
 
@@ -121,7 +127,7 @@ def to_yaml(contributions: ProjectContributions) -> str:
                 if section not in section_map:
                     section_map[section] = {"effort": r.level, "descriptions": []}
                 else:
-                    if _LEVEL_ORDER[r.level] > _LEVEL_ORDER[section_map[section]["effort"]]:
+                    if _LEVEL_ORDER.get(r.level, 0) > _LEVEL_ORDER.get(section_map[section]["effort"], 0):
                         section_map[section]["effort"] = r.level
                 if r.description:
                     section_map[section]["descriptions"].append(r.description)
@@ -134,7 +140,7 @@ def to_yaml(contributions: ProjectContributions) -> str:
             section_contributions = []
             for s in ordered:
                 v = section_map[s]
-                sc = {"section": s, "effort": v["effort"].value}
+                sc = {"section": s, "effort": _level_value(v["effort"])}
                 if v["descriptions"]:
                     sc["description"] = "; ".join(dict.fromkeys(v["descriptions"]))
                 section_contributions.append(sc)
@@ -158,6 +164,11 @@ def to_yaml(contributions: ProjectContributions) -> str:
         doc["project"]["sections"] = contributions.sections
     if contributions.doi:
         doc["project"]["doi"] = list(contributions.doi)
+    if contributions.author_workflow_levels is not None:
+        doc["project"]["author_workflow_levels"] = [
+            level.model_dump(exclude_none=True)
+            for level in contributions.author_workflow_levels
+        ]
     if _seen_affiliations:
         doc["project"]["affiliations"] = [
             {"id": slug, "name": name} for name, slug in _seen_affiliations.items()
@@ -207,11 +218,12 @@ def from_yaml(data: str) -> ProjectContributions:
         for rc in raw.get("credit_levels", []):
             raw_role = rc.get("role", "")
             raw_level = rc.get("level", "")
+            if not isinstance(raw_level, str):
+                continue
             _display_to_enum = {v: k for k, v in _ROLE_DISPLAY.items()}
             try:
                 role = _display_to_enum.get(raw_role) or CreditRole(raw_role)
-                level = ContributionLevel(raw_level)
-                credit_levels.append(RoleContribution(role=role, level=level))
+                credit_levels.append(RoleContribution(role=role, level=raw_level))
             except ValueError:
                 continue
 
@@ -227,6 +239,7 @@ def from_yaml(data: str) -> ProjectContributions:
         contributors=contributors,
         sections=sections,
         doi=project.get("doi", []),
+        author_workflow_levels=project.get("author_workflow_levels"),
     )
 
 
