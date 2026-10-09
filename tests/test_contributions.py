@@ -2,9 +2,11 @@ import json
 import unittest
 from datetime import date
 from io import BytesIO
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
+from urllib.parse import parse_qs
 
 from botocore.exceptions import ClientError
+import httpx
 
 
 from aind_data_schema_models.registries import Registry
@@ -39,6 +41,7 @@ from aind_metadata_viz.contributions.handlers import (
     contributions_router,
     _merge_author_contribution,
 )
+from aind_metadata_viz.contributions import handlers as contributions_handlers
 from fastapi.testclient import TestClient
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -610,6 +613,91 @@ class ContributionsHandlerTestCase(unittest.TestCase):
             "aind_metadata_viz.contributions.handlers.list_project_commits",
             side_effect=lambda project: list_project_commits(project),
         )
+
+
+class TestOrcidNameLookupHandler(ContributionsHandlerTestCase):
+    def test_search_returns_server_resolved_profiles(self):
+        search = AsyncMock(return_value=[
+            {"orcid": "0000-0002-1825-0097", "name": "Jane Example"}
+        ])
+        with patch("aind_metadata_viz.contributions.handlers._search_orcid_profiles", new=search):
+            resp = client.get("/contributions/orcid/search?name=Jane+Example")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["results"][0]["name"], "Jane Example")
+        search.assert_awaited_once_with("Jane Example")
+
+    def test_profile_route_normalizes_orcid_urls(self):
+        read_profile = AsyncMock(return_value={
+            "orcid": "0000-0002-1825-0097", "name": "Jane Example"
+        })
+        with patch("aind_metadata_viz.contributions.handlers._read_orcid_profile", new=read_profile):
+            resp = client.get(
+                "/contributions/orcid/profile?orcid=https%3A%2F%2Forcid.org%2F0000-0002-1825-0097"
+            )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["name"], "Jane Example")
+        read_profile.assert_awaited_once_with("0000-0002-1825-0097")
+
+    def test_profile_route_rejects_invalid_orcid(self):
+        resp = client.get("/contributions/orcid/profile?orcid=not-an-orcid")
+        self.assertEqual(resp.status_code, 400)
+
+    def test_routes_use_mocked_orcid_public_api(self):
+        orcid = "0000-0002-1825-0097"
+        requests = []
+
+        def mock_orcid(request):
+            requests.append(request)
+            if request.method == "POST" and request.url.path == "/oauth/token":
+                return httpx.Response(200, json={
+                    "access_token": "test-public-token",
+                    "expires_in": 3600,
+                })
+            if request.url.path.endswith("/search/"):
+                return httpx.Response(200, json={
+                    "result": [{"orcid-identifier": {"path": orcid}}],
+                })
+            if request.url.path.endswith(f"/{orcid}/person"):
+                return httpx.Response(200, json={
+                    "person": {"name": {
+                        "credit-name": {"value": "Jane Canonical Example"},
+                        "given-names": {"value": "Jane"},
+                        "family-name": {"value": "Example"},
+                    }},
+                })
+            return httpx.Response(404)
+
+        real_async_client = httpx.AsyncClient
+
+        def mock_async_client(*args, **kwargs):
+            transport = httpx.MockTransport(mock_orcid)
+            return real_async_client(*args, transport=transport, **kwargs)
+
+        with (
+            patch.object(contributions_handlers, "_orcid_public_token", None),
+            patch.object(contributions_handlers, "_orcid_public_token_expires_at", 0),
+            patch.object(contributions_handlers.auth_config, "ORCID_CLIENT_ID", "test-client"),
+            patch.object(contributions_handlers.auth_config, "ORCID_CLIENT_SECRET", "test-secret"),
+            patch.object(httpx, "AsyncClient", side_effect=mock_async_client),
+        ):
+            search = client.get("/contributions/orcid/search?name=Jane+Example")
+            profile = client.get(f"/contributions/orcid/profile?orcid={orcid}")
+
+        self.assertEqual(search.status_code, 200)
+        self.assertEqual(search.json()["results"], [{
+            "orcid": orcid,
+            "name": "Jane Canonical Example",
+        }])
+        self.assertEqual(profile.status_code, 200)
+        self.assertEqual(profile.json()["name"], "Jane Canonical Example")
+
+        token_request = requests[0]
+        self.assertEqual(parse_qs(token_request.content.decode())["scope"], ["/read-public"])
+        self.assertEqual(token_request.headers["accept"], "application/json")
+        self.assertTrue(all(
+            request.headers.get("authorization") == "Bearer test-public-token"
+            for request in requests[1:]
+        ))
 
 
 class TestContributionsGetHandler(ContributionsHandlerTestCase):
@@ -1254,6 +1342,19 @@ class TestAuthorPostAuth(ContributionsHandlerTestCase):
         bob = next(c for c in get_contributions("author-project").contributors if c.author.name == "Bob")
         self.assertTrue(bob.is_admin)
 
+    def test_new_author_is_bound_to_the_signed_in_orcid(self):
+        self._seed_project()
+        incoming = AuthorContribution(
+            author=_make_author("Carol", orcid="0000-9999"),
+            credit_levels=[_make_role()],
+        )
+        with _patch_current_user(_MEMBER):
+            resp = self._post(incoming)
+        self.assertEqual(resp.status_code, 200)
+        carol = next(c for c in get_contributions("author-project").contributors
+                     if c.author.name == "Carol")
+        self.assertEqual(carol.author.registry_identifier, _MEMBER["orcid"])
+
     def test_non_admin_can_update_only_their_existing_author_row(self):
         self._seed_project()
         incoming = AuthorContribution(
@@ -1268,6 +1369,18 @@ class TestAuthorPostAuth(ContributionsHandlerTestCase):
         alice = next(c for c in stored.contributors if c.author.name == "Alice")
         self.assertEqual(alice.author.affiliation, ["Elsewhere"])
         self.assertTrue(next(c for c in stored.contributors if c.author.name == "Bob").is_admin)
+
+    def test_exact_display_name_does_not_claim_an_unlinked_row(self):
+        self._seed_project()
+        incoming = AuthorContribution(
+            author=_make_author("Alice"),
+            credit_levels=[_make_role()],
+        )
+        user = {"orcid": "0000-0007", "name": "Alice", "is_admin": False}
+        with _patch_current_user(user):
+            resp = self._post(incoming)
+        self.assertEqual(resp.status_code, 403)
+        self.assertIn("new author", resp.json()["error"].lower())
 
     def test_author_endpoint_cannot_edit_another_author(self):
         self._seed_project()
@@ -1310,6 +1423,104 @@ class TestAuthorPostAuth(ContributionsHandlerTestCase):
         )
         with _patch_current_user(_MEMBER):
             resp = self._post(incoming)
+        self.assertEqual(resp.status_code, 403)
+        self.assertIn("locked", resp.json()["error"].lower())
+
+
+class TestAuthorLinkPostAuth(ContributionsHandlerTestCase):
+    """ORCID linking is explicit and only applies to a matching unlinked row."""
+
+    def _seed_project(
+        self, name="link-project", edit_locked=False, duplicate=False,
+        target_admin=False, target_name="Carol Smith",
+    ):
+        contributors = [
+            AuthorContribution(
+                author=_make_author("Bob", orcid=_PROJECT_ADMIN["orcid"]),
+                credit_levels=[_make_role()],
+                is_admin=True,
+            ),
+            AuthorContribution(
+                author=_make_author(target_name),
+                credit_levels=[_make_role(CreditRole.SOFTWARE, ContributionLevel.SUPPORTING)],
+                is_admin=target_admin,
+            ),
+        ]
+        if duplicate:
+            contributors.append(AuthorContribution(
+                author=_make_author("Carol Smith"), credit_levels=[_make_role()]
+            ))
+        pc = ProjectContributions(
+            project_name=name,
+            edit_locked=edit_locked,
+            contributors=contributors,
+        )
+        store_contributions(name, pc)
+        return pc
+
+    def _post_link(self, author_name="Carol Smith", name="link-project"):
+        return client.post(
+            f"/contributions/author/link?project={name}",
+            json={"author_name": author_name},
+        )
+
+    def test_links_matching_unlinked_record_and_preserves_contributions(self):
+        self._seed_project()
+        user = {"orcid": "0000-0007", "name": "Carol Smith", "is_admin": False}
+        with _patch_current_user(user):
+            resp = self._post_link()
+        self.assertEqual(resp.status_code, 200)
+        stored = get_contributions("link-project")
+        carol = next(c for c in stored.contributors if c.author.name == "Carol Smith")
+        self.assertEqual(carol.author.registry_identifier, "0000-0007")
+        self.assertEqual(carol.author.registry, Registry.ORCID)
+        self.assertEqual(carol.credit_levels[0].role, CreditRole.SOFTWARE)
+        self.assertFalse(carol.is_admin)
+
+    def test_links_a_matching_initial_name_variant(self):
+        self._seed_project(target_name="N. Smith")
+        user = {"orcid": "0000-0007", "name": "Nancy Smith", "is_admin": False}
+        with _patch_current_user(user):
+            resp = self._post_link("N. Smith")
+        self.assertEqual(resp.status_code, 200)
+
+    def test_requires_login(self):
+        self._seed_project()
+        with _patch_current_user(None):
+            resp = self._post_link()
+        self.assertEqual(resp.status_code, 401)
+
+    def test_rejects_name_that_does_not_match_orcid_profile(self):
+        self._seed_project()
+        user = {"orcid": "0000-0007", "name": "Different Person", "is_admin": False}
+        with _patch_current_user(user):
+            resp = self._post_link()
+        self.assertEqual(resp.status_code, 403)
+        self.assertIsNone(
+            next(c for c in get_contributions("link-project").contributors
+                 if c.author.name == "Carol Smith").author.registry_identifier
+        )
+
+    def test_rejects_ambiguous_name(self):
+        self._seed_project(duplicate=True)
+        user = {"orcid": "0000-0007", "name": "Carol Smith", "is_admin": False}
+        with _patch_current_user(user):
+            resp = self._post_link()
+        self.assertEqual(resp.status_code, 409)
+
+    def test_non_admin_cannot_link_an_admin_record(self):
+        self._seed_project(target_admin=True)
+        user = {"orcid": "0000-0007", "name": "Carol Smith", "is_admin": False}
+        with _patch_current_user(user):
+            resp = self._post_link()
+        self.assertEqual(resp.status_code, 403)
+        self.assertIn("admin", resp.json()["error"].lower())
+
+    def test_locked_project_blocks_non_admin_link(self):
+        self._seed_project(edit_locked=True)
+        user = {"orcid": "0000-0007", "name": "Carol Smith", "is_admin": False}
+        with _patch_current_user(user):
+            resp = self._post_link()
         self.assertEqual(resp.status_code, 403)
         self.assertIn("locked", resp.json()["error"].lower())
 
@@ -1465,7 +1676,7 @@ class TestScopedMergeProtectsAdminState(unittest.TestCase):
             author=_make_author("Alice", orcid="0000-0001"),
             credit_levels=[_make_role()],
         )
-        ok, err, merged = _merge_author_contribution(existing, "0000-0001", "Alice", incoming)
+        ok, err, merged = _merge_author_contribution(existing, "0000-0001", incoming)
         self.assertTrue(ok, err)
         by_name = {c.author.name: c for c in merged.contributors}
         self.assertEqual(by_name["Alice"].publication_order, 2)
@@ -1479,7 +1690,7 @@ class TestScopedMergeProtectsAdminState(unittest.TestCase):
             author=_make_author("Alice", orcid="0000-0001"),
             credit_levels=[_make_role()],
         )
-        ok, err, merged = _merge_author_contribution(existing, "0000-0001", "Alice", incoming)
+        ok, err, merged = _merge_author_contribution(existing, "0000-0001", incoming)
         self.assertTrue(ok, err)
         self.assertFalse(merged.show_levels)
         self.assertFalse(merged.allow_lead)
