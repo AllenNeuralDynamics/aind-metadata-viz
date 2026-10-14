@@ -73,3 +73,21 @@ docker run -p 8000:8000 aind-metadata-viz
 2. The image can be used by an ECS Service in AWS to run a task container. Application Load
    Balancer can be used to serve the container from ECS. Please note that the task must be
    configured with the correct env variables (e.g. `API_GATEWAY_HOST`, `ALLOW_WEBSOCKET_ORIGIN`).
+
+## Temporary QC previews
+
+Upload `quality_control.json` or a full `metadata.json` containing `quality_control`:
+
+```sh
+curl --fail-with-body \
+  'https://metadata-portal.allenneuraldynamics.org/temporary-metadata' \
+  -H 'Content-Type: application/json' \
+  --data-binary @quality_control.json
+```
+
+Open the returned `quality_control_url` for a read-only preview in Zombie.
+The response includes the asset name and expiry. Names are generated unless
+provided in metadata or via `?name=my-preview`; existing names are rejected.
+
+Uploads are public, limited to 5 MiB, and expire after 30 days or when the portal
+container is replaced. Private media requiring asset-based signing is unsupported.

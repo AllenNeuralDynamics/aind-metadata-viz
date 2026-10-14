@@ -10,6 +10,7 @@ from aind_metadata_viz.acquisitions.handlers import acquisitions_router
 from aind_metadata_viz.pinpoint.handlers import pinpoint_router
 from aind_metadata_viz.chat import chat_router, mount_mcp_server, summary_router
 from aind_metadata_viz.auth import auth_router, SESSION_SECRET
+from aind_metadata_viz.temporary_metadata import router as temporary_metadata_router
 
 _OPENAPI_TAGS = [
     {"name": "health", "description": "Service health checks."},
@@ -51,6 +52,7 @@ app.add_middleware(
 )
 
 app.include_router(router)
+app.include_router(temporary_metadata_router)
 app.include_router(auth_router)
 app.include_router(contributions_router)
 app.include_router(acquisitions_router)
