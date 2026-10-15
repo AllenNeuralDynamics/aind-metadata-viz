@@ -21,6 +21,7 @@ RUN useradd --system --create-home --shell /usr/sbin/nologin vgraph
 RUN mkdir -p /tmp/vgraph-jobs /tmp/vgraph-venvs && \
     chown vgraph:vgraph /tmp/vgraph-jobs /tmp/vgraph-venvs
 RUN pip install . --no-cache-dir
+RUN AWS_EC2_METADATA_DISABLED=true python -c "from aind_metadata_viz.main import app; assert app"
 RUN mkdir /root/.aws && \
     cat <<EOF > /root/.aws/config
 [profile bedrock-access]
